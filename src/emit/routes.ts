@@ -1,6 +1,6 @@
 import type { FieldValue, ResolvedApi, ResolvedAuth, ResolvedValue } from "../check-api.js";
 import { type ResolvedField, type ResolvedModel, isHidden } from "../checker.js";
-import { FIELD_TYPES } from "../types.js";
+import { FIELD_TYPES, type FieldTypeName } from "../types.js";
 import { VERSION } from "../version.js";
 import type { App, AuthSpec, FieldSpec, PathPart, Route, ValueSource } from "../../runtime/types.ts";
 import { q, roleLiteral } from "./sql.js";
@@ -134,6 +134,11 @@ function fieldSpec(f: ResolvedField, required: boolean): FieldSpec {
   return spec;
 }
 
+/** PostgreSQL type used to read a cursor's sort value back from text. */
+const CURSOR_CAST: Readonly<Record<FieldTypeName, string>> = {
+  Text: "text", Email: "text", Number: "integer", Bool: "boolean", Date: "timestamptz", ID: "uuid", Password: "text",
+};
+
 class Params {
   readonly values: ValueSource[] = [];
   add(source: ValueSource): string {
@@ -176,6 +181,7 @@ function route(api: ResolvedApi): Route {
 
   let sql: string;
   let body: FieldSpec[] | null = null;
+  let page: Route["page"] = null;
   let result: Route["result"];
   switch (query.action) {
     case "find":
@@ -187,11 +193,28 @@ function route(api: ResolvedApi): Route {
       result = "none";
       break;
     case "list": {
+      // Keyset pagination: rows come in a fixed order (sort column, then id),
+      // and `?after=<cursor>` continues after the last row of the previous page.
       const where = query.filters.map((fv: FieldValue) => `${q(fv.field.column)} = ${p.value(fv.value)}`);
-      const order = query.order.field === undefined
-        ? q("id")
-        : `${q(query.order.field.column)} ${query.order.descending ? "DESC" : "ASC"}, ${q("id")}`;
-      sql = `SELECT ${select.sql} FROM ${table}${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY ${order} LIMIT ${query.limit}`;
+      const of = query.order.field;
+      const dir = query.order.descending ? "DESC" : "ASC";
+      const cmp = query.order.descending ? "<" : ">";
+      const hasCursor = p.add({ from: "cursorSet" });
+      let cursorSelect = "";
+      let order: string;
+      if (of === undefined) {
+        where.push(`(${hasCursor} IS NOT TRUE OR ${q("id")} ${cmp} ${p.add({ from: "cursorId" })}::uuid)`);
+        order = `${q("id")} ${dir}`;
+      } else {
+        const value = p.add({ from: "cursorValue" });
+        const id = p.add({ from: "cursorId" });
+        where.push(`(${hasCursor} IS NOT TRUE OR (${q(of.column)}, ${q("id")}) ${cmp} (${value}::${CURSOR_CAST[of.type]}, ${id}::uuid))`);
+        // The sort value travels in the cursor as PostgreSQL text, so it round-trips exactly.
+        cursorSelect = `, ${q(of.column)}::text AS "_cursor"`;
+        order = `${q(of.column)} ${dir}, ${q("id")} ${dir}`;
+      }
+      sql = `SELECT ${select.sql}${cursorSelect} FROM ${table} WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ${p.add({ from: "pageLimit" })}`;
+      page = { max: query.limit, order: of === undefined ? null : of.type };
       result = "list";
       break;
     }
@@ -234,6 +257,7 @@ function route(api: ResolvedApi): Route {
     sql,
     values: p.values,
     result,
+    page,
     publicKeys: select.keys,
     model: model.name,
   };

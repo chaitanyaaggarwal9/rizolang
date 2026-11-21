@@ -31,6 +31,14 @@ export type ValueSource =
   /** true when the body contains `key` (used for partial updates). */
   | { readonly from: "provided"; readonly key: string }
   | { readonly from: "const"; readonly value: number | boolean }
+  /** Pagination: true when the request has a cursor (`?after=`). */
+  | { readonly from: "cursorSet" }
+  /** Pagination: the sort column value from the cursor, as text. */
+  | { readonly from: "cursorValue" }
+  /** Pagination: the id from the cursor. */
+  | { readonly from: "cursorId" }
+  /** Pagination: the page size plus one (the extra row shows whether there is a next page). */
+  | { readonly from: "pageLimit" }
   /** true when the logged-in user has one of these roles (`requires owner author or role admin`). */
   | { readonly from: "hasRole"; readonly roles: readonly string[] };
 
@@ -54,6 +62,8 @@ export interface Route {
   readonly values: readonly ValueSource[];
   /** one: 200 with an object (404 if no row); list: 200 with an array; created: 201; none: 204 (404 if no row). */
   readonly result: "one" | "list" | "created" | "none";
+  /** For list endpoints: the largest page size, and the type of the sort column (null when sorted by id). */
+  readonly page: { readonly max: number; readonly order: FieldKind | null } | null;
   /** The only keys ever copied into a response. */
   readonly publicKeys: readonly string[];
   /** Model name, used in error messages such as "Post not found". */

@@ -14,7 +14,7 @@ import pg from "pg";
 import { hashPassword, dummyHash, verifyPassword } from "./password.ts";
 import { RateLimiter } from "./ratelimit.ts";
 import { SESSION_SECONDS, SQL, clearedCookie, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
-import type { App, FieldSpec, Route, ValueSource } from "./types.ts";
+import type { App, FieldKind, FieldSpec, Route, ValueSource } from "./types.ts";
 import { validateBody, validatePathParam, validateValue } from "./validate.ts";
 
 export interface QueryResult {
@@ -84,6 +84,43 @@ const AUTH_ROUTES: readonly AuthRoutes[] = [
   { method: "GET", path: "/auth/me" },
 ];
 
+interface Page {
+  readonly limit: number;
+  readonly cursor?: { readonly value?: string; readonly id: string };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_CURSOR = 2048;
+
+/** A cursor is base64url(JSON) of [sortValue, id], or [id] when sorted by id. */
+export function encodeCursor(parts: readonly string[]): string {
+  return Buffer.from(JSON.stringify(parts), "utf8").toString("base64url");
+}
+
+/** Decode and check a cursor. Returns undefined for anything malformed. */
+export function decodeCursor(raw: string, order: FieldKind | null): { value?: string; id: string } | undefined {
+  if (raw.length === 0 || raw.length > MAX_CURSOR || !/^[A-Za-z0-9_-]+$/.test(raw)) return undefined;
+  let parts: unknown;
+  try {
+    parts = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parts) || !parts.every((x) => typeof x === "string")) return undefined;
+  const strings = parts as string[];
+  const id = strings[strings.length - 1];
+  if (id === undefined || !UUID_RE.test(id)) return undefined;
+  if (order === null) return strings.length === 1 ? { id } : undefined;
+  const value = strings[0];
+  if (strings.length !== 2 || value === undefined || value.includes("\u0000")) return undefined;
+  const valid =
+    order === "Number" ? /^-?\d{1,10}$/.test(value)
+    : order === "Bool" ? value === "true" || value === "false"
+    : order === "ID" ? UUID_RE.test(value)
+    : true; // Text, Email, Date: PostgreSQL checks the value when it is cast back.
+  return valid ? { value, id } : undefined;
+}
+
 /** Copy only the listed keys. Responses never rely on the query alone to hide data. */
 function pick(row: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -120,7 +157,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       } else {
         const { route, params } = match(method, url.pathname);
         pattern = route.pattern;
-        status = await handleRoute(req, res, route, params);
+        status = await handleRoute(req, res, route, params, url.searchParams);
       }
     } catch (e) {
       if (e instanceof HttpError) {
@@ -238,6 +275,35 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     return values;
   }
 
+  /**
+   * Query string handling. Only list endpoints accept parameters, and only
+   * `limit` and `after`; anything else is rejected.
+   */
+  function readPage(route: Route, search: URLSearchParams): Page | undefined {
+    const allowed = route.page === null ? [] : ["limit", "after"];
+    for (const key of new Set(search.keys())) {
+      const shown = key.length > 50 ? `${key.slice(0, 50)}…` : key;
+      if (!allowed.includes(key)) {
+        throw new HttpError(400, "unknown_parameter",
+          allowed.length > 0 ? `Unknown query parameter "${shown}". Allowed: limit, after.` : `This endpoint takes no query parameters (got "${shown}").`, shown);
+      }
+      if (search.getAll(key).length > 1) throw new HttpError(400, "unknown_parameter", `Query parameter "${key}" appears more than once.`, key);
+    }
+    if (route.page === null) return undefined;
+    const max = route.page.max;
+    const rawLimit = search.get("limit");
+    let limit = max;
+    if (rawLimit !== null) {
+      limit = /^\d{1,4}$/.test(rawLimit) ? Number(rawLimit) : 0;
+      if (limit < 1 || limit > max) throw new HttpError(400, "invalid_parameter", `limit must be a whole number from 1 to ${max}.`, "limit");
+    }
+    const rawAfter = search.get("after");
+    if (rawAfter === null) return { limit };
+    const cursor = decodeCursor(rawAfter, route.page.order);
+    if (cursor === undefined) throw new HttpError(400, "invalid_parameter", "after is not a valid cursor. Use the next value from the previous page.", "after");
+    return { limit, cursor };
+  }
+
   /** The role of a user, or null. Read from the database on every request, so changes apply at once. */
   async function roleOf(userId: string): Promise<string | null> {
     const auth = app.auth;
@@ -277,6 +343,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     bodyValues: ReadonlyMap<string, unknown>,
     me: string | undefined,
     role: string | null,
+    page?: Page,
   ): unknown[] {
     return sources.map((s) => {
       switch (s.from) {
@@ -286,6 +353,10 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         case "provided": return bodyValues.has(s.key);
         case "const": return s.value;
         case "hasRole": return role !== null && s.roles.includes(role);
+        case "cursorSet": return page?.cursor !== undefined;
+        case "cursorValue": return page?.cursor?.value ?? null;
+        case "cursorId": return page?.cursor?.id ?? null;
+        case "pageLimit": return (page?.limit ?? 0) + 1;
       }
     });
   }
@@ -307,6 +378,8 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         case "23514":
         case "23502":
         case "22P02":
+        case "22007":
+        case "22008":
         case "22001":
           throw new HttpError(400, "validation_failed", "A value is not valid.");
         default:
@@ -315,8 +388,15 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     }
   }
 
-  async function handleRoute(req: IncomingMessage, res: ServerResponse, route: Route, params: ReadonlyMap<string, unknown>): Promise<number> {
+  async function handleRoute(
+    req: IncomingMessage,
+    res: ServerResponse,
+    route: Route,
+    params: ReadonlyMap<string, unknown>,
+    search: URLSearchParams,
+  ): Promise<number> {
     checkOrigin(req, route.method);
+    const page = readPage(route, search);
     let me: string | undefined;
     if (route.access === "login") {
       me = await currentUser(req);
@@ -333,10 +413,17 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     } else {
       bodyValues = await body(req, route.body);
     }
-    const r = await run(route.sql, values(route.values, params, bodyValues, me, role), route.model);
+    const r = await run(route.sql, values(route.values, params, bodyValues, me, role, page), route.model);
     switch (route.result) {
-      case "list":
-        return send(res, 200, r.rows.map((row) => pick(row, route.publicKeys)));
+      case "list": {
+        const limit = page?.limit ?? r.rows.length;
+        const rows = r.rows.slice(0, limit);
+        const last = rows[rows.length - 1];
+        const next = r.rows.length > limit && last !== undefined
+          ? encodeCursor(route.page?.order ? [String(last["_cursor"]), String(last["id"])] : [String(last["id"])])
+          : null;
+        return send(res, 200, { items: rows.map((row) => pick(row, route.publicKeys)), next });
+      }
       case "created":
         return send(res, 201, pick(r.rows[0] ?? {}, route.publicKeys));
       case "one": {

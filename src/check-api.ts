@@ -537,6 +537,12 @@ export function checkApis(
                 "Ordering by a private or Password field would reveal its values. Order by a public field.");
               continue;
             }
+            if (f.optional) {
+              good = false;
+              err("RZ0325", a.fieldSpan, `Cannot order by optional field "${model.name}.${f.name}".`,
+                "Pages are built from the sort value, so every record needs one. Order by a required field, or remove optional from it.");
+              continue;
+            }
             order = { field: f, descending: a.descending };
           } else {
             const f = field(a.field, a.fieldSpan);

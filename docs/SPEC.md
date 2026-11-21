@@ -166,6 +166,8 @@ It adds these endpoints. Paths under `/auth` are reserved.
 | `PATCH /auth/me`    | Any profile fields                | 200 with `User.public`. Every field is optional. The login email, the password, the role and links to the auth model can't be changed here |
 | `POST /auth/password` | `{ "currentPassword": ..., "newPassword": ... }` | 204. Every other session of the account is logged out |
 | `POST /auth/logout-all` | none                          | 204. Every session of the account is deleted, including this one |
+| `GET /auth/sessions` | none                             | Login required. 200 `{ "items": [{ "id", "device", "createdAt", "lastSeenAt", "current" }] }`: the devices you are logged in on |
+| `DELETE /auth/sessions/:id` | none                      | Login required. 204: that device is logged out (if it is this one, the cookie is cleared too). 404 if it isn't one of yours |
 | `DELETE /auth/me`   | `{ "password": ... }`             | 204, and the account and its sessions are deleted. 409 if other records still link to it |
 | `GET /auth/audit`   | `?account=<id>&limit=<1–500>` (optional) | Admins only (needs `roles admin`): the newest security audit entries, `{ "items": [...] }` |
 | `POST /auth/passkeys/register-options` | none | Login required. 200 with WebAuthn creation options for this account |
@@ -225,8 +227,10 @@ Each account has at most one role, or none.
 - **Availability:** if an entry can't be written, the action still succeeds and the failure is logged.
 
 **How sessions work**
-- The session is a random 256-bit token in the `rizo_session` cookie: `HttpOnly; Secure; SameSite=Lax; Path=/`, lasting 7 days.
+- The session is a random 256-bit token in the `rizo_session` cookie: `HttpOnly; Secure; SameSite=Lax; Path=/`.
 - The database stores only a SHA-256 hash of the token, in the table `_rizo_sessions`.
+- A session ends after **7 days without use**, and **30 days after login** however much it is used. Using it moves the 7-day deadline forward (at most once a minute).
+- Each session has a public id and a device label such as "Chrome on macOS", made only from fixed browser and system names. The raw User-Agent and the IP address are not stored.
 
 ---
 
@@ -483,7 +487,7 @@ page /posts/:id/delete {
 **Built-in pages.** In an app with an `auth` line and at least one page:
 - `/login` and `/signup` are generated, with forms for `/auth/login` and `/auth/signup`. `/login` also has "Log in with a passkey", and links to reset the password or get a new confirmation link.
 - `/verify-email` and `/reset-password` open from the emailed links: they confirm the email, or ask for a new password. Opened without a link, they ask for an email address and send a new link.
-- `/account` (login required) lists the user's passkeys, and adds and removes them.
+- `/account` (login required) lists the user's passkeys, and adds and removes them. It also lists the devices the user is logged in on, with "Log out" for each and "Log out everywhere".
 - Every page shows a menu with a link home, plus "Log in" and "Sign up", or "Account" and "Log out".
 - A page that needs a login sends logged-out visitors to `/login?next=<the page>`. After logging in they return there. `next` is followed only if it is a path on this site.
 

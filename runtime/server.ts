@@ -18,7 +18,7 @@ import { EMAIL_SQL, type Mailer, MESSAGES, RESET_SECONDS, type TokenPurpose, VER
 import { Limits, limitKey } from "./limits.ts";
 import { CHALLENGE_SECONDS, MAX_PASSKEYS, PASSKEY_SQL, challengeHash, challengeOf, newChallenge } from "./passkeys.ts";
 import { PasskeyError, SUPPORTED_ALGORITHMS, verifyAssertion, verifyRegistration } from "./webauthn.ts";
-import { SESSION_SECONDS, SQL, clearedCookie, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
+import { IDLE_SECONDS, MAX_SECONDS, SQL, clearedCookie, deviceLabel, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
 import { PAGE_HEADERS, asset, renderMessage, renderPage } from "./pages.ts";
 import type { App, EncryptedField, FieldKind, FieldSpec, PageRoute, PathPart, Route, ValueSource } from "./types.ts";
 import { validateBody, validatePathParam, validateValue } from "./validate.ts";
@@ -97,6 +97,7 @@ const AUTH_ROUTES: readonly AuthRoute[] = [
   { path: "/auth/password", methods: ["POST"] },
   { path: "/auth/me", methods: ["GET", "PATCH", "DELETE"] },
   { path: "/auth/audit", methods: ["GET"] },
+  { path: "/auth/sessions", methods: ["GET"] },
   { path: "/auth/verify-email", methods: ["POST"] },
   { path: "/auth/verify-email/resend", methods: ["POST"] },
   { path: "/auth/password-reset", methods: ["POST"] },
@@ -490,15 +491,19 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
   async function currentUser(req: IncomingMessage): Promise<string | undefined> {
     const token = readToken(req.headers.cookie);
     if (token === undefined) return undefined;
-    const r = await db.query(SQL.lookup, [hashToken(token)]);
+    const hash = hashToken(token);
+    const r = await db.query(SQL.lookup, [hash]);
     const id = r.rows[0]?.["user_id"];
-    return typeof id === "string" ? id : undefined;
+    if (typeof id !== "string") return undefined;
+    // Using a session keeps it alive for another 7 days (up to its 30-day maximum).
+    if (r.rows[0]?.["stale"] === true) await db.query(SQL.touch, [hash, IDLE_SECONDS]);
+    return id;
   }
 
-  async function startSession(res: ServerResponse, userId: string): Promise<void> {
+  async function startSession(req: IncomingMessage, res: ServerResponse, userId: string): Promise<void> {
     const token = newToken();
     await db.query(SQL.deleteExpired, [userId]);
-    await db.query(SQL.create, [hashToken(token), userId, SESSION_SECONDS]);
+    await db.query(SQL.create, [hashToken(token), userId, deviceLabel(req.headers["user-agent"]), IDLE_SECONDS, MAX_SECONDS]);
     res.setHeader("Set-Cookie", sessionCookie(token, secure));
   }
 
@@ -797,7 +802,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         throw e;
       }
       if (await unverified(userId)) throw notVerified();
-      await startSession(res, userId);
+      await startSession(req, res, userId);
       await audit.record({ action: "login", userId, ip, detail: "passkey" });
       const me = await db.query(auth.meSql, [userId]);
       return send(res, 200, reveal(me.rows[0] ?? {}, auth.publicKeys, auth.encrypted));
@@ -909,10 +914,27 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     return send(res, 200, { id: row["id"], role: row["role"] });
   }
 
+  /** DELETE /auth/sessions/:id: log out one of your own devices. */
+  async function logOutDevice(req: IncomingMessage, res: ServerResponse, method: string, rawId: string): Promise<number> {
+    if (method !== "DELETE") throw new HttpError(405, "method_not_allowed", `This path does not support ${method}.`, undefined, { Allow: "DELETE" });
+    checkOrigin(req, method);
+    const me = await requireUser(req);
+    if (!UUID_RE.test(rawId)) throw new HttpError(404, "not_found", "Session not found.");
+    const r = await db.query(SQL.deleteById, [rawId.toLowerCase(), me]);
+    const removed = r.rows[0]?.["token_hash"];
+    if (typeof removed !== "string") throw new HttpError(404, "not_found", "Session not found.");
+    await audit.record({ action: "session_revoked", userId: me, ip: clientIp(req) });
+    if (removed === hashToken(readToken(req.headers.cookie) ?? "")) res.setHeader("Set-Cookie", clearedCookie(secure));
+    res.writeHead(204, SECURITY_HEADERS).end();
+    return 204;
+  }
+
   async function handleAuth(req: IncomingMessage, res: ServerResponse, path: string, method: string): Promise<number> {
     const auth = app.auth;
     if (auth === null) throw new HttpError(404, "not_found", "No endpoint matches this path.");
     if (path === "/auth/passkeys" || path.startsWith("/auth/passkeys/")) return passkeys(req, res, path, method);
+    const sessionRoute = /^\/auth\/sessions\/([^/]+)$/.exec(path);
+    if (sessionRoute !== null) return logOutDevice(req, res, method, sessionRoute[1] ?? "");
     const roleRoute = /^\/auth\/users\/([^/]+)\/role$/.exec(path);
     if (roleRoute !== null && auth.roles.length > 0) return setRole(req, res, method, roleRoute[1] ?? "");
     const known = AUTH_ROUTES.find((r) => r.path === path);
@@ -1042,7 +1064,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         await audit.record({ action: "login_failed", userId, ip, detail: "email not confirmed" });
         throw notVerified();
       }
-      await startSession(res, userId);
+      await startSession(req, res, userId);
       await audit.record({ action: "login", userId, ip });
       const me = await db.query(auth.meSql, [userId]);
       return send(res, 200, reveal(me.rows[0] ?? {}, auth.publicKeys, auth.encrypted));
@@ -1100,6 +1122,12 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       res.setHeader("Set-Cookie", clearedCookie(secure));
       res.writeHead(204, SECURITY_HEADERS).end();
       return 204;
+    }
+
+    if (path === "/auth/sessions") {
+      const me = await requireUser(req);
+      const r = await db.query(SQL.list, [me, hashToken(readToken(req.headers.cookie) ?? "")]);
+      return send(res, 200, { items: r.rows.map((row) => pick(row, ["id", "device", "createdAt", "lastSeenAt", "current"])) });
     }
 
     if (path === "/auth/audit") {
@@ -1253,6 +1281,7 @@ export function startServer(app: App): void {
     if (app.auth !== null) {
       void pool.query(PASSKEY_SQL.sweepChallenges).catch(() => undefined);
       void pool.query(EMAIL_SQL.sweepTokens).catch(() => undefined);
+      void pool.query(SQL.sweep).catch(() => undefined);
     }
     void auditLog.sweep(retention).catch(() => undefined);
   };

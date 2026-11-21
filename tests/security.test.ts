@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import { PASSKEY_SQL, challengeHash, newChallenge } from "../runtime/passkeys.ts";
 import { EMAIL_SQL, MESSAGES, newEmailToken } from "../runtime/email.ts";
 import { EncryptionError, decryptValue, encryptValue, parseKeys } from "../runtime/encryption.ts";
+import { IDLE_SECONDS, MAX_SECONDS, SQL as SESSION_SQL } from "../runtime/session.ts";
 import { PasskeyError, verifyAssertion, verifyRegistration } from "../runtime/webauthn.ts";
 import { SoftAuthenticator } from "./authenticator.js";
 import { compile } from "../src/compiler.js";
@@ -415,5 +416,19 @@ api PATCH /api/notes/:id -> Note.public {
     expect(value).not.toContain("hidden");
     expect(decryptValue(keys, "notes.secret", value)).toBe("hidden");
     expect(() => decryptValue(keys, "users.phone", value)).toThrow(EncryptionError);
+  });
+});
+
+describe("security: sessions", () => {
+  it("only accepts sessions within both the idle and the maximum lifetime", () => {
+    expect(SESSION_SQL.lookup).toContain('"expires_at" > now() AND "ends_at" > now()');
+    expect(SESSION_SQL.touch).toContain('LEAST(now() + make_interval(secs => $2), "ends_at")');
+    expect(IDLE_SECONDS).toBe(7 * 24 * 3600);
+    expect(MAX_SECONDS).toBe(30 * 24 * 3600);
+  });
+
+  it("lists and logs out only your own devices, and never shows token hashes", () => {
+    expect(SESSION_SQL.list).toMatch(/^SELECT "id", "device", "created_at" AS "createdAt", "last_seen_at" AS "lastSeenAt", "token_hash" = \$2 AS "current" FROM .* WHERE "user_id" = \$1 /);
+    expect(SESSION_SQL.deleteById).toContain('WHERE "id" = $1 AND "user_id" = $2');
   });
 });

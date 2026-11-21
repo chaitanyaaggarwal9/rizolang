@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BusyError, dummyHash, hashPassword, verifyPassword } from "../runtime/password.ts";
 import { LIMIT_SQL, Limits, limitKey } from "../runtime/limits.ts";
 import { DEFAULT_STATEMENT_TIMEOUT_MS, type Db, createRequestHandler, poolConfig } from "../runtime/server.ts";
-import { SESSIONS_TABLE, clearedCookie, hashToken, newToken, readToken, sessionCookie } from "../runtime/session.ts";
+import { SESSIONS_TABLE, clearedCookie, deviceLabel, hashToken, newToken, readToken, sessionCookie } from "../runtime/session.ts";
 import type { App, FieldSpec } from "../runtime/types.ts";
 import { validateBody, validatePathParam, validateValue } from "../runtime/validate.ts";
 import { SESSIONS_TABLE as COMPILER_SESSIONS_TABLE } from "../src/emit/sql.js";
@@ -106,8 +106,22 @@ describe("sessions", () => {
   });
 
   it("sets hardened cookie attributes", () => {
-    expect(sessionCookie("t", true)).toBe("rizo_session=t; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800");
+    expect(sessionCookie("t", true)).toBe("rizo_session=t; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000");
     expect(clearedCookie(true)).toContain("Max-Age=0");
+  });
+
+  it.each([
+    ["Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36", "Chrome on macOS"],
+    ["Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", "Safari on macOS"],
+    ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36 Edg/131.0", "Edge on Windows"],
+    ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0 Mobile/15E148 Safari/604.1", "Chrome on iOS"],
+    ["Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/25.0 Chrome/121.0 Mobile Safari/537.36", "Samsung Internet on Android"],
+    ["Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0", "Firefox on Linux"],
+    ["curl/8.0", "Unknown device"],
+    [undefined, "Unknown device"],
+    ["<script>alert(1)</script> Chrome/1 '); DROP TABLE x; --", "Chrome"],
+  ])("labels the device %s as %s, only from fixed names", (ua, label) => {
+    expect(deviceLabel(ua)).toBe(label);
   });
 
   it("uses the same sessions table as the schema", () => {

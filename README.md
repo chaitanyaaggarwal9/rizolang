@@ -296,7 +296,7 @@ auth User by email
 This one line adds signup, login and logout (`/auth/signup`, `/auth/login`, `/auth/logout`), plus account management:
 - `GET` and `PATCH /auth/me` to read and edit your profile,
 - `POST /auth/password` to change your password, which logs out your other sessions,
-- `POST /auth/logout-all` to log out everywhere,
+- `POST /auth/logout-all` to log out everywhere, and `GET /auth/sessions` / `DELETE /auth/sessions/:id` to see your devices and log out one,
 - `DELETE /auth/me` to delete your account,
 - email confirmation (required before the first login) and password reset by email,
 - passkeys (fingerprint, face or device PIN), managed on the built-in `/account` page.
@@ -306,7 +306,7 @@ Changing the password and deleting the account need the current password.
 Add roles with `auth User by email roles admin, editor`, then protect endpoints with `requires role admin`, or with `requires owner author or role admin` so admins can act on anyone's records. Admins assign roles through `PUT /auth/users/:id/role`. To make the first admin, sign up, then restart the server with `RIZO_ADMIN_EMAILS=you@example.com`.
 
 **Built in:**
-- Secure session cookies, with only a hash of each token stored in the database.
+- Secure session cookies, with only a hash of each token stored in the database. Sessions end after 7 days unused, or 30 days after login.
 - Rate limits on login and signup.
 - The same response for a wrong password and an unknown account, and the same for signing up with a new or a taken email, so callers can't find out which emails are registered.
 - One-time emailed links, stored only as hashes and kept out of logs.

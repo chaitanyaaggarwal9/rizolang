@@ -92,6 +92,10 @@ const idColumn: Column = {
 /** Name of the table that holds rate-limit counters (apps with a server). */
 export const LIMITS_TABLE = "_rizo_rate_limits";
 
+/** Passkey tables (apps with an auth line). */
+export const PASSKEYS_TABLE = "_rizo_passkeys";
+export const CHALLENGES_TABLE = "_rizo_challenges";
+
 /** Name of the security audit log table (apps with a server). */
 export const AUDIT_TABLE = "_rizo_audit";
 
@@ -148,6 +152,39 @@ export function buildSchema(
         name: constraintName(t, "user_id", "fkey"), column: "user_id", refTable: auth.model.table,
         onDelete: "CASCADE", index: constraintName(t, "user_id", "idx"),
       }],
+    });
+
+    // Passkeys: only public keys are stored, so this table holds nothing secret.
+    const pk = PASSKEYS_TABLE;
+    tables.push({
+      name: pk,
+      comment: "Passkeys (WebAuthn). Only public keys: nothing here can be used to log in.",
+      columns: [
+        col("id", "TEXT", { primaryKey: true, notNull: false }),
+        col("user_id", "UUID", {}),
+        col("public_key", "TEXT", {}),
+        col("algorithm", "INTEGER", {}),
+        col("sign_count", "BIGINT", {}),
+        col("name", "TEXT", {}),
+        col("created_at", "TIMESTAMPTZ", { default: "now()" }),
+        col("last_used_at", "TIMESTAMPTZ", { notNull: false }),
+      ],
+      foreignKeys: [{
+        name: constraintName(pk, "user_id", "fkey"), column: "user_id", refTable: auth.model.table,
+        onDelete: "CASCADE", index: constraintName(pk, "user_id", "idx"),
+      }],
+    });
+    // One-time passkey challenges (hashed), valid for a few minutes.
+    tables.push({
+      name: CHALLENGES_TABLE,
+      comment: "One-time passkey challenges. Only hashes are stored; each is deleted when used.",
+      columns: [
+        col("id", "TEXT", { primaryKey: true, notNull: false }),
+        col("purpose", "TEXT", {}),
+        col("user_id", "UUID", { notNull: false }),
+        col("expires_at", "TIMESTAMPTZ", {}),
+      ],
+      foreignKeys: [],
     });
   }
   if (server) {

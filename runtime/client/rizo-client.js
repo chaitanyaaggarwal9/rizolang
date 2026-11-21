@@ -18,7 +18,9 @@
  *   | { kind: "link", label: string, path: string }
  *   | { kind: "show", endpoint: string, mode: "list" | "one", model: string, fields: FieldView[], detail: { path: string, param: string } | null }
  *   | FormItem
- *   | ButtonItem} PageItem
+ *   | ButtonItem
+ *   | { kind: "passkeyLogin" }
+ *   | { kind: "passkeys" }} PageItem
  * @typedef {{ title: string, items: PageItem[], params: Record<string, string>, loggedIn: boolean, auth: boolean }} PageData
  */
 
@@ -379,6 +381,146 @@ function buttonItem(item, params) {
   return el("div", { class: "rizo-actions" }, button, status);
 }
 
+// -------------------------------------------------------------- passkeys
+
+/** @param {ArrayBuffer | ArrayBufferView} data */
+export function toBase64url(data) {
+  const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  let text = "";
+  for (const b of bytes) text += String.fromCharCode(b);
+  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** @param {string} text */
+export function fromBase64url(text) {
+  const plain = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
+  const bytes = new Uint8Array(plain.length);
+  for (let i = 0; i < plain.length; i++) bytes[i] = plain.charCodeAt(i);
+  return bytes;
+}
+
+function passkeysSupported() {
+  return typeof window.PublicKeyCredential === "function" && typeof navigator !== "undefined" && "credentials" in navigator;
+}
+
+/** @param {unknown} e */
+function passkeyMessage(e) {
+  if (e instanceof Error && (e.name === "NotAllowedError" || e.name === "AbortError")) return "The passkey request was cancelled or timed out.";
+  if (e instanceof Error && e.name === "InvalidStateError") return "This device already has a passkey for your account.";
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** "Log in with a passkey", for the login page. */
+function passkeyLoginItem() {
+  const status = el("p", { class: "rizo-error", role: "alert" });
+  status.hidden = true;
+  if (!passkeysSupported()) return el("p", { class: "rizo-empty" }, "This browser doesn't support passkeys.");
+  const button = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-secondary" }, "Log in with a passkey"));
+  button.onclick = async () => {
+    button.disabled = true;
+    status.hidden = true;
+    try {
+      const options = /** @type {{ challenge: string, rpId: string, timeout: number }} */ (await sendJson("POST", "/auth/passkeys/login-options", {}));
+      const credential = /** @type {PublicKeyCredential | null} */ (await navigator.credentials.get({
+        publicKey: { challenge: fromBase64url(options.challenge), rpId: options.rpId, timeout: options.timeout, userVerification: "required" },
+      }));
+      if (credential === null) throw new Error("No passkey was chosen.");
+      const r = /** @type {AuthenticatorAssertionResponse} */ (credential.response);
+      await sendJson("POST", "/auth/passkeys/login", {
+        id: credential.id,
+        response: {
+          clientDataJSON: toBase64url(r.clientDataJSON),
+          authenticatorData: toBase64url(r.authenticatorData),
+          signature: toBase64url(r.signature),
+          userHandle: r.userHandle === null ? null : toBase64url(r.userHandle),
+        },
+      });
+      go(nextPath());
+    } catch (e) {
+      button.disabled = false;
+      status.textContent = passkeyMessage(e);
+      status.hidden = false;
+    }
+  };
+  return el("div", { class: "rizo-actions" }, button, status);
+}
+
+/** List, add and remove your passkeys, for the account page. */
+function passkeysItem() {
+  const box = el("section", { class: "rizo-show", "aria-live": "polite" }, el("h2", {}, "Passkeys"),
+    el("p", {}, "Log in with your fingerprint, face or device PIN instead of a password. Nothing secret is stored on this site."));
+  const list = el("ul", { class: "rizo-list" });
+  const status = el("p", { class: "rizo-error", role: "alert" });
+  status.hidden = true;
+  const fail = (/** @type {unknown} */ e) => {
+    status.textContent = passkeyMessage(e);
+    status.hidden = false;
+  };
+
+  const load = () => getJson("/auth/passkeys").then((data) => {
+    const { items } = /** @type {{ items: { id: string, name: string, createdAt: string, lastUsedAt: string | null }[] }} */ (data);
+    if (items.length === 0) {
+      list.replaceChildren(el("li", { class: "rizo-empty" }, "You have no passkeys yet."));
+      return;
+    }
+    list.replaceChildren(...items.map((p) => {
+      const remove = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-link" }, "Remove"));
+      remove.onclick = () => {
+        if (!window.confirm(`Remove the passkey "${p.name}"?`)) return;
+        sendJson("DELETE", `/auth/passkeys/${encodeURIComponent(p.id)}`, undefined).then(load, fail);
+      };
+      const used = p.lastUsedAt === null ? "never used" : `last used ${formatValue(p.lastUsedAt, "Date")}`;
+      return el("li", { class: "rizo-card" }, el("strong", {}, p.name), el("p", {}, `Added ${formatValue(p.createdAt, "Date")}, ${used}.`), remove);
+    }));
+  }, fail);
+
+  if (!passkeysSupported()) {
+    box.append(list, el("p", { class: "rizo-empty" }, "This browser doesn't support adding passkeys."));
+    load();
+    return box;
+  }
+  const nameInput = /** @type {HTMLInputElement} */ (el("input", { id: "rizo-passkey-name", type: "text", maxlength: "60" }));
+  nameInput.value = "My device";
+  const add = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-submit" }, "Add a passkey"));
+  add.onclick = async () => {
+    add.disabled = true;
+    status.hidden = true;
+    try {
+      const o = /** @type {{ challenge: string, rp: { id: string, name: string }, user: { id: string, name: string, displayName: string },
+        pubKeyCredParams: { type: "public-key", alg: number }[], timeout: number, excludeCredentials: { type: "public-key", id: string }[],
+        authenticatorSelection: AuthenticatorSelectionCriteria }} */ (await sendJson("POST", "/auth/passkeys/register-options", {}));
+      const credential = /** @type {PublicKeyCredential | null} */ (await navigator.credentials.create({
+        publicKey: {
+          challenge: fromBase64url(o.challenge),
+          rp: o.rp,
+          user: { ...o.user, id: fromBase64url(o.user.id) },
+          pubKeyCredParams: o.pubKeyCredParams,
+          timeout: o.timeout,
+          attestation: "none",
+          authenticatorSelection: o.authenticatorSelection,
+          excludeCredentials: o.excludeCredentials.map((c) => ({ type: c.type, id: fromBase64url(c.id) })),
+        },
+      }));
+      if (credential === null) throw new Error("No passkey was created.");
+      const r = /** @type {AuthenticatorAttestationResponse} */ (credential.response);
+      await sendJson("POST", "/auth/passkeys", {
+        name: nameInput.value.trim() || "Passkey",
+        response: { clientDataJSON: toBase64url(r.clientDataJSON), attestationObject: toBase64url(r.attestationObject) },
+      });
+      await load();
+    } catch (e) {
+      fail(e);
+    } finally {
+      add.disabled = false;
+    }
+  };
+  box.append(list,
+    el("div", { class: "rizo-field" }, el("label", { for: "rizo-passkey-name" }, "Name for a new passkey"), nameInput),
+    el("div", { class: "rizo-actions" }, add), status);
+  load();
+  return box;
+}
+
 /**
  * The menu at the top of every page of an app with accounts.
  * @param {PageData} data
@@ -386,6 +528,7 @@ function buttonItem(item, params) {
 function menu(data) {
   const nav = el("nav", { class: "rizo-nav" }, el("a", { href: "/" }, "Home"));
   if (data.loggedIn) {
+    nav.append(el("a", { href: "/account" }, "Account"));
     const logout = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-link" }, "Log out"));
     logout.onclick = () => {
       logout.disabled = true;
@@ -410,6 +553,8 @@ export function renderPage(data) {
     else if (item.kind === "link") main.append(el("p", {}, el("a", { href: fillPath(item.path, data.params) }, item.label)));
     else if (item.kind === "form") main.append(formItem(item, data.params));
     else if (item.kind === "button") main.append(buttonItem(item, data.params));
+    else if (item.kind === "passkeyLogin") main.append(passkeyLoginItem());
+    else if (item.kind === "passkeys") main.append(passkeysItem());
     else main.append(showItem(item, data.params));
   }
   return main;

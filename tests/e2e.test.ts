@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRequestHandler, grantAdmins } from "../runtime/server.ts";
 import type { App } from "../runtime/types.ts";
 import { compile } from "../src/compiler.js";
+import { SoftAuthenticator } from "./authenticator.js";
 import { buildApp } from "../src/emit/routes.js";
 
 const DATABASE_URL = process.env["RIZO_TEST_DATABASE_URL"];
@@ -528,6 +529,66 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect(r.headers.get("cache-control")).toBe("no-store");
     expect(r.headers.get("content-security-policy")).toContain("default-src 'none'");
     expect(r.headers.get("x-frame-options")).toBe("DENY");
+  });
+
+  describe("passkeys", () => {
+    const authenticator = new SoftAuthenticator();
+    const site = () => ({ origin: base, rpId: "127.0.0.1" });
+    const fromSite = () => ({ Origin: base });
+    let registration: ReturnType<SoftAuthenticator["register"]>;
+
+    it("registers a passkey for the logged-in account", async () => {
+      expect((await call("POST", "/auth/passkeys/register-options", { body: {}, headers: fromSite() })).status).toBe(401);
+      const options = await call("POST", "/auth/passkeys/register-options", { cookie: alice, body: {}, headers: fromSite() });
+      const o = options.body as { challenge: string; rp: { id: string }; user: { id: string; name: string }; authenticatorSelection: { userVerification: string } };
+      expect(o.rp.id).toBe("127.0.0.1");
+      // The example's email is private, so it is never sent, not even to its owner.
+      expect(o.user).toMatchObject({ id: Buffer.from(aliceId).toString("base64url"), name: "127.0.0.1 account" });
+      expect(o.authenticatorSelection.userVerification).toBe("required");
+      registration = authenticator.register({ challenge: o.challenge, ...site(), userId: o.user.id });
+      const r = await call("POST", "/auth/passkeys", { cookie: alice, body: { name: "Test key", ...registration }, headers: fromSite() });
+      expect(r).toMatchObject({ status: 201, body: { id: registration.id, name: "Test key" } });
+      const list = await call("GET", "/auth/passkeys", { cookie: alice });
+      expect((list.body as { items: { id: string; name: string; lastUsedAt: null }[] }).items).toMatchObject([{ id: registration.id, name: "Test key", lastUsedAt: null }]);
+      // Only the public key is stored.
+      const row = (await pool.query('SELECT * FROM "_rizo_passkeys"')).rows[0];
+      expect(Object.keys(row).sort()).toEqual(["algorithm", "created_at", "id", "last_used_at", "name", "public_key", "sign_count", "user_id"]);
+    });
+
+    it("refuses to reuse a registration (the challenge is single-use)", async () => {
+      const r = await call("POST", "/auth/passkeys", { cookie: alice, body: { name: "Again", ...registration }, headers: fromSite() });
+      expect(r).toMatchObject({ status: 400, body: { error: { code: "passkey_failed" } } });
+    });
+
+    it("logs in with the passkey, and refuses a replayed login", async () => {
+      const o = (await call("POST", "/auth/passkeys/login-options", { body: {}, headers: fromSite() })).body as { challenge: string; rpId: string };
+      expect(o.rpId).toBe("127.0.0.1");
+      const assertion = authenticator.login({ challenge: o.challenge, ...site() });
+      const r = await call("POST", "/auth/passkeys/login", { body: assertion, headers: fromSite() });
+      expect(r.status).toBe(200);
+      expect(r.cookie).toMatch(/^rizo_session=/);
+      expect(((await call("GET", "/auth/me", { cookie: r.cookie ?? "" })).body as { id: string }).id).toBe(aliceId);
+      expect((await call("POST", "/auth/passkeys/login", { body: assertion, headers: fromSite() })).status).toBe(400);
+    });
+
+    it("refuses passkeys used from another site, forged ones and logins without a browser", async () => {
+      const o = (await call("POST", "/auth/passkeys/login-options", { body: {}, headers: fromSite() })).body as { challenge: string };
+      expect((await call("POST", "/auth/passkeys/login", { body: authenticator.login({ challenge: o.challenge, ...site() }), headers: { Origin: "https://evil.example" } })).status).toBe(403);
+      const o2 = (await call("POST", "/auth/passkeys/login-options", { body: {}, headers: fromSite() })).body as { challenge: string };
+      const forged = new SoftAuthenticator().login({ challenge: o2.challenge, ...site() });
+      expect((await call("POST", "/auth/passkeys/login", { body: { ...forged, id: registration.id }, headers: fromSite() })).status).toBe(401);
+      expect((await call("POST", "/auth/passkeys/login-options", { body: {} })).status).toBe(400);
+    });
+
+    it("lets only the owner remove a passkey, and a removed passkey stops working", async () => {
+      const path = `/auth/passkeys/${registration.id}`;
+      expect((await call("DELETE", path, { cookie: bob, headers: fromSite() })).status).toBe(404);
+      expect((await call("DELETE", path, { cookie: alice, headers: fromSite() })).status).toBe(204);
+      const o = (await call("POST", "/auth/passkeys/login-options", { body: {}, headers: fromSite() })).body as { challenge: string };
+      expect((await call("POST", "/auth/passkeys/login", { body: authenticator.login({ challenge: o.challenge, ...site() }), headers: fromSite() })).status).toBe(401);
+      const actions = (await pool.query(`SELECT "action", "detail" FROM "_rizo_audit" WHERE "action" LIKE 'passkey%' OR "detail" = 'passkey' ORDER BY "at", "id"`)).rows;
+      expect(actions.map((a) => `${a.action}:${a.detail ?? ""}`)).toEqual(["passkey_added:Test key", "login:passkey", "login_failed:passkey", "passkey_removed:", "login_failed:passkey"]);
+    });
   });
 
   it("rate-limits repeated failed logins for an account", async () => {

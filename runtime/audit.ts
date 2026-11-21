@@ -21,6 +21,8 @@ export type AuditAction =
   | "password_check_failed"
   | "account_deleted"
   | "role_changed"
+  | "passkey_added"
+  | "passkey_removed"
   | "admin_granted"
   | "record_deleted";
 

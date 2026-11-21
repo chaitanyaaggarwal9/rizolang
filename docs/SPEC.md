@@ -155,11 +155,23 @@ It adds these endpoints. Paths under `/auth` are reserved.
 | `POST /auth/logout-all` | none                          | 204. Every session of the account is deleted, including this one |
 | `DELETE /auth/me`   | `{ "password": ... }`             | 204, and the account and its sessions are deleted. 409 if other records still link to it |
 | `GET /auth/audit`   | `?account=<id>&limit=<1–500>` (optional) | Admins only (needs `roles admin`): the newest security audit entries, `{ "items": [...] }` |
+| `POST /auth/passkeys/register-options` | none | Login required. 200 with WebAuthn creation options for this account |
+| `POST /auth/passkeys` | `{ "name": ..., "credential": ... }` | Login required. 201 `{ "id", "name", "createdAt", "lastUsedAt" }`. 409 if the passkey is already added or the account has 20 |
+| `GET /auth/passkeys` | none | Login required. 200 `{ "items": [...] }`, this account's passkeys |
+| `DELETE /auth/passkeys/:id` | none | Login required. 204, or 404 if it isn't one of your passkeys |
+| `POST /auth/passkeys/login-options` | none | 200 with WebAuthn request options |
+| `POST /auth/passkeys/login` | `{ "credential": ... }` | 200 with `User.public`, or 401. Counts toward the login limits |
 
 **How login works**
 - Passwords are hashed with scrypt (N=2^15, r=8, p=3) and a random salt.
 - A wrong password and an unknown email give the same 401 response, in about the same time.
 - After 5 failed logins for an account, or 20 from one address, within 15 minutes, login answers 429. Signups are limited to 10 per hour per address.
+
+**Passkeys.** Every app with an `auth` line also supports passkeys (fingerprint, face or device PIN), alongside passwords. A logged-in user adds one on the built-in `/account` page (or through the endpoints above), then logs in with it on `/login`. Nothing in the `.rz` file changes.
+- The server checks each step as WebAuthn requires: a random challenge that is used once and expires after 5 minutes, the site's origin and id, that the user was verified, the signature, and that the signature counter went up (a counter that goes backwards means the key was copied, and login is refused).
+- The site is taken from the request's `Origin` header, so requests without one get 400. Serve the app on its real domain (passkeys need HTTPS, or `localhost`).
+- Only ES256 and RS256 keys are accepted. Attestation is not checked, so any authenticator can be added.
+- The server stores only the public key. Passkeys are deleted with their account.
 
 ### 4.1 Roles
 
@@ -430,7 +442,7 @@ page /posts/:id/delete {
 ```
 
 **Rules:**
-- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. `/login` and `/signup` are reserved for the built-in pages.
+- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. `/login`, `/signup` and `/account` are reserved for the built-in pages.
 - **Parameters:** a page's `:parameters` fill in the parameters of the endpoint it shows, by name. Every page parameter must be used (RZ0323).
 - **Never more open than its data (RZ0335):**
   - A page that uses (shows, or has a form or button for) a `requires login` endpoint must also `requires login`.
@@ -449,8 +461,9 @@ page /posts/:id/delete {
   - When another page shows one record of the same model (for example `page /posts/:id { show GET /api/posts/:id }`), each card links to it.
 
 **Built-in pages.** In an app with an `auth` line and at least one page:
-- `/login` and `/signup` are generated, with forms for `/auth/login` and `/auth/signup`.
-- Every page shows a menu with a link home, plus "Log in" and "Sign up", or "Log out".
+- `/login` and `/signup` are generated, with forms for `/auth/login` and `/auth/signup`. `/login` also has "Log in with a passkey".
+- `/account` (login required) lists the user's passkeys, and adds and removes them.
+- Every page shows a menu with a link home, plus "Log in" and "Sign up", or "Account" and "Log out".
 - A page that needs a login sends logged-out visitors to `/login?next=<the page>`. After logging in they return there. `next` is followed only if it is a path on this site.
 
 **How pages are served:**
@@ -569,6 +582,7 @@ These are enforced by the compiler and the runtime, and covered by `tests/securi
 8. Every endpoint is rate-limited, with counters shared by all server processes. Login, signup and password checks have their own stricter limits. No database query runs longer than the statement timeout (5 seconds by default). Security events are recorded in an audit log that never contains secrets.
 9. When there is any compile error, or a change would delete data without `--allow-data-loss`, no output is written.
 10. Pages contain no HTML or code. All text is inserted as text, links stay on the site, and pages are served with a strict Content-Security-Policy. A page is never more open than the data it shows.
+11. A passkey works only on the site that created it, only once per challenge, and only with the user verified. The server never stores a private key, and a copied passkey (counter going backwards) is refused.
 
 ---
 

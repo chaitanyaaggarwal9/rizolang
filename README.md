@@ -360,6 +360,7 @@ The compiler enforces these rules:
 | CSRF | `SameSite=Lax` cookies, JSON-only bodies, and `Sec-Fetch-Site` plus `Origin` checks on every POST, PUT, PATCH and DELETE. |
 | Slow queries and table scans | The compiler creates the right index for every list's filters and order (about 280× faster on 200,000 rows in our test), and every query is cancelled after 5 seconds. |
 | Bots, scrapers and brute force | Every endpoint is rate-limited (120/min by default, `limit 10 per minute` to tighten), with counters shared across servers in PostgreSQL. Login, signup and password checks have stricter limits, and password hashing is queued so a login flood can't stall the server. |
+| Phishing and stolen passwords | Built-in passkeys (fingerprint, face or device PIN) on every app with a login. A passkey only works on the site that created it, and the server keeps only the public key. |
 | Account enumeration at login | Identical responses and timing for an unknown account and a wrong password. |
 | Accidental data loss | Migrations that would drop data are refused unless you pass `--allow-data-loss`. Each migration runs in a transaction, and edited migrations are detected. |
 | Attacks nobody notices | A security audit log records logins, failed and blocked logins, password and role changes, and deletes, with no secrets. Admins read it at `GET /auth/audit`, and entries are kept for a year. |

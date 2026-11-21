@@ -4,8 +4,13 @@
  *   2. Invalid syntax produces a clear error with the exact line and column.
  *   3. Unknown field types are rejected and no output is produced.
  *   4. Names cannot inject SQL.
+ *   5. Passkeys work only on their own site and are never copied (SPEC §7.11).
  */
+import { createPublicKey, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { PASSKEY_SQL, challengeHash, newChallenge } from "../runtime/passkeys.ts";
+import { PasskeyError, verifyAssertion, verifyRegistration } from "../runtime/webauthn.ts";
+import { SoftAuthenticator } from "./authenticator.js";
 import { compile } from "../src/compiler.js";
 import { FIELD_TYPE_NAMES, FIELD_TYPES } from "../src/types.js";
 import { buildApp } from "../src/emit/routes.js";
@@ -304,5 +309,47 @@ api GET /users/:id -> User.public {
   it("keeps private fields out of public types", () => {
     expect(propertyNames(interfaceBody(result.output.typescript, "UserPublic"))).toEqual(["id", "name"]);
     expect(propertyNames(interfaceBody(result.output.typescript, "PostPublic"))).not.toContain("secretNote");
+  });
+});
+
+describe("security: passkeys", () => {
+  const SITE = { rpId: "blog.example", origin: "https://blog.example" };
+  const fresh = () => Buffer.from(randomBytes(32)).toString("base64url");
+
+  it("never puts a private login field into the passkey prompt", () => {
+    const r = compileOk("auth User by email\nmodel User {\n  email: Email unique private\n  password: Password\n}\n");
+    expect(buildApp(r.apis, r.auth).auth?.nameSql).toBe("");
+    const visible = compileOk("auth User by email\nmodel User {\n  email: Email unique\n  password: Password\n}\n");
+    expect(buildApp(visible.apis, visible.auth).auth?.nameSql).toBe('SELECT "email" AS "name" FROM "users" WHERE "id" = $1');
+  });
+
+  it("works only on the site that created it, for its own challenge, with the user verified", () => {
+    const authenticator = new SoftAuthenticator();
+    const challenge = fresh();
+    const reg = verifyRegistration(authenticator.register({ challenge, ...SITE, userId: "u" }).response, { challenge, ...SITE });
+    const stored = { publicKey: reg.publicKey, algorithm: reg.algorithm, signCount: reg.signCount };
+    const c = fresh();
+    for (const extra of [{ origin: "https://evil.example" }, { rpId: "evil.example" }, { noUserVerification: true }]) {
+      expect(() => verifyAssertion(authenticator.login({ challenge: c, ...SITE }, extra).response, stored, { challenge: c, ...SITE })).toThrow(PasskeyError);
+    }
+    expect(() => verifyAssertion(authenticator.login({ challenge: fresh(), ...SITE }).response, stored, { challenge: c, ...SITE })).toThrow(PasskeyError);
+    expect(verifyAssertion(authenticator.login({ challenge: c, ...SITE }).response, stored, { challenge: c, ...SITE })).toBeGreaterThan(0);
+  });
+
+  it("stores only a public key and refuses a copied passkey", () => {
+    const authenticator = new SoftAuthenticator();
+    const challenge = fresh();
+    const reg = verifyRegistration(authenticator.register({ challenge, ...SITE, userId: "u" }).response, { challenge, ...SITE });
+    expect(createPublicKey({ key: Buffer.from(reg.publicKey, "base64url"), format: "der", type: "spki" }).type).toBe("public");
+    const c = fresh();
+    const login = authenticator.login({ challenge: c, ...SITE }).response;
+    expect(() => verifyAssertion(login, { ...reg, signCount: 10 }, { challenge: c, ...SITE })).toThrow("copied");
+  });
+
+  it("stores challenges only as hashes, and uses each one once", () => {
+    const { challenge, hash } = newChallenge();
+    expect(hash).not.toContain(challenge);
+    expect(hash).toBe(challengeHash(challenge));
+    expect(PASSKEY_SQL.useChallenge).toMatch(/^DELETE .* RETURNING "id"$/);
   });
 });

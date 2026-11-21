@@ -100,10 +100,13 @@ Releases are published to npm by [`.github/workflows/publish.yml`](.github/workf
 Publishing the release starts the workflow. It:
 1. checks that the tag matches `package.json`,
 2. runs the type check and the tests, and builds the compiler,
-3. publishes to npm.
+3. **stages** the version on npm.
+
+Then the maintainer approves the staged version on npmjs.com with two-factor authentication (or runs `npm stage list rizolang` and then `npm stage approve <id>`). Nothing is live on npm until it's approved.
 
 How it stays secure:
 - It uses npm trusted publishing: no npm token is stored anywhere.
+- The trusted publisher may only stage versions, so even a compromised workflow or GitHub account can't publish without the maintainer's npm two-factor approval.
 - npm adds a provenance attestation, which proves the package was built from this repository.
 - It runs in the `npm` GitHub environment, which only accepts `v*` tags.
 - Release tags are protected, so they can't be moved or deleted.

@@ -1,8 +1,10 @@
 name: Publish to npm
 
-# Publishes the compiler to npm when a GitHub release is published.
+# Stages the compiler on npm when a GitHub release is published.
 # Uses npm trusted publishing (OIDC): no npm token is stored anywhere, and npm
 # attaches a provenance attestation proving the package was built here.
+# The trusted publisher may only *stage* versions: a staged version goes live
+# only after the maintainer approves it on npm with two-factor authentication.
 on:
   release:
     types: [published]
@@ -53,5 +55,8 @@ jobs:
         run: npm install --global --ignore-scripts npm@11.21.2
       - name: Show what will be published
         run: npm pack --dry-run --ignore-scripts
-      - name: Publish
-        run: npm publish --access public --ignore-scripts
+      - name: Stage on npm (goes live only after the maintainer approves it)
+        run: npm stage publish --ignore-scripts
+      - name: How to approve
+        run: |
+          echo "::notice::rizolang@$(node -p 'require("./package.json").version') is staged on npm. Approve it at https://www.npmjs.com/package/rizolang (or: npm stage list rizolang, then npm stage approve <id>). It is not live until approved."

@@ -456,7 +456,7 @@ function authSpec(auth: ResolvedAuth): AuthSpec {
       // The account and its "email not confirmed yet" mark are created in one statement.
       sql: `WITH "created" AS (INSERT INTO ${table} (${cols.join(", ")}) VALUES (${vals.join(", ")}) RETURNING ${select.sql}), ` +
         `"pending" AS (INSERT INTO ${q(UNVERIFIED_TABLE)} ("user_id") SELECT "id" FROM "created") ` +
-        `SELECT ${select.keys.map(q).join(", ")} FROM "created"`,
+        `SELECT ${select.keys.map(quoteKey).join(", ")} FROM "created"`,
       values: p.values,
     },
     loginKey: auth.loginField.name,

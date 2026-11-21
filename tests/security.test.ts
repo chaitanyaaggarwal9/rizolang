@@ -371,6 +371,14 @@ describe("security: email confirmation and reset", () => {
     );
   });
 
+  it("handles camelCase fields on the account model (regression: the compiler crashed on them)", () => {
+    const r = compileOk("auth User by email\nmodel User {\n  email: Email unique\n  password: Password\n  displayName: Text\n  birthDate: Date optional private\n}\n");
+    expect(buildApp(r.apis, r.auth).auth?.signup.sql).toBe(
+      'WITH "created" AS (INSERT INTO "users" ("email", "password_hash", "display_name", "birth_date") VALUES ($1, $2, $3, $4) RETURNING "id", "email", "display_name" AS "displayName"), ' +
+        '"pending" AS (INSERT INTO "_rizo_unverified" ("user_id") SELECT "id" FROM "created") SELECT "id", "email", "displayName" FROM "created"',
+    );
+  });
+
   it("uses each emailed link once, only for its purpose, and only before it expires", () => {
     expect(EMAIL_SQL.useToken).toBe('DELETE FROM "_rizo_email_tokens" WHERE "id" = $1 AND "purpose" = $2 AND "expires_at" > now() RETURNING "user_id"');
   });

@@ -732,6 +732,22 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 
 ---
 
+### Auditing: `rizolang audit`
+
+`rizolang audit app.rz` reviews a file that builds and reports choices that are allowed but often a mistake. It writes nothing. Findings use the error format, with `warning` or `note` instead of `error`, and `--json` prints them as JSON (`findings`, each with `level`, and a `summary`). It exits with 1 when there are warnings (notes don't count), so it can run in CI.
+
+| Code | Level   | Finding |
+|------|---------|---------|
+| RA01 | warning | A `public` endpoint that creates, changes or deletes data |
+| RA02 | warning | A field whose name looks like personal data (phone, address, birth date, ID or card number, salary, health…) or a secret (token, API key, PIN) that isn't `private` |
+| RA03 | note    | Such a field that is `private` but not `encrypted` |
+| RA04 | warning | An `Email` field that isn't `private`, on a model that public endpoints return |
+| RA05 | warning | A public `list` of the auth model |
+| RA06 | warning | A `requires login` update or delete with no owner or role check |
+| RA07 | note    | A public endpoint allowing more than 300 requests a minute |
+
+---
+
 ## 9. Common mistakes
 
 The examples below use the `User` and `Post` models from §3.

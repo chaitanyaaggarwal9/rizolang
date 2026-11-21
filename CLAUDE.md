@@ -53,7 +53,8 @@ Rizo Lang is a secure, simple, full-stack web language for the AI era. Source fi
 - `npm test`: run all tests (`RIZO_TEST_DATABASE_URL=postgres://... npm test` also runs the end-to-end tests)
 - `npm run typecheck`: run strict type checking over src and tests
 - `npm run build`: compile the compiler to `build/`
-- `node build/src/bin.js build examples/blog.rz`: try it out
+- `node build/src/bin.js build examples/blog.rz`: try it out (`--json` for JSON output)
+- `node build/src/bin.js audit examples/blog.rz`: review a file for risky choices
 
 ## Current milestone
 
@@ -73,4 +74,4 @@ Milestone 5 (hardening) is done: rate limits on every endpoint, with sliding win
 
 Milestone 6 (accounts) is done: passkeys, required email confirmation and password reset through Resend (`RIZO_PUBLIC_URL`, `RIZO_EMAIL_API_KEY`, `RIZO_EMAIL_FROM`, or `RIZO_EMAIL_DEV=1`), signup that doesn't reveal existing emails, the `encrypted` modifier (`RIZO_ENCRYPTION_KEYS`, `node reencrypt.ts`), and sessions that end after 7 days idle or 30 days in total, with a device list.
 
-Milestone 7 (AI agents) is in progress: API tokens scoped per endpoint, expiring within 90 days (decided by the maintainer), then OpenAPI output, `--json`, and `rizolang audit`. Milestone 8: privacy rules per country the developer declares. The maintainer wants a single final release after Milestone 8. Show a plan before each milestone.
+Milestone 7 (AI agents) is done: API tokens scoped per endpoint, expiring within 90 days (decided by the maintainer), `openapi.json`, `rizolang build --json`, and `rizolang audit` (RA01–RA07). Next: Milestone 8, privacy rules per country the developer declares, then the single final release. The maintainer wants a single final release after Milestone 8. Show a plan before each milestone.

@@ -45,9 +45,9 @@ export function sourceLines(source: string): string[] {
   return source.split(/\r\n|\r|\n/);
 }
 
-export function formatDiagnostic(d: Diagnostic, source?: string): string {
+export function formatDiagnostic(d: Diagnostic, source?: string, level: "error" | "warning" | "note" = "error"): string {
   const out: string[] = [
-    `${d.file}:${d.span.line}:${d.span.col} error ${d.code}: ${d.message}`,
+    `${d.file}:${d.span.line}:${d.span.col} ${level} ${d.code}: ${d.message}`,
   ];
   if (source !== undefined) {
     const text = sourceLines(source)[d.span.line - 1];

@@ -427,7 +427,9 @@ The full list of error codes is in the [spec](docs/SPEC.md#8-errors).
 
 Rizo Lang is designed to be written by AI models as well as people:
 - [`docs/SPEC-COMPACT.md`](docs/SPEC-COMPACT.md) is under 1,500 words. Paste it into any model's system prompt.
-- Error messages include a `fix:` line that a model can apply directly.
+- Error messages include a `fix:` line that a model can apply directly, and `rizolang build app.rz --json` returns them as JSON.
+- `rizolang audit app.rz` reviews a file for risky choices that are allowed but often a mistake (public writes, personal data that isn't `private`, loose rate limits…), each with its location and a fix. It exits with 1 on warnings, so it can run in CI.
+- Every generated app describes its API in `openapi.json` (also served at `/_rizo/openapi.json`), and AI agents call it with API tokens limited to the endpoints you choose.
 - The Rizo VS Code extension ([rizobot.com](https://rizobot.com)) will detect `.rz` files and load the spec automatically.
 
 ---
@@ -440,6 +442,10 @@ Rizo Lang is in **early development**, so expect the language to change before 1
 - [x] **Milestone 2:** `auth`, `api` endpoints, links, `private` fields and a generated Node.js server ([v0.2.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.2.0))
 - [x] **Milestone 3:** roles, pagination, account management and migrations ([v0.3.1](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.3.1))
 - [x] **Milestone 4:** pages, forms, delete buttons, and built-in login and signup pages ([v0.4.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.4.0))
+- [x] **Milestone 5:** hardening: rate limits on every endpoint, automatic indexes, query time limits, a security audit log
+- [x] **Milestone 6:** accounts: passkeys, email confirmation and password reset, `encrypted` fields, sessions and devices
+- [x] **Milestone 7:** AI agents: scoped API tokens, OpenAPI, `build --json`, `rizolang audit`
+- [ ] **Milestone 8:** privacy rules for the countries you declare, then the next release
 - [x] Publish the compiler to npm ([`rizolang`](https://www.npmjs.com/package/rizolang))
 - [ ] A VS Code extension with syntax highlighting
 

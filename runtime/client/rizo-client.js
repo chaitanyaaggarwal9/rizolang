@@ -173,17 +173,22 @@ function showItem(item, params) {
 }
 
 /**
- * Go to a page on this site. Anything else is refused, so a crafted
- * "?next=" can never send people to another site.
+ * Go to a page on this site. Only the path changes: setting
+ * location.pathname can never switch to another site or run a
+ * "javascript:" URL, and anything that isn't a plain internal path
+ * goes home instead. So a crafted "?next=" can't send people elsewhere.
  * @param {string} path
  */
 export function go(path) {
-  window.location.assign(isInternalPath(path) ? path : "/");
+  window.location.pathname = isInternalPath(path) ? path : "/";
 }
+
+/** The "?next=" the page was opened with, read once by start(). */
+let openedWithNext = /** @type {string | null} */ (null);
 
 /** The "?next=" page to return to after logging in, if it is on this site. */
 export function nextPath() {
-  const next = new URLSearchParams(window.location.search).get("next");
+  const next = openedWithNext ?? new URLSearchParams(window.location.search).get("next");
   return next !== null && isInternalPath(next) ? next : "/";
 }
 
@@ -416,6 +421,11 @@ export function start() {
   const app = document.getElementById("app");
   if (block === null || app === null) return;
   const data = /** @type {PageData} */ (JSON.parse(block.textContent ?? "{}"));
+  // Keep "?next=" in memory and take it out of the address bar, so later
+  // navigation (which only changes the path) lands on a clean address.
+  const next = new URLSearchParams(window.location.search).get("next");
+  openedWithNext = next;
+  if (next !== null) window.history.replaceState(null, "", window.location.pathname);
   app.replaceWith(renderPage(data));
 }
 

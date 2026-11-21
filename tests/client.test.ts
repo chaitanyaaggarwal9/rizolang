@@ -72,9 +72,22 @@ let replaced: FakeElement | undefined;
 let focused: FakeElement | undefined;
 const navigation: string[] = [];
 let confirmAnswer = true;
+const fakeLocation = {
+  search: "",
+  current: "/",
+  get pathname(): string {
+    return this.current;
+  },
+  /** Setting pathname navigates, like in a browser. */
+  set pathname(path: string) {
+    navigation.push(path);
+  },
+};
+const cleaned: string[] = [];
 const fakeWindow = {
-  location: { search: "", pathname: "/", assign: (url: string) => navigation.push(url) },
+  location: fakeLocation,
   confirm: () => confirmAnswer,
+  history: { replaceState: (_s: unknown, _t: string, url: string) => cleaned.push(url) },
 };
 const byId = new Map<string, unknown>();
 
@@ -104,8 +117,8 @@ afterEach(() => {
   focused = undefined;
   navigation.length = 0;
   confirmAnswer = true;
-  fakeWindow.location.search = "";
-  fakeWindow.location.pathname = "/";
+  fakeLocation.search = "";
+  fakeLocation.current = "/";
 });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -246,6 +259,20 @@ describe("rendering a page", () => {
     expect(alert?.children[0]).toBeInstanceOf(FakeText);
   });
 
+  it("remembers ?next= and removes it from the address bar", () => {
+    fakeLocation.search = "?next=%2Fposts%2F7";
+    fakeLocation.current = "/login";
+    byId.set("rizo-page", { textContent: JSON.stringify({ title: "Log in", items: [], params: {}, loggedIn: false, auth: true }) });
+    byId.set("app", new FakeElement("main"));
+    client.start();
+    expect(cleaned).toEqual(["/login"]);
+    fakeLocation.search = "";
+    expect(client.nextPath()).toBe("/posts/7");
+    client.start(); // opened without ?next=: nothing is remembered
+    expect(client.nextPath()).toBe("/");
+    expect(cleaned).toEqual(["/login"]);
+  });
+
   it("starts from the page's JSON data block", () => {
     byId.set("rizo-page", { textContent: JSON.stringify({ title: "Hi", items: [], params: {}, loggedIn: false }) });
     byId.set("app", new FakeElement("main"));
@@ -261,7 +288,7 @@ describe("runtime source", () => {
     .filter((line) => !line.trimStart().startsWith("//") && !line.trimStart().startsWith("*"))
     .join("\n");
 
-  it.each(["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "setAttribute(\"on", "srcdoc"])(
+  it.each(["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "setAttribute(\"on", "srcdoc", "location.assign", "location.href", "location.replace"])(
     "never uses %s",
     (api) => {
       expect(source).not.toContain(api);
@@ -288,7 +315,7 @@ describe("navigation", () => {
     ["?next=javascript%3Aalert(1)", "/"],
     ["", "/"],
   ])("follows ?next= only to this site (%j)", (search, expected) => {
-    fakeWindow.location.search = search;
+    fakeLocation.search = search;
     expect(client.nextPath()).toBe(expected);
   });
 });
@@ -357,7 +384,7 @@ describe("forms", () => {
 
   it("goes to ?next= after logging in, only if it is on this site", async () => {
     stubSend({ id: "u1" });
-    fakeWindow.location.search = "?next=%2F%2Fevil.example";
+    fakeLocation.search = "?next=%2F%2Fevil.example";
     const page = formPage({ endpoint: "/auth/login", then: null });
     all(page).find((e) => e.tagName === "form")?.onsubmit?.({ preventDefault: () => undefined });
     await flush();
@@ -388,7 +415,7 @@ describe("buttons and the menu", () => {
   });
 
   it("offers log in and sign up, returning to the current page", () => {
-    fakeWindow.location.pathname = "/posts/7";
+    fakeLocation.current = "/posts/7";
     const page = client.renderPage({ title: "x", params: {}, loggedIn: false, auth: true, items: [] }) as unknown as FakeElement;
     expect(all(page).filter((e) => e.tagName === "a").map((a) => a.attributes.get("href"))).toEqual(["/", "/login?next=%2Fposts%2F7", "/signup"]);
   });

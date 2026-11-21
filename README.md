@@ -186,8 +186,9 @@ curl -b jar -H 'Content-Type: application/json' \
   -d '{"title":"Hello","body":"First post","published":true}' \
   http://127.0.0.1:3000/posts
 
-# Anyone can list published posts
-curl http://127.0.0.1:3000/posts
+# Anyone can list published posts, one page at a time
+curl 'http://127.0.0.1:3000/posts?limit=10'
+# → { "items": [...], "next": "<cursor>" }; get the next page with ?limit=10&after=<cursor>
 ```
 
 > Session cookies are marked `Secure`, so they are only sent over https. Browsers and curl treat `localhost` and `127.0.0.1` as secure, so the steps above work locally as written. Only if you test over plain http on another host, start the server with `RIZO_DEV_INSECURE_COOKIES=1`. Never use this setting in production.
@@ -201,6 +202,7 @@ curl http://127.0.0.1:3000/posts
 | `RIZO_ALLOWED_ORIGINS` | none | Extra origins allowed to send POST, PUT, PATCH or DELETE requests (comma-separated) |
 | `RIZO_TRUST_PROXY` | off | `1` to read the client IP from `X-Forwarded-For` (only behind a trusted proxy) |
 | `RIZO_DB_POOL_SIZE` | `10` | Maximum number of database connections |
+| `RIZO_ADMIN_EMAILS` | none | Makes these **existing** accounts admins at startup (sign up first) |
 | `RIZO_DEV_INSECURE_COOKIES` | off | `1` to allow cookies over http. For local development only |
 
 ---
@@ -249,6 +251,8 @@ auth User by email
 
 This one line adds `POST /auth/signup`, `POST /auth/login`, `POST /auth/logout` and `GET /auth/me`.
 
+Add roles with `auth User by email roles admin, editor`, then protect endpoints with `requires role admin`, or with `requires owner author or role admin` so admins can act on anyone's records. Admins assign roles through `PUT /auth/users/:id/role`. To make the first admin, sign up, then restart the server with `RIZO_ADMIN_EMAILS=you@example.com`.
+
 **Built in:**
 - Secure session cookies, with only a hash of each token stored in the database.
 - Rate limits on login and signup.
@@ -259,7 +263,8 @@ This one line adds `POST /auth/signup`, `POST /auth/login`, `POST /auth/logout` 
 ```
 api <METHOD> <path> -> Model.public {
   public | requires login
-  requires owner <link field>        // optional
+  requires role admin, editor        // optional
+  requires owner <link field>        // optional; "or role admin" lets admins act too
   return db.Model.<action>(...)
 }
 ```
@@ -267,7 +272,7 @@ api <METHOD> <path> -> Model.public {
 | Action | Method | Example |
 |--------|--------|---------|
 | `find` | GET | `db.Post.find(id)` |
-| `list` | GET | `db.Post.list(author = me, order title desc, limit 20)` |
+| `list` | GET | `db.Post.list(author = me, order title desc, limit 20)`, which returns pages: `{ "items": [...], "next": "<cursor>" }` |
 | `create` | POST | `db.Post.create(body, author = me)` |
 | `update` | PUT / PATCH | `db.Post.update(id, body)` |
 | `delete` | DELETE | `db.Post.delete(id)` |
@@ -289,6 +294,7 @@ The compiler enforces these rules:
 | Leaking passwords or private data | Password and `private` fields are never selected for responses, and the runtime copies only public keys. |
 | Plain-text or weak passwords | scrypt with a random salt. A minimum length of 8, and you can only raise it. |
 | Missing login checks | Every endpoint must declare `public` or `requires login`. |
+| Privilege escalation | Roles are never accepted from requests. Only admins assign them, never to themselves. `RIZO_ADMIN_EMAILS` only promotes accounts that already exist. |
 | Editing someone else's data (IDOR) | `requires owner` becomes part of the `WHERE` clause. Owners are set from the session. |
 | Mass assignment | Unknown body fields are rejected. Ownership links are never accepted from clients. |
 | CSRF | `SameSite=Lax` cookies, JSON-only bodies and an `Origin` check on every POST, PUT, PATCH and DELETE. |
@@ -338,7 +344,7 @@ Rizo Lang is in **early development**, so expect the language to change before 1
 
 - [x] **Milestone 1:** models, compiled to a PostgreSQL schema and TypeScript types ([v0.1.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.1.0))
 - [x] **Milestone 2:** `auth`, `api` endpoints, links, `private` fields and a generated Node.js server ([v0.2.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.2.0))
-- [ ] **Milestone 3:** roles (`requires role admin`), pagination, account management, migrations
+- [ ] **Milestone 3** (in progress): roles ✓, pagination ✓, account management, migrations
 - [ ] **Milestone 4:** frontend `page` blocks compiled to HTML and TypeScript
 - [ ] Publish the compiler to npm, and a VS Code extension with syntax highlighting
 

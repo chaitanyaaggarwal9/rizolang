@@ -1,4 +1,4 @@
-# Rizo Lang (compact spec, v0.2)
+# Rizo Lang (compact spec, v0.3)
 
 You are writing Rizo Lang (`.rz` files). Follow these rules exactly. A file contains only `model` blocks, at most one `auth` line, and `api` blocks. Never write SQL, TypeScript or `page` blocks in `.rz` files.
 
@@ -78,17 +78,21 @@ A field named `password` (or ending in `Password`) must have the type `Password`
 
 `auth User by email` turns on accounts. User needs `email: Email unique` and one `Password` field. It adds `POST /auth/signup`, `POST /auth/login`, `POST /auth/logout` and `GET /auth/me`. Sessions use a secure cookie. Don't write your own login endpoints.
 
+Roles: `auth User by email roles admin, editor` (must include admin). Admins assign roles with `PUT /auth/users/:id/role`. Never add a `role` field yourself; it is hidden and never comes from request bodies.
+
 ## api
 
 ```
 api METHOD /path/:param -> Model.public {
   public            (or: requires login)
-  requires owner <link field>     (optional)
+  requires role admin, editor     (optional; needs requires login)
+  requires owner <link field>     (optional; add "or role admin" to let admins act too)
   return db.Model.action(arguments)
 }
 ```
 
 - Every endpoint has **exactly one** of `public` or `requires login`.
+- `requires role admin` gives 403 to users without that role.
 - `requires owner author` lets only the record's owner act; others get 404. It needs `requires login`, and it works with find, update and delete. It is **required** on update and delete of a model that links to the auth model.
 - The return type is `-> Model.public` or `-> list Model.public`, and there is none for delete. Only `.public` can be returned.
 - Paths use lowercase segments and `:camelCase` parameters. Every parameter must be used. `/auth` is reserved.
@@ -96,13 +100,14 @@ api METHOD /path/:param -> Model.public {
 | Action                          | Method       | Result             |
 |---------------------------------|--------------|--------------------|
 | `db.M.find(id)`                 | GET          | one record or 404  |
-| `db.M.list(filters, order f desc, limit N)` | GET | list (limit ≤ 100, default 50) |
+| `db.M.list(filters, order f desc, limit N)` | GET | `{ items, next }` page (limit ≤ 100, default 50) |
 | `db.M.create(body)`             | POST         | 201 new record     |
 | `db.M.update(id, body)`         | PUT or PATCH | changed record or 404 |
 | `db.M.delete(id)`               | DELETE       | 204 or 404         |
 
 - Filters are `field = value`. A value is `me`, a path parameter, a number, `true` or `false`.
 - `body` is the validated JSON request body.
+- `list` returns pages: clients call `?limit=10`, then `?after=<next>`. You can't order by an optional field.
 - A link to the auth model must be set with `= me` in create, and is never taken from body.
 - You cannot create, update or delete the auth model through `api`.
 

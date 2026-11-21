@@ -233,7 +233,17 @@ api GET /users/:id -> User.public {
       expect(placeholders.size).toBe(r.values.length);
       expect(Math.max(0, ...placeholders)).toBe(r.values.length);
     }
-    expect(app.routes[0]?.values).toEqual([{ from: "const", value: true }]);
+    expect(app.routes[0]?.values).toEqual([
+      { from: "const", value: true },
+      { from: "cursorSet" },
+      { from: "cursorValue" },
+      { from: "cursorId" },
+      { from: "pageLimit" },
+    ]);
+    expect(app.routes[0]?.sql).toBe(
+      'SELECT "id", "author_id" AS "author", "title", "published", "title"::text AS "_cursor" FROM "posts" ' +
+      'WHERE "published" = $1 AND ($2 IS NOT TRUE OR ("title", "id") > ($3::text, $4::uuid)) ORDER BY "title" ASC, "id" ASC LIMIT $5',
+    );
   });
 
   it("never selects password or private columns for responses", () => {
@@ -268,6 +278,19 @@ api GET /users/:id -> User.public {
   it("logs in with a parameterized lookup and never selects the hash for responses", () => {
     expect(app.auth?.loginSql).toBe('SELECT "id", "password_hash" AS "hash" FROM "users" WHERE "email" = $1');
     expect(app.auth?.publicKeys).toEqual(["id", "name"]);
+  });
+
+  it("checks owner-or-role inside the query, with the role as a parameter", () => {
+    const r = compileOk(source.replace("auth User by email", "auth User by email roles admin").replace(
+      "api DELETE /posts/:id {\n  requires login\n  requires owner author\n",
+      "api DELETE /posts/:id {\n  requires login\n  requires owner author or role admin\n",
+    ));
+    const del = buildApp(r.apis, r.auth).routes.find((x) => x.method === "DELETE");
+    expect(del?.sql).toBe('DELETE FROM "posts" WHERE "id" = $1 AND ("author_id" = $2 OR $3)');
+    expect(del?.values).toEqual([{ from: "path", name: "id" }, { from: "me" }, { from: "hasRole", roles: ["admin"] }]);
+    const auth = buildApp(r.apis, r.auth).auth;
+    expect(auth?.signup.body.map((f) => f.key)).not.toContain("role");
+    expect(auth?.publicKeys).not.toContain("role");
   });
 
   it("keeps private fields out of public types", () => {

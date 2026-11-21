@@ -29,6 +29,9 @@ export function emitSql(models: readonly ResolvedModel[], auth: ResolvedAuth | u
       `  ${q("id")} UUID PRIMARY KEY DEFAULT gen_random_uuid()`,
       ...model.fields.map(columnSql),
     ];
+    if (auth !== undefined && auth.model === model && auth.roles.length > 0) {
+      cols.push(`  -- role: assigned by admins only, never accepted from requests or returned\n  ${q("role")} TEXT CHECK (${q("role")} IN (${auth.roles.map(roleLiteral).join(", ")}))`);
+    }
     out.push("", `CREATE TABLE ${q(model.table)} (`, cols.join(",\n"), ");");
   }
 
@@ -61,6 +64,12 @@ export function emitSql(models: readonly ResolvedModel[], auth: ResolvedAuth | u
   out.push("", "COMMIT;", "");
   return out.join("\n");
 }
+
+/** A role name as a SQL string literal. Role names are validated as [a-z][A-Za-z0-9]*. */
+export const roleLiteral = (role: string): string => {
+  if (!/^[a-z][A-Za-z0-9]*$/.test(role)) throw new Error(`unsafe role: ${role}`);
+  return `'${role}'`;
+};
 
 function columnSql(f: ResolvedField): string {
   const info = FIELD_TYPES[f.type];

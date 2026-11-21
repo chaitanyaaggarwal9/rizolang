@@ -1,5 +1,6 @@
 import {
   QUERY_ACTIONS,
+  type RoleRef,
   type ApiDecl,
   type AuthDecl,
   type HttpMethod,
@@ -27,6 +28,8 @@ export interface ResolvedAuth {
   /** The `by` field: Email, unique, required. */
   readonly loginField: ResolvedField;
   readonly passwordField: ResolvedField;
+  /** Declared roles (`roles admin, editor`); empty when roles are not used. */
+  readonly roles: readonly string[];
 }
 
 export type PathSegment =
@@ -87,6 +90,10 @@ export interface ResolvedApi {
   readonly access: "public" | "login";
   /** Link field that must equal the logged-in user (`requires owner author`). */
   readonly owner: ResolvedField | undefined;
+  /** Roles that may act even when they are not the owner (`requires owner author or role admin`). */
+  readonly ownerBypassRoles: readonly string[];
+  /** The caller must have one of these roles (`requires role admin, editor`); empty for no role check. */
+  readonly roles: readonly string[];
   readonly returns: "one" | "list" | "none";
   readonly query: ResolvedQuery;
 }
@@ -94,6 +101,7 @@ export interface ResolvedApi {
 type Err = (code: string, span: Span, message: string, fix: string) => void;
 
 export const DEFAULT_LIST_LIMIT = 50;
+export const MAX_ROLES = 20;
 export const MAX_LIST_LIMIT = 100;
 
 const METHOD_FOR_ACTION: Readonly<Record<QueryAction, readonly HttpMethod[]>> = {
@@ -156,8 +164,36 @@ export function checkAuth(auths: readonly AuthDecl[], models: readonly ResolvedM
     err("RZ0317", a.modelSpan, `"${model.name}.${self.name}" links to ${model.name} and is required, so signup could never fill it.`,
       `Make it optional: \`${self.name}: ${model.name} optional\`.`);
   }
+  const roles: string[] = [];
+  if (a.roles.length > 0) {
+    if (model.fields.some((f) => f.name === "role" || f.column === "role")) {
+      ok = false;
+      err("RZ0317", a.modelSpan, `Model "${model.name}" has a field named "role", which roles need for themselves.`,
+        "Rename that field, for example to `jobTitle`.");
+    }
+    for (const r of a.roles) {
+      if (!/^[a-z][A-Za-z0-9]*$/.test(r.name)) {
+        ok = false;
+        err("RZ0317", r.span, `Role name "${r.name}" must be camelCase.`, `Write it as "${r.name.charAt(0).toLowerCase()}${r.name.slice(1)}".`);
+      } else if (roles.includes(r.name)) {
+        ok = false;
+        err("RZ0317", r.span, `Role "${r.name}" is listed twice.`, "Remove the duplicate.");
+      } else {
+        roles.push(r.name);
+      }
+    }
+    if (!roles.includes("admin")) {
+      ok = false;
+      err("RZ0317", a.modelSpan, "The roles must include admin.",
+        `Add admin to the list: \`auth ${a.model} by ${a.field} roles admin${roles.length > 0 ? `, ${roles.join(", ")}` : ""}\`. Admins assign the other roles.`);
+    }
+    if (roles.length > MAX_ROLES) {
+      ok = false;
+      err("RZ0317", a.modelSpan, `There are ${roles.length} roles; at most ${MAX_ROLES} are allowed.`, "Use fewer roles.");
+    }
+  }
   if (!ok || loginField === undefined || passwordField === undefined) return undefined;
-  return { model, loginField, passwordField };
+  return { model, loginField, passwordField, roles };
 }
 
 function unknownModel(name: string, span: Span, models: readonly ResolvedModel[], err: Err): void {
@@ -207,33 +243,54 @@ export function checkApis(
     const publics = stmts.filter((s) => s.kind === "public");
     const logins = stmts.filter((s) => s.kind === "requiresLogin");
     const owners = stmts.flatMap((s) => (s.kind === "requiresOwner" ? [s] : []));
+    const roleStmts = stmts.flatMap((s) => (s.kind === "requiresRole" ? [s] : []));
     const returns = stmts.flatMap((s) => (s.kind === "return" ? [s] : []));
     let ok = true;
 
-    for (const group of [publics, logins, owners]) {
+    for (const group of [publics, logins, owners, roleStmts]) {
       for (const extra of group.slice(1)) {
         ok = false;
         err("RZ0318", extra.span, `This access rule appears more than once in endpoint "${name}".`, "Remove the duplicate line.");
       }
     }
     const firstPublic = publics[0];
-    if (firstPublic !== undefined && (logins.length > 0 || owners.length > 0)) {
+    if (firstPublic !== undefined && (logins.length > 0 || owners.length > 0 || roleStmts.length > 0)) {
       ok = false;
       err("RZ0318", firstPublic.span, `Endpoint "${name}" is marked public but also requires login.`,
         "Remove `public` if only logged-in users may call it, or remove the `requires` lines.");
     } else if (publics.length === 0 && logins.length === 0) {
       ok = false;
       err("RZ0318", api.methodSpan, `Endpoint "${name}" does not say who may call it.`,
-        owners.length > 0
-          ? "Add `requires login` above `requires owner`."
+        owners.length > 0 || roleStmts.length > 0
+          ? `Add \`requires login\` above \`requires ${owners.length > 0 ? "owner" : "role"}\`.`
           : "Add `requires login` for logged-in users only, or `public` if anyone may call it.");
     }
-    if ((logins.length > 0 || owners.length > 0) && !authDeclared) {
+    if ((logins.length > 0 || owners.length > 0 || roleStmts.length > 0) && !authDeclared) {
       ok = false;
-      err("RZ0319", (logins[0] ?? owners[0] ?? api).span, `Endpoint "${name}" requires login, but there is no auth line.`,
+      err("RZ0319", (logins[0] ?? owners[0] ?? roleStmts[0] ?? api).span, `Endpoint "${name}" requires login, but there is no auth line.`,
         "Add `auth User by email` (using your user model and its Email field) at the top level.");
     }
     const access: "public" | "login" = publics.length > 0 ? "public" : "login";
+    const roleList = (refs: readonly RoleRef[]): string[] => {
+      const out: string[] = [];
+      for (const r of refs) {
+        if (auth === undefined) continue; // the auth line itself is invalid; it has its own error
+        if (auth.roles.length === 0) {
+          ok = false;
+          err("RZ0332", r.span, `Role "${r.name}" is used, but the auth line declares no roles.`,
+            `Declare roles on the auth line: \`auth ${auth.model.name} by ${auth.loginField.name} roles admin${r.name === "admin" ? "" : `, ${r.name}`}\`.`);
+        } else if (!auth.roles.includes(r.name)) {
+          ok = false;
+          const guess = didYouMean(r.name, auth.roles);
+          err("RZ0332", r.span, `Unknown role "${r.name}".`,
+            guess !== undefined ? `Did you mean "${guess}"? Roles: ${auth.roles.join(", ")}.` : `Use one of the declared roles: ${auth.roles.join(", ")}.`);
+        } else if (!out.includes(r.name)) {
+          out.push(r.name);
+        }
+      }
+      return out;
+    };
+    const requiredRoles = roleList(roleStmts[0]?.roles ?? []);
 
     // --- return statement
     const ret = returns[0];
@@ -480,6 +537,12 @@ export function checkApis(
                 "Ordering by a private or Password field would reveal its values. Order by a public field.");
               continue;
             }
+            if (f.optional) {
+              good = false;
+              err("RZ0325", a.fieldSpan, `Cannot order by optional field "${model.name}.${f.name}".`,
+                "Pages are built from the sort value, so every record needs one. Order by a required field, or remove optional from it.");
+              continue;
+            }
             order = { field: f, descending: a.descending };
           } else {
             const f = field(a.field, a.fieldSpan);
@@ -532,7 +595,7 @@ export function checkApis(
     }
 
     // Changing a record that belongs to a user must check that it is the caller's.
-    if ((action === "update" || action === "delete") && ownerStmt === undefined && authLinks.length > 0) {
+    if ((action === "update" || action === "delete") && ownerStmt === undefined && roleStmts.length === 0 && authLinks.length > 0) {
       ok = false;
       const link = authLinks[0]?.name ?? "author";
       err("RZ0331", q.actionSpan, `Endpoint "${name}" can ${action} any ${model.name}, including ones that belong to other users.`,
@@ -582,6 +645,8 @@ export function checkApis(
       params: [...params].map(([pname, p]) => ({ name: pname, type: p.type })),
       access,
       owner,
+      ownerBypassRoles: ownerStmt === undefined ? [] : roleList(ownerStmt.orRoles),
+      roles: requiredRoles,
       returns: expected,
       query,
     };

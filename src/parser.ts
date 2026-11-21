@@ -11,6 +11,7 @@ import {
   type Query,
   type QueryArg,
   type ReturnType,
+  type RoleRef,
   type Statement,
   type Value,
 } from "./ast.js";
@@ -228,7 +229,29 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
     next();
     next();
     next();
-    return { span: kw.span, model: model.text, modelSpan: model.span, field: field.text, fieldSpan: field.span };
+    let roles: RoleRef[] = [];
+    if (isWord(peek(), "roles") && sameLine(peek())) {
+      const rolesTok = next();
+      roles = parseRoleList(rolesTok, "auth User by email roles admin, editor");
+    }
+    return { span: kw.span, model: model.text, modelSpan: model.span, field: field.text, fieldSpan: field.span, roles };
+  }
+
+  /** One or more role names on the same line as `after`, separated by commas. */
+  function parseRoleList(after: Token, example: string): RoleRef[] {
+    const roles: RoleRef[] = [];
+    for (;;) {
+      const t = peek();
+      if (t.kind !== "ident" || t.span.line !== after.span.line) {
+        fail("RZ0219", t.span.line === after.span.line ? t.span : after.span,
+          `Expected a role name after "${peek(-1).text}".`, `Write role names separated by commas: \`${example}\`.`);
+      }
+      next();
+      roles.push({ name: t.text, span: t.span });
+      if (peek().kind !== "comma" || peek().span.line !== after.span.line) break;
+      next();
+    }
+    return roles;
   }
 
   // ------------------------------------------------------------------- api
@@ -322,8 +345,8 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
       const guess = t.kind === "ident" ? didYouMean(t.text, STATEMENT_WORDS) : undefined;
       fail("RZ0216", t.span, `Unexpected ${describe(t)} in an api block.`,
         guess !== undefined
-          ? `Did you mean "${guess}"? An api block contains: public or requires login, optional requires owner <field>, and one return line.`
-          : "An api block contains: public or requires login, optional requires owner <field>, and one return line.");
+          ? `Did you mean "${guess}"? An api block contains: public or requires login, optional requires role / requires owner lines, and one return line.`
+          : "An api block contains: public or requires login, optional requires role / requires owner lines, and one return line.");
     }
     next();
     let stmt: Statement;
@@ -342,11 +365,25 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
             "Name the link field that points to the owner, for example `requires owner author`.");
         }
         next();
-        stmt = { kind: "requiresOwner", span: t.span, field: field.text, fieldSpan: field.span };
+        let orRoles: RoleRef[] = [];
+        if (isWord(peek(), "or") && peek().span.line === t.span.line) {
+          next();
+          const roleKw = peek();
+          if (!isWord(roleKw, "role") || roleKw.span.line !== t.span.line) {
+            fail("RZ0216", roleKw.span.line === t.span.line ? roleKw.span : t.span, `Expected "role" after "or".`,
+              `Write \`requires owner ${field.text} or role admin\`.`);
+          }
+          next();
+          orRoles = parseRoleList(roleKw, `requires owner ${field.text} or role admin`);
+        }
+        stmt = { kind: "requiresOwner", span: t.span, field: field.text, fieldSpan: field.span, orRoles };
+      } else if (isWord(what, "role") && what.span.line === t.span.line) {
+        next();
+        stmt = { kind: "requiresRole", span: t.span, roles: parseRoleList(what, "requires role admin") };
       } else {
         fail("RZ0216", what.span.line === t.span.line ? what.span : t.span,
-          `Expected "login" or "owner <field>" after "requires".`,
-          "Write `requires login` or `requires owner author`.");
+          `Expected "login", "role <name>" or "owner <field>" after "requires".`,
+          "Write `requires login`, `requires role admin` or `requires owner author`.");
       }
     } else {
       stmt = { kind: "return", span: t.span, query: parseQuery(t) };

@@ -11,7 +11,8 @@ import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createRequestHandler } from "../runtime/server.ts";
+import { createRequestHandler, grantAdmins } from "../runtime/server.ts";
+import type { App } from "../runtime/types.ts";
 import { compile } from "../src/compiler.js";
 import { buildApp } from "../src/emit/routes.js";
 
@@ -19,6 +20,7 @@ const DATABASE_URL = process.env["RIZO_TEST_DATABASE_URL"];
 const schema = `rizo_e2e_${randomBytes(6).toString("hex")}`;
 
 let pool: pg.Pool;
+let app: App;
 let server: Server;
 let base: string;
 const logs: string[] = [];
@@ -51,6 +53,11 @@ async function call(method: string, path: string, opts: { body?: unknown; cookie
   };
 }
 
+/** The items of a paged list response. */
+function items<T = Record<string, unknown>>(r: Res): T[] {
+  return (r.body as { items: T[] }).items;
+}
+
 const ALICE = { email: "Alice@Example.com", password: "correct horse battery", name: "Alice", bio: "hi" };
 const BOB = { email: "bob@example.com", password: "another long password", name: "Bob" };
 
@@ -69,7 +76,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     await admin.end();
     pool = new pg.Pool({ connectionString: DATABASE_URL, options: `-c search_path="${schema}",public` });
     await pool.query(result.output.sql);
-    const app = buildApp(result.apis, result.auth);
+    app = buildApp(result.apis, result.auth);
     const handler = createRequestHandler(app, {
       db: { query: (sql, values) => pool.query(sql, values) },
       log: (line) => logs.push(line),
@@ -173,17 +180,17 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
 
   it("filters lists by the logged-in user and by path parameters", async () => {
     const mine = await call("GET", "/my/posts", { cookie: alice });
-    expect((mine.body as unknown[]).length).toBe(2);
-    expect((await call("GET", "/my/posts", { cookie: bob })).body).toEqual([]);
+    expect(items(mine).length).toBe(2);
+    expect((await call("GET", "/my/posts", { cookie: bob })).body).toEqual({ items: [], next: null });
     const published = await call("GET", "/posts");
-    expect((published.body as { title: string }[]).map((p) => p.title)).toEqual(["Hello again"]);
+    expect(items<{ title: string }>(published).map((p) => p.title)).toEqual(["Hello again"]);
   });
 
   it("checks links and protects linked records", async () => {
     const missing = await call("POST", "/comments", { cookie: bob, body: { post: "00000000-0000-0000-0000-000000000000", body: "?" } });
     expect(missing).toMatchObject({ status: 400, body: { error: { code: "invalid_link", field: "post" } } });
     expect((await call("POST", "/comments", { cookie: bob, body: { post: postId, body: "Nice" } })).status).toBe(201);
-    expect((await call("GET", `/posts/${postId}/comments`)).body).toMatchObject([{ body: "Nice", post: postId }]);
+    expect(items(await call("GET", `/posts/${postId}/comments`))).toMatchObject([{ body: "Nice", post: postId }]);
     expect((await call("DELETE", `/posts/${postId}`, { cookie: alice })).status).toBe(409);
   });
 
@@ -196,6 +203,132 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
 
   it("never returns private or secret fields", async () => {
     expect((await call("GET", `/users/${aliceId}`)).body).toEqual({ id: aliceId, name: "Alice", bio: "hi" });
+  });
+
+  describe("roles", () => {
+    const db = () => ({ query: (sql: string, values: unknown[]) => pool.query(sql, values) });
+    let bobId: string;
+    let bobPost: string;
+
+    it("never accepts a role at signup and never returns one", async () => {
+      const r = await call("POST", "/auth/signup", { body: { email: "eve@example.com", password: "long enough password", name: "Eve", role: "admin" } });
+      expect(r).toMatchObject({ status: 400, body: { error: { field: "role" } } });
+      expect(Object.keys((await call("GET", "/auth/me", { cookie: bob })).body as object)).not.toContain("role");
+    });
+
+    it("grants admin from RIZO_ADMIN_EMAILS only to accounts that already exist", async () => {
+      expect(await grantAdmins(app, db(), [" ALICE@example.com ", "late@example.com"])).toBe(1);
+      const late = await call("POST", "/auth/signup", { body: { email: "late@example.com", password: "long enough password", name: "Late" } });
+      expect(late.status).toBe(201);
+      expect((await call("GET", "/admin/posts", { cookie: late.cookie ?? "" })).status).toBe(403);
+    });
+
+    it("lets only the listed roles call role endpoints", async () => {
+      expect((await call("GET", "/admin/posts", { cookie: bob })).status).toBe(403);
+      expect((await call("GET", "/admin/posts")).status).toBe(401);
+      const all = await call("GET", "/admin/posts", { cookie: alice });
+      expect(all.status).toBe(200);
+      expect(items<{ published: boolean }>(all).some((p) => !p.published)).toBe(true);
+    });
+
+    it("lets an admin delete posts they do not own, but not other users", async () => {
+      bobId = ((await call("GET", "/auth/me", { cookie: bob })).body as { id: string }).id;
+      bobPost = ((await call("POST", "/posts", { cookie: bob, body: { title: "Bob's", body: "b", published: true } })).body as { id: string }).id;
+      const alicePost = ((await call("POST", "/posts", { cookie: alice, body: { title: "Alice's", body: "a", published: true } })).body as { id: string }).id;
+      expect((await call("DELETE", `/posts/${alicePost}`, { cookie: bob })).status).toBe(404);
+      expect((await call("DELETE", `/posts/${bobPost}`, { cookie: alice })).status).toBe(204);
+    });
+
+    it("lets only admins assign roles, never to themselves", async () => {
+      const path = `/auth/users/${bobId}/role`;
+      expect((await call("PUT", path, { cookie: bob, body: { role: "editor" } })).status).toBe(403);
+      expect((await call("PUT", `/auth/users/${aliceId}/role`, { cookie: alice, body: { role: null } })).status).toBe(403);
+      expect((await call("PUT", path, { cookie: alice, body: { role: "superuser" } })).status).toBe(400);
+      expect((await call("PUT", path, { cookie: alice, body: { role: "editor", extra: 1 } })).status).toBe(400);
+      expect((await call("PUT", "/auth/users/00000000-0000-0000-0000-000000000000/role", { cookie: alice, body: { role: "editor" } })).status).toBe(404);
+      const ok = await call("PUT", path, { cookie: alice, body: { role: "editor" } });
+      expect(ok).toMatchObject({ status: 200, body: { id: bobId, role: "editor" } });
+      // The new role applies to Bob's existing session immediately.
+      expect((await call("GET", "/admin/posts", { cookie: bob })).status).toBe(200);
+      expect((await call("PUT", path, { cookie: alice, body: { role: null } })).body).toMatchObject({ role: null });
+      expect((await call("GET", "/admin/posts", { cookie: bob })).status).toBe(403);
+    });
+  });
+
+  describe("pagination", () => {
+    const titles = ["d", "a", "c", "b", "e", "c"]; // includes a duplicate title
+    beforeAll(async () => {
+      for (const title of titles) {
+        await call("POST", "/posts", { cookie: alice, body: { title, body: "x", published: true } });
+      }
+    });
+
+    async function walk(path: string, limit: number): Promise<{ titles: string[]; ids: string[]; pages: number }> {
+      const out = { titles: [] as string[], ids: [] as string[], pages: 0 };
+      let next: string | null = "";
+      while (next !== null) {
+        const r = await call("GET", `${path}?limit=${limit}${next ? `&after=${next}` : ""}`);
+        expect(r.status).toBe(200);
+        const page = r.body as { items: { id: string; title: string }[]; next: string | null };
+        expect(page.items.length).toBeLessThanOrEqual(limit);
+        out.titles.push(...page.items.map((p) => p.title));
+        out.ids.push(...page.items.map((p) => p.id));
+        out.pages++;
+        next = page.next;
+      }
+      return out;
+    }
+
+    it("walks every page in order, without gaps or repeats, even with equal sort values", async () => {
+      const all = items<{ id: string; title: string }>(await call("GET", "/posts"));
+      const walked = await walk("/posts", 2);
+      expect(walked.ids).toEqual(all.map((p) => p.id));
+      expect(new Set(walked.ids).size).toBe(walked.ids.length);
+      // Same order as one unpaged query (PostgreSQL's own collation decides the order).
+      expect(walked.titles).toEqual(all.map((p) => p.title));
+      expect(walked.pages).toBe(Math.ceil(all.length / 2));
+    });
+
+    it("pages by id when no order is given, and stays correct when rows are added", async () => {
+      const first = await call("GET", "/my/posts?limit=3", { cookie: alice });
+      const page1 = first.body as { items: { id: string }[]; next: string };
+      await call("POST", "/posts", { cookie: alice, body: { title: "late", body: "x", published: false } });
+      const rest: string[] = [];
+      let next: string | null = page1.next;
+      while (next !== null) {
+        const r = await call("GET", `/my/posts?limit=3&after=${next}`, { cookie: alice });
+        const p = r.body as { items: { id: string }[]; next: string | null };
+        rest.push(...p.items.map((x) => x.id));
+        next = p.next;
+      }
+      const ids = [...page1.items.map((x) => x.id), ...rest];
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(ids).toEqual([...ids].sort());
+    });
+
+    it("rejects bad limits, tampered cursors and unknown parameters", async () => {
+      for (const q of ["limit=0", "limit=21", "limit=abc", "limit=-1", "limit=1&limit=2"]) {
+        expect((await call("GET", `/posts?${q}`)).status, q).toBe(400);
+      }
+      const forged = (parts: unknown) => Buffer.from(JSON.stringify(parts)).toString("base64url");
+      for (const after of ["!!!", "bm90IGpzb24", forged(["a"]), forged(["a", "not-a-uuid"]), forged([1, 2]), forged(["x", "y", "z"])]) {
+        const r = await call("GET", `/posts?after=${after}`);
+        expect(r, after).toMatchObject({ status: 400, body: { error: { field: "after" } } });
+      }
+      expect((await call("GET", "/posts?sort=title")).status).toBe(400);
+      expect((await call("GET", `/posts/${postId}?debug=1`)).status).toBe(400);
+    });
+
+    it("never lets a cursor change the query", async () => {
+      const injected = Buffer.from(JSON.stringify([`a') OR 1=1 --`, "00000000-0000-0000-0000-000000000000"])).toString("base64url");
+      const r = await call("GET", `/posts?after=${injected}`);
+      expect(r.status).toBe(200);
+      // The text is only a value to sort against: the result is a slice of the normal list, never more.
+      const all = items<{ id: string; published: boolean }>(await call("GET", "/posts")).map((p) => p.id);
+      const got = items<{ id: string; published: boolean }>(r);
+      expect(got.every((p) => p.published && all.includes(p.id))).toBe(true);
+      expect(got.length).toBeLessThan(all.length);
+    });
   });
 
   it("rejects cross-site writes, wrong content types, oversized and unexpected bodies", async () => {

@@ -143,16 +143,16 @@ describe("request handling without a database", () => {
     routes: [
       {
         method: "GET", pattern: "/things/:id", path: [{ static: "things" }, { param: "id", kind: "ID" }],
-        access: "public", body: null, sql: "SELECT 1", values: [{ from: "path", name: "id" }],
-        result: "one", publicKeys: ["id", "name"], model: "Thing",
+        access: "public", roles: [], body: null, sql: "SELECT 1", values: [{ from: "path", name: "id" }],
+        result: "one", page: null, publicKeys: ["id", "name"], model: "Thing",
       },
       {
         method: "GET", pattern: "/things/new", path: [{ static: "things" }, { static: "new" }],
-        access: "public", body: null, sql: "SELECT 2", values: [], result: "one", publicKeys: ["id"], model: "Thing",
+        access: "public", roles: [], body: null, sql: "SELECT 2", values: [], result: "one", page: null, publicKeys: ["id"], model: "Thing",
       },
       {
         method: "GET", pattern: "/mine", path: [{ static: "mine" }],
-        access: "login", body: null, sql: "SELECT 3", values: [{ from: "me" }], result: "list", publicKeys: ["id"], model: "Thing",
+        access: "login", roles: [], body: null, sql: "SELECT 3", values: [{ from: "me" }], result: "list", page: { max: 50, order: null }, publicKeys: ["id"], model: "Thing",
       },
     ],
   };

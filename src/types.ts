@@ -41,19 +41,19 @@ export const INT32_MAX = 2147483647;
 export const FIELD_TYPES: Readonly<Record<FieldTypeName, FieldTypeInfo>> = {
   Text: {
     sql: "TEXT", ts: "string", tsInput: "string",
-    modifiers: ["unique", "optional", "min", "max"],
+    modifiers: ["unique", "optional", "private", "min", "max"],
     length: { defaultMin: 0, defaultMax: 10_000, lowest: 0, highest: 1_000_000 },
     secret: false,
   },
   Number: {
     sql: "INTEGER", ts: "number", tsInput: "number",
-    modifiers: ["unique", "optional", "min", "max"],
+    modifiers: ["unique", "optional", "private", "min", "max"],
     valueRange: { lowest: INT32_MIN, highest: INT32_MAX },
     secret: false,
   },
   Bool: {
     sql: "BOOLEAN", ts: "boolean", tsInput: "boolean",
-    modifiers: ["optional"],
+    modifiers: ["optional", "private"],
     secret: false,
     disallowedReason: {
       unique: "A Bool has only two values, so it cannot be unique.",
@@ -63,7 +63,7 @@ export const FIELD_TYPES: Readonly<Record<FieldTypeName, FieldTypeInfo>> = {
   },
   Email: {
     sql: "TEXT", ts: "string", tsInput: "string",
-    modifiers: ["unique", "optional", "min", "max"],
+    modifiers: ["unique", "optional", "private", "min", "max"],
     length: { defaultMin: 3, defaultMax: 254, lowest: 3, highest: 254 },
     secret: false,
   },
@@ -74,11 +74,12 @@ export const FIELD_TYPES: Readonly<Record<FieldTypeName, FieldTypeInfo>> = {
     secret: true,
     disallowedReason: {
       unique: "Passwords are stored as salted hashes, so they cannot be unique.",
+      private: "Password fields are always hidden, so private is not needed.",
     },
   },
   Date: {
     sql: "TIMESTAMPTZ", ts: "Date", tsInput: "Date",
-    modifiers: ["unique", "optional"],
+    modifiers: ["unique", "optional", "private"],
     secret: false,
     disallowedReason: {
       min: "Date ranges are not supported yet.",
@@ -87,7 +88,7 @@ export const FIELD_TYPES: Readonly<Record<FieldTypeName, FieldTypeInfo>> = {
   },
   ID: {
     sql: "UUID", ts: "string", tsInput: "string",
-    modifiers: ["unique", "optional"],
+    modifiers: ["unique", "optional", "private"],
     secret: false,
     disallowedReason: {
       min: "An ID is a fixed-size UUID and has no range.",

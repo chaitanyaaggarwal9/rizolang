@@ -45,13 +45,15 @@ model Post {
     expect(d.fix).toContain("lowercase keyword model");
   });
 
-  it("rejects api blocks for now, even when they contain characters the lexer rejects", () => {
-    const d = firstError("model User {\n  x: Text\n}\n\napi GET /users/:id -> User.public\n");
-    expect(d).toMatchObject({ code: "RZ0211", span: { line: 5, col: 1, length: 3 } });
+  it("rejects blocks from later milestones", () => {
+    const d = firstError("model User {\n  x: Text\n}\n\npage /home {\n}\n");
+    expect(d).toMatchObject({ code: "RZ0211", span: { line: 5, col: 1, length: 4 } });
   });
 
   it("does not mistake a field named like a future keyword for a block", () => {
-    expect(firstError("model A {\n  page: Number,\n}").code).toBe("RZ0101");
+    const d = firstError("model A {\n  page: Number,\n}");
+    expect(d).toMatchObject({ code: "RZ0212", span: { line: 2, col: 15 } });
+    expect(d.fix).toContain("commas");
   });
 
   it("requires a model name", () => {

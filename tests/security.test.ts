@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 import { compile } from "../src/compiler.js";
 import { FIELD_TYPE_NAMES, FIELD_TYPES } from "../src/types.js";
+import { buildApp } from "../src/emit/routes.js";
 import { compileOk, firstError, interfaceBody, propertyNames } from "./helpers.js";
 
 /** Small deterministic PRNG so failures are reproducible. */
@@ -110,7 +111,7 @@ describe("security: Password never appears in a public type", () => {
 describe("security: invalid syntax gives a clear error with line and column", () => {
   it.each([
     ["missing colon", "model User {\n  email Email\n}", "RZ0205", 2, 9],
-    ["comma", "model User {\n  email: Email,\n}", "RZ0101", 2, 15],
+    ["comma", "model User {\n  email: Email,\n}", "RZ0212", 2, 15],
     ["snake_case name", "model User {\n  first_name: Text\n}", "RZ0101", 2, 8],
     ["unknown modifier", "model User {\n  email: Email uniq\n}", "RZ0207", 2, 16],
     ["missing brace", "model User\n  email: Email\n}", "RZ0203", 2, 3],
@@ -146,7 +147,7 @@ describe("security: unknown field types are rejected", () => {
 
   it("lists the valid types when there is no close match", () => {
     const d = firstError("model User {\n  field: Banana\n}");
-    expect(d.fix).toBe("Use one of: Text, Number, Bool, Email, Password, Date, ID.");
+    expect(d.fix).toBe("Use one of: Text, Number, Bool, Email, Password, Date, ID, or a model name (User).");
   });
 
   it("produces no output at all when any type is unknown", () => {
@@ -177,5 +178,100 @@ describe("security: names cannot inject SQL", () => {
     if (!r.ok) throw new Error("expected success");
     expect(r.output.sql).not.toContain("\nDROP");
     expect(r.output.typescript).not.toContain("\nDROP");
+  });
+});
+
+describe("security: generated endpoints", () => {
+  const source = `auth User by email
+model User {
+  email: Email unique private
+  password: Password
+  name: Text
+}
+model Post {
+  author: User
+  title: Text
+  secretNote: Text private
+  published: Bool
+}
+api GET /posts -> list Post.public {
+  public
+  return db.Post.list(published = true, order title)
+}
+api GET /posts/:id -> Post.public {
+  requires login
+  requires owner author
+  return db.Post.find(id)
+}
+api POST /posts -> Post.public {
+  requires login
+  return db.Post.create(body, author = me)
+}
+api PATCH /posts/:id -> Post.public {
+  requires login
+  requires owner author
+  return db.Post.update(id, body)
+}
+api DELETE /posts/:id {
+  requires login
+  requires owner author
+  return db.Post.delete(id)
+}
+api GET /users/:id -> User.public {
+  public
+  return db.User.find(id)
+}
+`;
+  const result = compileOk(source);
+  const app = buildApp(result.apis, result.auth);
+  const allSql = [...app.routes.map((r) => r.sql), app.auth?.signup.sql ?? "", app.auth?.meSql ?? ""];
+
+  it("never puts literal values into SQL: every value is a $n parameter", () => {
+    for (const r of app.routes) {
+      expect(r.sql).not.toContain("'");
+      const placeholders = new Set([...r.sql.matchAll(/\$(\d+)/g)].map((m) => Number(m[1])));
+      expect(placeholders.size).toBe(r.values.length);
+      expect(Math.max(0, ...placeholders)).toBe(r.values.length);
+    }
+    expect(app.routes[0]?.values).toEqual([{ from: "const", value: true }]);
+  });
+
+  it("never selects password or private columns for responses", () => {
+    for (const sql of allSql) {
+      const returned = sql.split(/RETURNING|FROM/)[sql.startsWith("SELECT") ? 0 : 1] ?? "";
+      expect(returned).not.toContain("password_hash");
+      expect(returned).not.toContain('"email"');
+      expect(returned).not.toContain("secret_note");
+    }
+    for (const r of app.routes) {
+      expect(r.publicKeys).not.toContain("password");
+      expect(r.publicKeys).not.toContain("email");
+      expect(r.publicKeys).not.toContain("secretNote");
+    }
+  });
+
+  it("turns requires owner into a WHERE condition on the logged-in user", () => {
+    for (const r of app.routes.filter((x) => x.pattern === "/posts/:id")) {
+      expect(r.sql).toMatch(/WHERE "id" = \$\d+ AND "author_id" = \$\d+/);
+      expect(r.values).toContainEqual({ from: "me" });
+      expect(r.access).toBe("login");
+    }
+  });
+
+  it("never accepts the owner link from the request body", () => {
+    for (const r of app.routes) expect((r.body ?? []).map((f) => f.key)).not.toContain("author");
+    const create = app.routes.find((r) => r.method === "POST");
+    expect(create?.values).toContainEqual({ from: "me" });
+    expect(interfaceBody(result.output.typescript, "PostInput")).not.toContain("author");
+  });
+
+  it("logs in with a parameterized lookup and never selects the hash for responses", () => {
+    expect(app.auth?.loginSql).toBe('SELECT "id", "password_hash" AS "hash" FROM "users" WHERE "email" = $1');
+    expect(app.auth?.publicKeys).toEqual(["id", "name"]);
+  });
+
+  it("keeps private fields out of public types", () => {
+    expect(propertyNames(interfaceBody(result.output.typescript, "UserPublic"))).toEqual(["id", "name"]);
+    expect(propertyNames(interfaceBody(result.output.typescript, "PostPublic"))).not.toContain("secretNote");
   });
 });

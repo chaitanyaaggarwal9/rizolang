@@ -1,4 +1,5 @@
 import type { FieldDecl, ModelDecl, Modifier, Program } from "./ast.js";
+import { type ResolvedApi, type ResolvedAuth, checkApis, checkAuth } from "./check-api.js";
 import { type Diagnostic, type Span, didYouMean, diagnostic } from "./diagnostics.js";
 import { FIELD_TYPES, FIELD_TYPE_NAMES, type FieldTypeName, TYPE_ALIASES, isFieldTypeName } from "./types.js";
 
@@ -15,9 +16,14 @@ export interface ResolvedField {
   readonly name: string;
   /** PostgreSQL column name, e.g. "password_hash". */
   readonly column: string;
+  /** Field type. A link to another model has type "ID" and `link` set. */
   readonly type: FieldTypeName;
+  /** For links: the name of the model this field points to. */
+  readonly link: string | undefined;
   readonly unique: boolean;
   readonly optional: boolean;
+  /** Excluded from public types (but not hashed). */
+  readonly private: boolean;
   /** Effective lower limit (length or value), after defaults. */
   readonly min: number | undefined;
   /** Effective upper limit (length or value), after defaults. */
@@ -25,7 +31,12 @@ export interface ResolvedField {
 }
 
 export type CheckResult =
-  | { readonly ok: true; readonly models: readonly ResolvedModel[] }
+  | {
+      readonly ok: true;
+      readonly models: readonly ResolvedModel[];
+      readonly auth: ResolvedAuth | undefined;
+      readonly apis: readonly ResolvedApi[];
+    }
   | { readonly ok: false; readonly diagnostics: readonly Diagnostic[] };
 
 /** Model names that would clash with built-in types in generated code. */
@@ -51,9 +62,15 @@ export function tableName(modelName: string): string {
   return `${snake}s`;
 }
 
-export function columnName(fieldName: string, type: FieldTypeName): string {
+export function columnName(fieldName: string, type: FieldTypeName, isLink = false): string {
   const snake = toSnakeCase(fieldName);
+  if (isLink) return `${snake}_id`;
   return FIELD_TYPES[type].secret ? `${snake}_hash` : snake;
+}
+
+/** True for fields that must never appear in a public type or response. */
+export function isHidden(f: ResolvedField): boolean {
+  return FIELD_TYPES[f.type].secret || f.private;
 }
 
 /**
@@ -82,6 +99,7 @@ export function check(program: Program, file: string): CheckResult {
   const seenModels = new Map<string, ModelDecl>();
   const seenTables = new Map<string, ModelDecl>();
   const seenTypeNames = new Map<string, ModelDecl>();
+  const modelNames = program.models.map((m) => m.name);
 
   for (const model of program.models) {
     checkModelName(model);
@@ -97,7 +115,12 @@ export function check(program: Program, file: string): CheckResult {
     models.push({ name: model.name, table: tableName(model.name), fields });
   }
 
-  return errors.length > 0 ? { ok: false, diagnostics: errors } : { ok: true, models };
+  // Endpoint checks need resolved models; skip them if any model is invalid,
+  // since their errors would only repeat the model errors.
+  if (errors.length > 0) return { ok: false, diagnostics: errors };
+  const auth = checkAuth(program.auths, models, err);
+  const apis = checkApis(program.apis, models, auth, program.auths.length > 0, err);
+  return errors.length > 0 ? { ok: false, diagnostics: errors } : { ok: true, models, auth, apis };
 
   function checkModelName(model: ModelDecl): void {
     const { name, nameSpan } = model;
@@ -162,16 +185,19 @@ export function check(program: Program, file: string): CheckResult {
         "Remove or rename one of the two fields.");
     }
 
-    if (!isFieldTypeName(field.typeName)) {
+    const isLink = modelNames.includes(field.typeName) && !isFieldTypeName(field.typeName);
+    if (!isFieldTypeName(field.typeName) && !isLink) {
       const alias = TYPE_ALIASES[field.typeName];
-      const guess = alias ?? didYouMean(field.typeName, FIELD_TYPE_NAMES);
+      const guess = alias ?? didYouMean(field.typeName, [...FIELD_TYPE_NAMES, ...modelNames]);
+      const models = modelNames.length > 0 ? `, or a model name (${modelNames.join(", ")})` : "";
       err("RZ0301", field.typeSpan, `Unknown field type "${field.typeName}" on field "${where}".`,
         guess !== undefined
-          ? `Use "${guess}" instead. Valid types: ${FIELD_TYPE_NAMES.join(", ")}.`
-          : `Use one of: ${FIELD_TYPE_NAMES.join(", ")}.`);
+          ? `Use "${guess}" instead. Valid types: ${FIELD_TYPE_NAMES.join(", ")}${models}.`
+          : `Use one of: ${FIELD_TYPE_NAMES.join(", ")}${models}.`);
       return undefined;
     }
-    const type = field.typeName;
+    // A link is stored as the linked record's ID.
+    const type: FieldTypeName = isLink ? "ID" : (field.typeName as FieldTypeName);
     const info = FIELD_TYPES[type];
 
     if (type !== "Password" && looksLikePassword(field.name)) {
@@ -195,8 +221,10 @@ export function check(program: Program, file: string): CheckResult {
       if (!info.modifiers.includes(m.kind)) {
         ok = false;
         const reason = info.disallowedReason?.[m.kind] ?? "";
-        err("RZ0302", m.span, `Modifier "${m.kind}" is not allowed on ${type} field "${where}".`,
-          `${reason ? `${reason} ` : ""}Remove "${m.kind}". ${type} allows: ${info.modifiers.join(", ")}.`);
+        const shown = isLink ? `link (${field.typeName})` : type;
+        const why = isLink && (m.kind === "min" || m.kind === "max") ? "A link has no size or range. " : reason ? `${reason} ` : "";
+        err("RZ0302", m.span, `Modifier "${m.kind}" is not allowed on ${shown} field "${where}".`,
+          `${why}Remove "${m.kind}". ${isLink ? "Links" : type} allow: ${info.modifiers.join(", ")}.`);
         continue;
       }
       if (m.kind === "min" || m.kind === "max") {
@@ -226,10 +254,12 @@ export function check(program: Program, file: string): CheckResult {
     if (!ok) return undefined;
     return {
       name: field.name,
-      column: columnName(field.name, type),
+      column: columnName(field.name, type, isLink),
       type,
+      link: isLink ? field.typeName : undefined,
       unique: seen.has("unique"),
       optional: seen.has("optional"),
+      private: seen.has("private"),
       min: effMin,
       max: effMax,
     };

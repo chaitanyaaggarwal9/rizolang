@@ -1,6 +1,21 @@
-import { MODIFIER_NAMES, type FieldDecl, type ModelDecl, type Modifier, type Program } from "./ast.js";
+import {
+  HTTP_METHODS,
+  MODIFIER_NAMES,
+  type ApiDecl,
+  type AuthDecl,
+  type FieldDecl,
+  type HttpMethod,
+  type ModelDecl,
+  type Modifier,
+  type Program,
+  type Query,
+  type QueryArg,
+  type ReturnType,
+  type Statement,
+  type Value,
+} from "./ast.js";
 import { type Diagnostic, type Span, didYouMean, diagnostic } from "./diagnostics.js";
-import type { Token } from "./lexer.js";
+import type { Token, TokenKind } from "./lexer.js";
 import { FIELD_TYPE_NAMES } from "./types.js";
 
 export type ParseResult =
@@ -8,22 +23,35 @@ export type ParseResult =
   | { readonly ok: false; readonly diagnostic: Diagnostic };
 
 /** Block keywords planned for later milestones. */
-export const FUTURE_BLOCKS: readonly string[] = ["api", "page", "component", "enum", "import", "type", "test"];
+export const FUTURE_BLOCKS: readonly string[] = ["page", "component", "enum", "import", "type", "test"];
 
 /** Words from other languages that people write instead of `model`. */
 const MODEL_LOOKALIKES: readonly string[] = ["Model", "MODEL", "class", "struct", "table", "interface", "entity", "schema"];
+/** Words people write instead of `api`. */
+const API_LOOKALIKES: readonly string[] = ["API", "Api", "route", "endpoint", "get", "post", "put", "patch", "delete", "GET", "POST", "PUT", "PATCH", "DELETE"];
+
+const STATEMENT_WORDS: readonly string[] = ["public", "requires", "return"];
+
+/** Advice for a stray token after a field type, keyed by token kind. */
+const FIELD_TOKEN_FIXES: Partial<Record<TokenKind, string>> = {
+  comma: "Rizo Lang does not use commas between fields. Put each field on its own line.",
+  lparen: "Write limits as modifiers, not arguments: `name: Text max 100`.",
+  equals: "Default values are not supported. Remove the `=` and the value after it.",
+};
 
 class ParseError extends Error {
-  constructor(readonly diagnostic: Diagnostic) {
-    super(diagnostic.message);
+  readonly diagnostic: Diagnostic;
+  constructor(d: Diagnostic) {
+    super(d.message);
+    this.diagnostic = d;
   }
 }
 
 function describe(t: Token): string {
   switch (t.kind) {
     case "eof": return "the end of the file";
-    case "ident": return `"${t.text}"`;
     case "int": return `the number ${t.text}`;
+    case "path": return `the path ${t.text}`;
     default: return `"${t.text}"`;
   }
 }
@@ -37,38 +65,50 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
   const last = tokens[tokens.length - 1];
   if (last === undefined || last.kind !== "eof") throw new Error("token stream must end with eof");
 
-  const peek = (offset = 0): Token => tokens[Math.min(pos + offset, tokens.length - 1)] ?? last;
+  const peek = (offset = 0): Token => tokens[Math.max(0, Math.min(pos + offset, tokens.length - 1))] ?? last;
   const next = (): Token => {
     const t = peek();
     if (pos < tokens.length - 1) pos++;
     return t;
   };
+  const isWord = (t: Token, word: string): boolean => t.kind === "ident" && t.text === word;
   function fail(code: string, span: Span, message: string, fix: string): never {
     throw new ParseError(diagnostic(code, file, span, message, fix));
   }
 
   function parseProgram(): Program {
     const models: ModelDecl[] = [];
+    const auths: AuthDecl[] = [];
+    const apis: ApiDecl[] = [];
     while (peek().kind !== "eof") {
       const t = peek();
-      if (t.kind === "ident" && t.text === "model") {
+      if (isWord(t, "model")) {
         models.push(parseModel());
+      } else if (isWord(t, "auth")) {
+        auths.push(parseAuth());
+      } else if (isWord(t, "api")) {
+        apis.push(parseApi());
       } else if (t.kind === "ident" && FUTURE_BLOCKS.includes(t.text)) {
         fail("RZ0211", t.span, `"${t.text}" blocks are not available yet.`,
-          "This version of Rizo Lang supports only model blocks. Remove this block for now.");
+          "This version of Rizo Lang supports model, auth and api blocks. Remove this block for now.");
       } else if (t.kind === "ident" && MODEL_LOOKALIKES.includes(t.text)) {
         fail("RZ0201", t.span, `Expected "model" but found "${t.text}".`,
-          "Start each block with the lowercase keyword model: `model User { ... }`.");
+          "Start each model with the lowercase keyword model: `model User { ... }`.");
+      } else if (t.kind === "ident" && API_LOOKALIKES.includes(t.text)) {
+        fail("RZ0201", t.span, `Expected "api" but found "${t.text}".`,
+          "Start each endpoint with the lowercase keyword api: `api GET /posts -> list Post.public { ... }`.");
       } else {
-        fail("RZ0201", t.span, `Expected "model" but found ${describe(t)}.`,
-          "Every top-level block must start with the keyword model: `model User { ... }`.");
+        fail("RZ0201", t.span, `Expected "model", "auth" or "api" but found ${describe(t)}.`,
+          "Every top-level block starts with model, auth or api.");
       }
     }
-    return { models };
+    return { models, auths, apis };
   }
 
+  // ---------------------------------------------------------------- models
+
   function parseModel(): ModelDecl {
-    next(); // the `model` keyword
+    next(); // `model`
     const nameTok = peek();
     if (nameTok.kind !== "ident") {
       fail("RZ0202", nameTok.span, `Expected a model name after "model" but found ${describe(nameTok)}.`,
@@ -83,34 +123,39 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
     next();
 
     const fields: FieldDecl[] = [];
-    let lastFieldLine = -1;
+    let lastLine = -1;
     for (;;) {
       const t = peek();
       if (t.kind === "rbrace") {
         next();
         break;
       }
-      if (t.kind === "eof") {
-        fail("RZ0210", brace.span, `Model "${nameTok.text}" is missing its closing "}".`,
-          `Add } on its own line after the last field of ${nameTok.text}.`);
-      }
-      if (t.kind === "ident" && t.text === "model" && peek(1).kind === "ident") {
-        fail("RZ0210", brace.span, `Model "${nameTok.text}" is missing its closing "}" before the next model.`,
-          `Add } on its own line after the last field of ${nameTok.text}.`);
-      }
+      checkUnclosed(t, brace.span, `Model "${nameTok.text}"`, `the last field of ${nameTok.text}`);
       if (t.kind !== "ident") {
         fail("RZ0204", t.span, `Expected a field name or "}" in model "${nameTok.text}" but found ${describe(t)}.`,
           "Write one field per line as `name: Type`, and close the model with }.");
       }
-      if (t.span.line === lastFieldLine) {
-        fail("RZ0209", t.span, `Field "${t.text}" must start on a new line.`,
-          "Put each field on its own line.");
+      if (t.span.line === lastLine) {
+        fail("RZ0209", t.span, `Field "${t.text}" must start on a new line.`, "Put each field on its own line.");
       }
-      const field = parseField(nameTok.text);
-      fields.push(field);
-      lastFieldLine = peek(-1).span.line;
+      fields.push(parseField(nameTok.text));
+      lastLine = peek(-1).span.line;
     }
     return { name: nameTok.text, nameSpan: nameTok.span, fields };
+  }
+
+  /** Report a missing `}` when the file ends or the next block starts. */
+  function checkUnclosed(t: Token, openSpan: Span, what: string, after: string): void {
+    if (t.kind === "eof") {
+      fail("RZ0210", openSpan, `${what} is missing its closing "}".`, `Add } on its own line after ${after}.`);
+    }
+    const startsBlock = (isWord(t, "model") && peek(1).kind === "ident") ||
+      (isWord(t, "api") && peek(1).kind === "ident" && peek(2).kind === "path") ||
+      (isWord(t, "auth") && peek(1).kind === "ident" && isWord(peek(2), "by"));
+    if (startsBlock) {
+      fail("RZ0210", openSpan, `${what} is missing its closing "}" before the next block.`,
+        `Add } on its own line after ${after}.`);
+    }
   }
 
   function parseField(modelName: string): FieldDecl {
@@ -127,7 +172,7 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
     if (typeTok.kind !== "ident" || typeTok.span.line !== colon.span.line) {
       fail("RZ0206", typeTok.span.line === colon.span.line ? typeTok.span : { ...colon.span, col: colon.span.col + 1 },
         `Expected a field type after "${nameTok.text}:".`,
-        `Write the type on the same line. Valid types: ${FIELD_TYPE_NAMES.join(", ")}.`);
+        `Write the type on the same line. Valid types: ${FIELD_TYPE_NAMES.join(", ")}, or the name of another model.`);
     }
     next();
 
@@ -138,10 +183,11 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
       if (t.kind === "rbrace") break;
       if (t.kind !== "ident") {
         fail("RZ0212", t.span, `Unexpected ${describe(t)} after field "${nameTok.text}".`,
-          `After the type, write only modifiers: ${MODIFIER_NAMES.join(", ")}. Example: \`${nameTok.text}: ${typeTok.text} max 100\`.`);
+          FIELD_TOKEN_FIXES[t.kind] ??
+            `After the type, write only modifiers: ${MODIFIER_NAMES.join(", ")}. Example: \`${nameTok.text}: ${typeTok.text} max 100\`.`);
       }
       next();
-      if (t.text === "unique" || t.text === "optional") {
+      if (t.text === "unique" || t.text === "optional" || t.text === "private") {
         modifiers.push({ kind: t.text, span: t.span });
         prev = t;
       } else if (t.text === "min" || t.text === "max") {
@@ -162,13 +208,237 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
             : `Valid modifiers: ${MODIFIER_NAMES.join(", ")}. Put each field on its own line.`);
       }
     }
+    return { name: nameTok.text, nameSpan: nameTok.span, typeName: typeTok.text, typeSpan: typeTok.span, modifiers };
+  }
+
+  // ------------------------------------------------------------------ auth
+
+  function parseAuth(): AuthDecl {
+    const kw = next(); // `auth`
+    const model = peek();
+    const by = peek(1);
+    const field = peek(2);
+    const sameLine = (t: Token): boolean => t.span.line === kw.span.line;
+    if (model.kind !== "ident" || !sameLine(model) || !isWord(by, "by") || !sameLine(by) ||
+        field.kind !== "ident" || !sameLine(field)) {
+      const bad = model.kind !== "ident" || !sameLine(model) ? model : !isWord(by, "by") || !sameLine(by) ? by : field;
+      fail("RZ0218", sameLine(bad) ? bad.span : kw.span, `Expected \`auth <Model> by <field>\` but found ${describe(bad)}.`,
+        "Write the auth line as `auth User by email`, where User has `email: Email unique` and a Password field.");
+    }
+    next();
+    next();
+    next();
+    return { span: kw.span, model: model.text, modelSpan: model.span, field: field.text, fieldSpan: field.span };
+  }
+
+  // ------------------------------------------------------------------- api
+
+  function parseApi(): ApiDecl {
+    const kw = next(); // `api`
+    const methodTok = peek();
+    const upper = methodTok.text.toUpperCase();
+    if (methodTok.kind !== "ident" || !(HTTP_METHODS as readonly string[]).includes(methodTok.text)) {
+      const fix = methodTok.kind === "ident" && (HTTP_METHODS as readonly string[]).includes(upper)
+        ? `HTTP methods are uppercase: \`api ${upper} ...\`.`
+        : `Use one of: ${HTTP_METHODS.join(", ")}. Example: \`api GET /posts -> list Post.public { ... }\`.`;
+      fail("RZ0213", methodTok.span, `Expected an HTTP method after "api" but found ${describe(methodTok)}.`, fix);
+    }
+    next();
+    const pathTok = peek();
+    if (pathTok.kind !== "path") {
+      fail("RZ0214", pathTok.span, `Expected a path starting with "/" after "${methodTok.text}" but found ${describe(pathTok)}.`,
+        "Write the path after the method, for example `/posts` or `/posts/:id`.");
+    }
+    next();
+
+    let returns: ReturnType | undefined;
+    if (peek().kind === "arrow") {
+      next();
+      returns = parseReturnType();
+    }
+
+    const brace = peek();
+    if (brace.kind !== "lbrace") {
+      const fix = returns === undefined && brace.kind === "ident"
+        ? `Write the return type after an arrow: \`api ${methodTok.text} ${pathTok.text} -> ${brace.text}.public {\`.`
+        : `Open the endpoint body with a brace: \`api ${methodTok.text} ${pathTok.text}${returns ? " -> ..." : ""} {\`.`;
+      fail("RZ0203", brace.span, `Expected "{" after the endpoint path but found ${describe(brace)}.`, fix);
+    }
+    next();
+
+    const statements: Statement[] = [];
+    let lastLine = -1;
+    for (;;) {
+      const t = peek();
+      if (t.kind === "rbrace") break;
+      checkUnclosed(t, brace.span, `Endpoint "${methodTok.text} ${pathTok.text}"`, "its last line");
+      if (t.span.line === lastLine) {
+        fail("RZ0209", t.span, `${describe(t)} must start on a new line.`, "Put each statement on its own line.");
+      }
+      statements.push(parseStatement());
+      lastLine = peek(-1).span.line;
+    }
+    const end = next();
     return {
-      name: nameTok.text,
-      nameSpan: nameTok.span,
-      typeName: typeTok.text,
-      typeSpan: typeTok.span,
-      modifiers,
+      span: kw.span,
+      method: methodTok.text as HttpMethod,
+      methodSpan: methodTok.span,
+      path: pathTok.text,
+      pathSpan: pathTok.span,
+      returns,
+      statements,
+      endSpan: end.span,
     };
+  }
+
+  function parseReturnType(): ReturnType {
+    const start = peek();
+    let list = false;
+    if (isWord(start, "list")) {
+      list = true;
+      next();
+    }
+    const model = peek();
+    if (model.kind !== "ident") {
+      fail("RZ0215", model.span, `Expected a return type after "->" but found ${describe(model)}.`,
+        "Write `-> Post.public` for one record or `-> list Post.public` for many.");
+    }
+    next();
+    const dot = peek();
+    const view = peek(1);
+    if (dot.kind !== "dot" || view.kind !== "ident") {
+      fail("RZ0215", model.span, `Return type "${model.text}" must say which view to return.`,
+        `Endpoints may only return public data. Write \`-> ${list ? "list " : ""}${model.text}.public\`.`);
+    }
+    next();
+    next();
+    const span = { ...start.span, length: view.span.col + view.span.length - start.span.col };
+    return { list, model: model.text, modelSpan: model.span, view: view.text, viewSpan: view.span, span };
+  }
+
+  function parseStatement(): Statement {
+    const t = peek();
+    if (t.kind !== "ident" || !STATEMENT_WORDS.includes(t.text)) {
+      const guess = t.kind === "ident" ? didYouMean(t.text, STATEMENT_WORDS) : undefined;
+      fail("RZ0216", t.span, `Unexpected ${describe(t)} in an api block.`,
+        guess !== undefined
+          ? `Did you mean "${guess}"? An api block contains: public or requires login, optional requires owner <field>, and one return line.`
+          : "An api block contains: public or requires login, optional requires owner <field>, and one return line.");
+    }
+    next();
+    let stmt: Statement;
+    if (t.text === "public") {
+      stmt = { kind: "public", span: t.span };
+    } else if (t.text === "requires") {
+      const what = peek();
+      if (isWord(what, "login") && what.span.line === t.span.line) {
+        next();
+        stmt = { kind: "requiresLogin", span: { ...t.span, length: what.span.col + what.span.length - t.span.col } };
+      } else if (isWord(what, "owner") && what.span.line === t.span.line) {
+        next();
+        const field = peek();
+        if (field.kind !== "ident" || field.span.line !== t.span.line) {
+          fail("RZ0216", what.span, `Expected a field name after "requires owner".`,
+            "Name the link field that points to the owner, for example `requires owner author`.");
+        }
+        next();
+        stmt = { kind: "requiresOwner", span: t.span, field: field.text, fieldSpan: field.span };
+      } else {
+        fail("RZ0216", what.span.line === t.span.line ? what.span : t.span,
+          `Expected "login" or "owner <field>" after "requires".`,
+          "Write `requires login` or `requires owner author`.");
+      }
+    } else {
+      stmt = { kind: "return", span: t.span, query: parseQuery(t) };
+    }
+    const after = peek();
+    if (after.kind !== "rbrace" && after.kind !== "eof" && after.span.line === peek(-1).span.line) {
+      fail("RZ0212", after.span, `Unexpected ${describe(after)} after "${t.text}".`, "Put each statement on its own line.");
+    }
+    return stmt;
+  }
+
+  function parseQuery(returnTok: Token): Query {
+    const db = peek();
+    const queryFix = "Write a query such as `return db.Post.find(id)`, `return db.Post.list()` or `return db.Post.create(body)`.";
+    if (!isWord(db, "db") || db.span.line !== returnTok.span.line) {
+      fail("RZ0217", db.span.line === returnTok.span.line ? db.span : returnTok.span,
+        `Expected a database query after "return" but found ${describe(db)}.`, queryFix);
+    }
+    next();
+    const expect = (kind: TokenKind, what: string): Token => {
+      const t = peek();
+      if (t.kind !== kind) fail("RZ0217", t.span, `Expected ${what} in query but found ${describe(t)}.`, queryFix);
+      return next();
+    };
+    expect("dot", '"."');
+    const model = expect("ident", "a model name");
+    expect("dot", '"."');
+    const action = expect("ident", "an action (find, list, create, update or delete)");
+    expect("lparen", '"("');
+    const args: QueryArg[] = [];
+    if (peek().kind !== "rparen") {
+      for (;;) {
+        args.push(parseArg());
+        if (peek().kind === "comma") {
+          next();
+          continue;
+        }
+        break;
+      }
+    }
+    const close = expect("rparen", '"," or ")"');
+    return {
+      span: { ...db.span, length: close.span.line === db.span.line ? close.span.col + 1 - db.span.col : 1 },
+      model: model.text,
+      modelSpan: model.span,
+      action: action.text,
+      actionSpan: action.span,
+      args,
+    };
+  }
+
+  function parseArg(): QueryArg {
+    const t = peek();
+    if (t.kind !== "ident") {
+      fail("RZ0217", t.span, `Unexpected ${describe(t)} in query arguments.`,
+        "Arguments are a path parameter (id), body, `field = value`, `order field desc` or `limit 20`, separated by commas.");
+    }
+    next();
+    if (peek().kind === "equals") {
+      next();
+      return { kind: "assign", field: t.text, fieldSpan: t.span, value: parseValue(), span: t.span };
+    }
+    if (t.text === "order" && peek().kind === "ident") {
+      const field = next();
+      let descending = false;
+      if (isWord(peek(), "desc") || isWord(peek(), "asc")) descending = next().text === "desc";
+      return { kind: "order", field: field.text, fieldSpan: field.span, descending, span: t.span };
+    }
+    if (t.text === "limit") {
+      const n = peek();
+      if (n.kind !== "int") {
+        fail("RZ0217", n.span, `Expected a number after "limit" but found ${describe(n)}.`, "Write `limit 20`.");
+      }
+      next();
+      return { kind: "limit", value: n.value, valueSpan: n.span, span: t.span };
+    }
+    return { kind: "name", name: t.text, span: t.span };
+  }
+
+  function parseValue(): Value {
+    const t = peek();
+    if (t.kind === "int") {
+      next();
+      return { kind: "int", value: t.value, span: t.span };
+    }
+    if (t.kind === "ident") {
+      next();
+      if (t.text === "true" || t.text === "false") return { kind: "bool", value: t.text === "true", span: t.span };
+      return { kind: "name", name: t.text, span: t.span };
+    }
+    return fail("RZ0217", t.span, `Expected a value after "=" but found ${describe(t)}.`,
+      "A value is `me`, a path parameter such as `userId`, a whole number, `true` or `false`.");
   }
 
   try {

@@ -1,9 +1,8 @@
 import { expect } from "vitest";
-import { type CompileOutput, compile } from "../src/compiler.js";
-import type { ResolvedModel } from "../src/checker.js";
+import { type CompileResult, compile } from "../src/compiler.js";
 import type { Diagnostic } from "../src/diagnostics.js";
 
-export function compileOk(source: string): { output: CompileOutput; models: readonly ResolvedModel[] } {
+export function compileOk(source: string): Extract<CompileResult, { ok: true }> {
   const r = compile(source, "test.rz");
   if (!r.ok) {
     throw new Error(`expected success, got:\n${r.diagnostics.map((d) => `${d.code} ${d.message}`).join("\n")}`);

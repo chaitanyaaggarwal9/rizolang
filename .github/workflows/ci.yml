@@ -42,7 +42,7 @@ jobs:
       - name: Compile the example with the built CLI
         run: |
           cd examples
-          node ../build/bin.js build blog.rz
+          node ../build/src/bin.js build blog.rz
           test -s dist/schema.sql
           test -s dist/types.ts
 
@@ -80,13 +80,13 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: Compile the example
-        run: cd examples && node ../build/bin.js build blog.rz
+        run: cd examples && node ../build/src/bin.js build blog.rz
       - name: Apply the schema
         run: psql -v ON_ERROR_STOP=1 -f examples/dist/schema.sql
       - name: Constraints accept valid rows and reject invalid ones
         run: |
           set -u
-          psql -v ON_ERROR_STOP=1 -c "INSERT INTO users (email, password_hash, name, is_admin) VALUES ('a@b.co', 'x', 'Ann', false)"
+          user=$(psql -v ON_ERROR_STOP=1 -qtAc "INSERT INTO users (email, password_hash, name) VALUES ('a@b.co', 'x', 'Ann') RETURNING id")
           expect_reject() {
             if psql -v ON_ERROR_STOP=1 -c "$1" >/dev/null 2>&1; then
               echo "::error::Expected PostgreSQL to reject: $1"
@@ -94,10 +94,29 @@ jobs:
             fi
             echo "rejected as expected: $1"
           }
-          expect_reject "INSERT INTO users (email, password_hash, name, is_admin) VALUES ('A@B.co', 'x', 'Ann', false)"
-          expect_reject "INSERT INTO users (email, password_hash, name, is_admin) VALUES ('not-an-email', 'x', 'Ann', false)"
-          expect_reject "INSERT INTO users (email, password_hash, name, is_admin) VALUES ('a@b.co', 'x', 'Ann', false)"
-          expect_reject "INSERT INTO users (email, password_hash, name, is_admin) VALUES ('c@b.co', 'x', repeat('n', 101), false)"
-          expect_reject "INSERT INTO users (email, name, is_admin) VALUES ('d@b.co', 'Ann', false)"
-          expect_reject "INSERT INTO blog_posts (author_id, title, body, views) VALUES (gen_random_uuid(), '', 'b', 0)"
-          expect_reject "INSERT INTO blog_posts (author_id, title, body, views) VALUES (gen_random_uuid(), 't', 'b', -1)"
+          expect_reject "INSERT INTO users (email, password_hash, name) VALUES ('A@B.co', 'x', 'Ann')"
+          expect_reject "INSERT INTO users (email, password_hash, name) VALUES ('not-an-email', 'x', 'Ann')"
+          expect_reject "INSERT INTO users (email, password_hash, name) VALUES ('a@b.co', 'x', 'Ann')"
+          expect_reject "INSERT INTO users (email, password_hash, name) VALUES ('c@b.co', 'x', repeat('n', 101))"
+          expect_reject "INSERT INTO users (email, name) VALUES ('d@b.co', 'Ann')"
+          expect_reject "INSERT INTO posts (author_id, title, body, published) VALUES ('$user', '', 'b', true)"
+          expect_reject "INSERT INTO posts (author_id, title, body, published, views) VALUES ('$user', 't', 'b', true, -1)"
+          expect_reject "INSERT INTO posts (author_id, title, body, published) VALUES (gen_random_uuid(), 't', 'b', true)"
+      - name: Type-check the generated app
+        run: npx tsc -p examples/dist/tsconfig.json
+      - name: End-to-end tests against PostgreSQL
+        env:
+          RIZO_TEST_DATABASE_URL: postgres://rizo:rizo@localhost:5432/rizo
+        run: npx vitest run tests/e2e.test.ts
+      - name: Run the generated server
+        env:
+          DATABASE_URL: postgres://rizo:rizo@localhost:5432/rizo
+          PORT: "3999"
+        run: |
+          cd examples/dist
+          node server.ts > server.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:3999/posts > /dev/null && break; sleep 0.5; done
+          test "$(curl -s http://127.0.0.1:3999/posts)" = "[]"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3999/posts -H 'Content-Type: application/json' -d '{}')" = "401"
+          kill %1
+          cat server.log

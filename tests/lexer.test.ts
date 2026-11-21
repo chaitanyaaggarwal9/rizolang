@@ -42,17 +42,31 @@ describe("lexer", () => {
   });
 
   it.each([
-    [",", "commas"],
     [";", "semicolons"],
     ["_", "camelCase"],
     ["?", "optional"],
     ["@", "without @"],
-    ["(", "max 100"],
+    ["#", "two slashes"],
+    ["!", "`=` only"],
   ])("rejects %s with a targeted fix", (ch, hint) => {
     const d = lexError(`model A {\n  x${ch}`);
     expect(d.code).toBe("RZ0101");
     expect(d.span).toEqual({ line: 2, col: 4, length: 1 });
     expect(d.fix).toContain(hint);
+  });
+
+  it("lexes the punctuation used by api blocks", () => {
+    const t = tokens("api GET /posts/:id -> Post.public {\n  return db.Post.list(author = me, limit 5)\n}");
+    expect(t.map((x) => x.kind)).toEqual([
+      "ident", "ident", "path", "arrow", "ident", "dot", "ident", "lbrace",
+      "ident", "ident", "dot", "ident", "dot", "ident", "lparen", "ident", "equals", "ident", "comma", "ident", "int", "rparen",
+      "rbrace", "eof",
+    ]);
+    expect(t[2]).toMatchObject({ text: "/posts/:id", span: { line: 1, col: 9, length: 10 } });
+  });
+
+  it("ends a path at a comment", () => {
+    expect(tokens("/posts // all posts").map((x) => x.text)).toEqual(["/posts", ""]);
   });
 
   it("rejects decimals", () => {

@@ -298,7 +298,7 @@ This one line adds signup, login and logout (`/auth/signup`, `/auth/login`, `/au
 - `GET` and `PATCH /auth/me` to read and edit your profile,
 - `POST /auth/password` to change your password, which logs out your other sessions,
 - `POST /auth/logout-all` to log out everywhere, and `GET /auth/sessions` / `DELETE /auth/sessions/:id` to see your devices and log out one,
-- `DELETE /auth/me` to delete your account,
+- `GET /auth/me/export` to download everything stored about you, and `DELETE /auth/me` to delete your account (posts and other records that need an owner stay, credited to "Deleted user"),
 - email confirmation (required before the first login) and password reset by email,
 - passkeys (fingerprint, face or device PIN), managed on the built-in `/account` page,
 - API tokens for scripts and AI agents (`Authorization: Bearer rzt_...`), each limited to the endpoints you choose, for at most 90 days.
@@ -382,6 +382,7 @@ The compiler enforces these rules:
 | Bots, scrapers and brute force | Every endpoint is rate-limited (120/min by default, `limit 10 per minute` to tighten), with counters shared across servers in PostgreSQL. Login, signup and password checks have stricter limits, and password hashing is queued so a login flood can't stall the server. |
 | Phishing and stolen passwords | Built-in passkeys (fingerprint, face or device PIN) on every app with a login. A passkey only works on the site that created it, and the server keeps only the public key. |
 | Over-powered AI agents | API tokens are limited to the endpoints you pick, expire within 90 days, can be revoked, never work on account endpoints, and every use is in the audit log. |
+| Privacy rights requests | Every app lets people download all their data and delete their account from the `/account` page, with no code to write. Deleted accounts leave no personal data behind. |
 | Stolen databases and backups | Mark sensitive fields `encrypted`: the server encrypts them with AES-256-GCM before they reach the database, and keys can be rotated with `node reencrypt.ts`. |
 | Account enumeration | Identical responses and timing for an unknown account and a wrong password. Signup and password reset answer the same whether or not the email has an account; the owner gets an email instead. |
 | Fake and throwaway sign-ups | Accounts confirm their email before they can log in. One-time links are hashed, expire, and are kept out of logs. |

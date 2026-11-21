@@ -61,6 +61,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Reviews a file that builds for choices that are allowed but often a mistake, and prints each with its location and a fix, as warnings or notes: public endpoints that change data (RA01), fields that look like personal data or secrets but aren't `private` (RA02) or aren't `encrypted` (RA03), public email addresses (RA04), public lists of all accounts (RA05), login-only updates and deletes without an owner or role check (RA06), and loose rate limits on public endpoints (RA07).
   - Writes nothing, supports `--json`, and exits with 1 on warnings so it can run in CI.
 
+- Milestone 8, part 1: your data.
+  - `GET /auth/me/export` returns everything stored about the account as a `my-data.json` download: every field except the password hash (private and encrypted fields included), the records of every model that link to it, devices, passkeys, API tokens and the account's security log. At most 5 times an hour; recorded in the audit log.
+  - **Changed:** `DELETE /auth/me` no longer refuses while records link to the account. Records that need an owner are given to one shared "Deleted user" account in the same statement, which holds only placeholders and can't be logged into. The `_rizo_deleted_user` table is added by migration.
+  - The `/account` page has "Download my data" and "Delete my account" (with the password and a confirmation).
+
 ### Fixed
 
 - Signup SQL no longer crashes the compiler when the auth model has a camelCase field, such as `displayName` (introduced earlier in this release cycle).

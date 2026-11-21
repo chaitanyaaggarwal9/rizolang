@@ -102,6 +102,9 @@ export const CHALLENGES_TABLE = "_rizo_challenges";
 export const UNVERIFIED_TABLE = "_rizo_unverified";
 export const EMAIL_TOKENS_TABLE = "_rizo_email_tokens";
 
+/** The one shared "Deleted user" account that keeps deleted accounts' records (apps with an auth line). */
+export const GHOST_TABLE = "_rizo_deleted_user";
+
 /** API tokens for scripts and AI agents (apps with an auth line). */
 export const AGENT_TOKENS_TABLE = "_rizo_tokens";
 
@@ -213,6 +216,19 @@ export function buildSchema(
       foreignKeys: [{
         name: constraintName(UNVERIFIED_TABLE, "user_id", "fkey"), column: "user_id", refTable: auth.model.table,
         onDelete: "CASCADE", index: constraintName(UNVERIFIED_TABLE, "user_id", "idx"),
+      }],
+    });
+    // At most one row: which account is the shared "Deleted user".
+    tables.push({
+      name: GHOST_TABLE,
+      comment: "The shared \"Deleted user\" account. Records of deleted accounts are given to it.",
+      columns: [
+        col("one", "BOOLEAN", { primaryKey: true, notNull: false, default: "true", check: { name: constraintName(GHOST_TABLE, "one", "check"), expr: `${q("one")}` } }),
+        col("user_id", "UUID", {}),
+      ],
+      foreignKeys: [{
+        name: constraintName(GHOST_TABLE, "user_id", "fkey"), column: "user_id", refTable: auth.model.table,
+        onDelete: "RESTRICT", index: constraintName(GHOST_TABLE, "user_id", "idx"),
       }],
     });
     // API tokens: only hashes, each limited to chosen endpoints and an expiry.

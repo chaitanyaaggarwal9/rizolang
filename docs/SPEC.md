@@ -171,7 +171,8 @@ It adds these endpoints. Paths under `/auth` are reserved.
 | `POST /auth/tokens` | `{ "name": ..., "endpoints": ["POST /api/posts", ...], "days": 1–90 }` | Login required (cookie). 201 with the token in `token`, shown only this once. `days` defaults to 90. 409 over 20 tokens |
 | `DELETE /auth/tokens/:id` | none                        | Login required (cookie). 204: the token stops working. 404 if it isn't yours |
 | `DELETE /auth/sessions/:id` | none                      | Login required. 204: that device is logged out (if it is this one, the cookie is cleared too). 404 if it isn't one of yours |
-| `DELETE /auth/me`   | `{ "password": ... }`             | 204, and the account and its sessions are deleted. 409 if other records still link to it |
+| `DELETE /auth/me`   | `{ "password": ... }`             | 204: the account is deleted (see "Your data" below). 409 only if records need an owner and no "Deleted user" account can be made |
+| `GET /auth/me/export` | none                            | Login required (cookie). 200 with everything stored about you, as a `my-data.json` download. At most 5 times an hour |
 | `GET /auth/audit`   | `?account=<id>&limit=<1–500>` (optional) | Admins only (needs `roles admin`): the newest security audit entries, `{ "items": [...] }` |
 | `POST /auth/passkeys/register-options` | none | Login required. 200 with WebAuthn creation options for this account |
 | `POST /auth/passkeys` | `{ "name": ..., "credential": ... }` | Login required. 201 `{ "id", "name", "createdAt", "lastUsedAt" }`. 409 if the passkey is already added or the account has 20 |
@@ -191,6 +192,11 @@ It adds these endpoints. Paths under `/auth` are reserved.
 - **Limits:** at most 3 emails an hour go to one account, and requests that send email are limited to 10 an hour per address.
 - **Emails** are plain text, made of fixed sentences plus the link. Nothing from a request is put in them. They are sent through [Resend](https://resend.com) in the background, so the response never waits for them or depends on them, and failures are logged without the address.
 - Accounts that existed before email confirmation was added count as confirmed.
+
+**Your data.** Every app with an `auth` line lets people take and delete their data.
+- **Export:** `GET /auth/me/export` returns `account` (every stored field except the password hash, private and encrypted ones included, since it is the person's own data), `records` (each model's records that link to the account, up to 10,000 per model; `truncated` lists any model with more), `devices`, `passkeys`, `apiTokens` and `securityLog` (their audit entries). It is recorded in the audit log as `data_exported`.
+- **Deletion:** `DELETE /auth/me` deletes the account with its sessions, devices, passkeys and API tokens. Optional links to it become empty. Records that must link to an account, such as posts, are given to one shared **"Deleted user"** account in the same statement, so they stay but nothing points back to the person.
+- The "Deleted user" account is created the first time it is needed. It holds only placeholders ("Deleted user", an address under the reserved `.invalid` domain) and has no password, so nobody can log in as it. If the auth model has a required link to another model, no placeholder can be made, and deletion answers 409 while such records exist.
 
 **API tokens.** Scripts and AI agents can call your endpoints with an API token instead of a session cookie: `Authorization: Bearer rzt_...`.
 - A token acts as the account that made it, but **only on the endpoints chosen** when it was made (any endpoint that needs a login). Other endpoints answer 403 `token_not_allowed`.
@@ -497,7 +503,7 @@ page /posts/:id/delete {
 **Built-in pages.** In an app with an `auth` line and at least one page:
 - `/login` and `/signup` are generated, with forms for `/auth/login` and `/auth/signup`. `/login` also has "Log in with a passkey", and links to reset the password or get a new confirmation link.
 - `/verify-email` and `/reset-password` open from the emailed links: they confirm the email, or ask for a new password. Opened without a link, they ask for an email address and send a new link.
-- `/account` (login required) lists the user's passkeys, and adds and removes them. It also lists the devices the user is logged in on, with "Log out" for each and "Log out everywhere", and lets the user create and revoke API tokens.
+- `/account` (login required) lists the user's passkeys, and adds and removes them. It also lists the devices the user is logged in on, with "Log out" for each and "Log out everywhere", lets the user create and revoke API tokens, download their data, and delete their account.
 - Every page shows a menu with a link home, plus "Log in" and "Sign up", or "Account" and "Log out".
 - A page that needs a login sends logged-out visitors to `/login?next=<the page>`. After logging in they return there. `next` is followed only if it is a path on this site.
 
@@ -638,6 +644,7 @@ These are enforced by the compiler and the runtime, and covered by `tests/securi
 12. Signup, resending a confirmation link and asking for a password reset answer the same whether or not the email has an account. Emailed links work once, expire, are stored only as hashes and never appear in logs, and accounts can't log in before confirming their email.
 13. Encrypted fields are stored only as AES-256-GCM ciphertext, tied to their column, and are decrypted only by the server. They can never be compared, sorted or made unique in the database.
 14. An API token works only on the endpoints chosen for it, never on account endpoints, and never after it expires (at most 90 days) or is revoked. Only its hash is stored.
+15. People can download everything stored about them, and deleting an account leaves no personal data behind: its records either go with it or are credited to a placeholder "Deleted user" account that can't be logged into.
 
 ---
 
@@ -930,4 +937,4 @@ These are **not** part of the language yet. Using them is an error.
 - Filters other than `=`.
 - Changing the login email.
 - Custom page layouts and styling.
-- Changing your account from a page (the API endpoints exist already).
+- Changing your profile or password from a page (the API endpoints exist already).

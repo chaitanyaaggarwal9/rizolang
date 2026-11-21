@@ -540,17 +540,48 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       carol = (await login(CAROL_NEW)).cookie ?? "";
     });
 
-    it("deletes the account only with the password, and only when nothing links to it", async () => {
+    it("exports everything stored about the account, including private and own records, but never the password", async () => {
       const post = await call("POST", "/api/posts", { cookie: carol, body: { title: "Mine", body: "x", published: false } });
-      const blocked = await call("DELETE", "/auth/me", { cookie: carol, body: { password: CAROL_NEW } });
-      expect(blocked).toMatchObject({ status: 409, body: { error: { code: "in_use" } } });
-      await call("DELETE", `/api/posts/${(post.body as { id: string }).id}`, { cookie: carol });
+      const r = await call("GET", "/auth/me/export", { cookie: carol });
+      expect(r.status).toBe(200);
+      expect(r.headers.get("content-disposition")).toBe('attachment; filename="my-data.json"');
+      const data = r.body as { account: Record<string, unknown>; records: Record<string, { id: string; title?: string }[]>; devices: unknown[]; securityLog: { action: string }[] };
+      expect(data.account).toMatchObject({ id: carolId, email: CAROL.email, name: "Carol B" });
+      expect(Object.keys(data.account)).not.toContain("password");
+      expect(data.records["Post"]?.map((x) => x.id)).toContain((post.body as { id: string }).id);
+      expect(data.records).toHaveProperty("Comment");
+      expect(data.devices.length).toBeGreaterThan(0);
+      expect(data.securityLog.map((e) => e.action)).toContain("password_changed");
+      expect(JSON.stringify(r.body)).not.toMatch(/scrypt|password_hash|token_hash/);
+      expect((await call("GET", "/auth/me/export")).status).toBe(401);
+      expect((await call("GET", "/auth/me/export", { cookie: bob })).body).toMatchObject({ account: { name: "Bob" } });
+    });
+
+    it("deletes the account only with the password, keeping its posts as \"Deleted user\"", async () => {
+      const post = items<{ id: string }>(await call("GET", "/api/my/posts", { cookie: carol }))[0];
       expect((await call("DELETE", "/auth/me", { cookie: carol, body: { password: "wrong wrong wrong" } })).status).toBe(403);
       const r = await call("DELETE", "/auth/me", { cookie: carol, body: { password: CAROL_NEW } });
       expect(r.status).toBe(204);
       expect((await call("GET", "/auth/me", { cookie: carol })).status).toBe(401);
       expect((await login(CAROL_NEW)).status).toBe(401);
       expect((await call("GET", `/api/users/${carolId}`)).status).toBe(404);
+      // The post stays, now credited to the shared "Deleted user" account, which holds no personal data.
+      const kept = (await pool.query('SELECT "author_id" FROM "posts" WHERE "id" = $1', [post?.id])).rows[0];
+      expect(kept.author_id).not.toBe(carolId);
+      const ghost = (await call("GET", `/api/users/${kept.author_id}`)).body as Record<string, unknown>;
+      expect(ghost).toMatchObject({ name: "Deleted user", bio: null });
+      const row = (await pool.query('SELECT "email", "password_hash" FROM "users" WHERE "id" = $1', [kept.author_id])).rows[0];
+      expect(row.email).toMatch(/^d[0-9a-f]+@deleted\.invalid$/);
+      expect(row.password_hash).toBe("!");
+      expect((await pool.query('SELECT count(*)::int AS "n" FROM "users" WHERE "email" = $1', [CAROL.email])).rows[0].n).toBe(0);
+
+      // A second deleted account shares the same "Deleted user".
+      const erin = await join({ email: "erin@example.com", password: "erins long password", name: "Erin" } as never, "198.51.100.5");
+      await call("POST", "/api/posts", { cookie: erin.cookie, body: { title: "Erin's", body: "x", published: true } });
+      expect((await call("DELETE", "/auth/me", { cookie: erin.cookie, body: { password: "erins long password" } })).status).toBe(204);
+      const owners = (await pool.query(`SELECT DISTINCT "author_id" FROM "posts" WHERE "title" IN ('Mine', 'Erin''s')`)).rows;
+      expect(owners).toEqual([{ author_id: kept.author_id }]);
+      expect((await pool.query('SELECT count(*)::int AS "n" FROM "_rizo_deleted_user"')).rows[0].n).toBe(1);
     });
 
     it("locks out repeated wrong passwords on sensitive changes", async () => {
@@ -949,7 +980,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect(has("record_deleted", { user_id: aliceId, detail: "Post" })).toBe(true);
     expect(has("login_failed", { user_id: aliceId, detail: "email not confirmed" })).toBe(true);
     expect(has("email_verified", { user_id: aliceId })).toBe(true);
-    for (const action of ["password_changed", "password_check_failed", "account_deleted", "logout_all", "logout", "password_reset_requested", "password_reset", "session_revoked", "token_created", "token_used", "token_revoked"]) {
+    for (const action of ["password_changed", "password_check_failed", "account_deleted", "logout_all", "logout", "password_reset_requested", "password_reset", "session_revoked", "token_created", "token_used", "token_revoked", "data_exported"]) {
       expect(has(action), action).toBe(true);
     }
     expect(rows.every((r) => r.ip === null || /^[0-9a-f.:]+$/i.test(String(r.ip)))).toBe(true);
@@ -982,7 +1013,8 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
   });
 
   it("never leaks passwords, hashes or emails in responses or logs", () => {
-    const everything = [...responses, ...logs].join("\n");
+    // A data export returns the requester's own email to them (tested above), so exports are left out here.
+    const everything = [...responses.filter((r) => !r.includes(`"exportedAt"`)), ...logs].join("\n");
     for (const secret of [ALICE.password, BOB.password, CAROL.password, CAROL_NEW, "daves long password", "scrypt$", "alice@example.com", "Alice@Example.com", BOB.email, "password_hash"]) {
       expect(everything).not.toContain(secret);
     }

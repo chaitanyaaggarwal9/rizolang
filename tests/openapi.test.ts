@@ -42,6 +42,7 @@ describe("openapi.json", () => {
   it("is OpenAPI 3.1 with every endpoint", () => {
     expect(doc.openapi).toBe("3.1.0");
     expect(doc.info.title).toBe("test");
+    expect((doc as unknown as { servers: { url: string }[] }).servers).toEqual([{ url: "/", description: "The server that serves this document." }]);
     expect(ops(doc).map(([p, m]) => `${m.toUpperCase()} ${p}`)).toEqual(expect.arrayContaining([
       "GET /api/posts", "GET /api/posts/{id}", "POST /api/posts", "PATCH /api/posts/{id}", "DELETE /api/posts/{id}",
     ]));

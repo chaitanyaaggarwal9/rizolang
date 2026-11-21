@@ -147,3 +147,87 @@ page /posts/:id {
     expect(r.output.server?.routes).toContain("pages:");
   });
 });
+
+describe("forms and buttons", () => {
+  const APP = `${BASE}
+api POST /api/posts -> Post.public {
+  requires login
+  return db.Post.create(body, author = me)
+}
+
+api PATCH /api/posts/:id -> Post.public {
+  requires login
+  requires owner author
+  return db.Post.update(id, body)
+}
+
+api DELETE /api/posts/:id {
+  requires login
+  requires owner author
+  return db.Post.delete(id)
+}
+
+page /posts/:id {
+  public
+  show GET /api/posts/:id
+}
+
+page / {
+  public
+  show GET /api/posts
+}
+`;
+  const withApp = (pages: string) => `${APP}${pages}\n`;
+  const app = (pages: string) => {
+    const r = compileOk(withApp(pages));
+    return buildApp(r.apis, r.auth, r.pages);
+  };
+
+  it("builds a create form from the endpoint's body, going to the saved record", () => {
+    const a = app("page /new {\n  requires login\n  form POST /api/posts\n  then go /posts/:id\n}");
+    const form = a.pages.find((p) => p.pattern === "/new")?.items[0];
+    expect(form).toMatchObject({ kind: "form", method: "POST", endpoint: "/api/posts", submit: "Save", prefill: null, then: "/posts/:id" });
+    // The owner link is never a form field: the server sets it from the session.
+    expect(form?.kind === "form" && form.fields.map((f) => [f.key, f.label, f.required])).toEqual([["title", "Title", true]]);
+  });
+
+  it("prefills edit forms from the GET endpoint on the same path", () => {
+    const a = app("page /posts/:id/edit {\n  requires login\n  form PATCH /api/posts/:id\n  then go /posts/:id\n}");
+    const form = a.pages.find((p) => p.pattern === "/posts/:id/edit")?.items[0];
+    expect(form).toMatchObject({ kind: "form", method: "PATCH", prefill: "/api/posts/:id", submit: "Save changes" });
+  });
+
+  it("builds a delete button", () => {
+    const a = app("page /posts/:id/delete {\n  requires login\n  button \"Delete post\" DELETE /api/posts/:id\n  then go /\n}");
+    expect(a.pages.find((p) => p.pattern === "/posts/:id/delete")?.items[0]).toEqual({
+      kind: "button", label: "Delete post", method: "DELETE", endpoint: "/api/posts/:id", then: "/",
+    });
+  });
+
+  it("adds the built-in login and signup pages to apps with auth and pages", () => {
+    const a = app("");
+    const login = a.pages.find((p) => p.pattern === "/login");
+    expect(login?.items[0]).toMatchObject({ kind: "form", endpoint: "/auth/login", then: null });
+    const signup = a.pages.find((p) => p.pattern === "/signup")?.items[0];
+    expect(signup?.kind === "form" && signup.fields.map((f) => f.key)).toEqual(["email", "password", "name"]);
+    expect(buildApp([], undefined, []).pages).toEqual([]);
+  });
+
+  it.each([
+    ["page /new {\n  requires login\n  form GET /api/posts\n  then go /\n}", "RZ0335", "POST, PUT or PATCH"],
+    ["page /new {\n  requires login\n  form POST /api/post\n  then go /\n}", "RZ0335", "POST /api/posts"],
+    ["page /new {\n  public\n  form POST /api/posts\n  then go /\n}", "RZ0335", "requires login"],
+    ["page /x/:id {\n  requires login\n  button \"Go\" POST /api/posts\n  then go /\n}", "RZ0335", "DELETE"],
+    ["page /new {\n  requires login\n  form POST /api/posts\n  form POST /api/posts\n  then go /\n}", "RZ0337", "at most one"],
+    ["page /new {\n  requires login\n  form POST /api/posts\n}", "RZ0338", "then go"],
+    ["page /new {\n  public\n  then go /\n}", "RZ0338", "no form or button"],
+    ["page /new {\n  requires login\n  form POST /api/posts\n  then go /nowhere\n}", "RZ0338", "no page"],
+    ["page /x/:id {\n  requires login\n  button \"Delete\" DELETE /api/posts/:id\n  then go /posts/:other\n}", "RZ0338", ":other"],
+    ["page /new {\n  requires login\n  form POST /api/posts\n  then /\n}", "RZ0220", "then go"],
+    ["page /new {\n  requires login\n  button DELETE /api/posts/:id\n}", "RZ0221", "button"],
+  ])("rejects %j with %s", (src, code, fix) => {
+    const d = firstError(withApp(src));
+    expect(d.code).toBe(code);
+    expect(`${d.message} ${d.fix}`).toContain(fix);
+  });
+});

@@ -128,6 +128,8 @@ page /posts/:id {
 - `show` takes one GET endpoint from the file. Page `:params` fill the endpoint's params by name, and every page param must be used.
 - A page must be at least as strict as what it shows: use `requires login` if the endpoint does.
 - Lists link to a page that shows one record of the same model.
+- `form POST /api/posts` (or PUT or PATCH) builds a form from the endpoint's body. `button "Delete" DELETE /api/posts/:id` deletes. Each page has at most one form or button, followed by `then go /path` (`:id` can be the saved record).
+- With an auth line, `/login`, `/signup` and a log-in/log-out menu are built in. Don't write login pages.
 
 ## Migrations
 

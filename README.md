@@ -301,10 +301,19 @@ page /posts/:id {
   title "A post"
   show GET /api/posts/:id
 }
+
+page /posts/new {
+  requires login
+  title "Write a post"
+  form POST /api/posts
+  then go /posts/:id
+}
 ```
 
 **How pages work:**
 - Pages are generated from your endpoints: lists with "Load more", single records, text and links.
+- **Forms** (`form POST`, `PUT` or `PATCH`) and **delete buttons** (`button "Delete" DELETE ...`) are built from the endpoint's body, with the same limits checked in the browser and on the server. Edit forms start with the current values.
+- Apps with an `auth` line get `/login`, `/signup` and a log-in/log-out menu. Pages that need a login send visitors to log in and then bring them back.
 - You never write HTML or browser code. All text is inserted as plain text, and pages are served with a strict Content-Security-Policy.
 - A page is never more open than the data it shows: a page showing a `requires login` endpoint must also say `requires login`.
 - By convention, endpoints live under `/api` so they don't clash with page paths.
@@ -398,7 +407,7 @@ Rizo Lang is in **early development**, so expect the language to change before 1
 - [x] **Milestone 1:** models, compiled to a PostgreSQL schema and TypeScript types ([v0.1.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.1.0))
 - [x] **Milestone 2:** `auth`, `api` endpoints, links, `private` fields and a generated Node.js server ([v0.2.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.2.0))
 - [x] **Milestone 3:** roles, pagination, account management and migrations ([v0.3.1](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.3.1))
-- [ ] **Milestone 4** (in progress): `page` blocks ✓, forms, built-in login and signup pages
+- [x] **Milestone 4:** pages, forms, delete buttons, and built-in login and signup pages
 - [x] Publish the compiler to npm ([`rizolang`](https://www.npmjs.com/package/rizolang))
 - [ ] A VS Code extension with syntax highlighting
 

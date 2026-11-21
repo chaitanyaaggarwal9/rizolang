@@ -36,6 +36,20 @@ api GET /api/posts/:id -> Post.public {
   public
   return db.Post.find(id)
 }
+api POST /api/posts -> Post.public {
+  requires login
+  return db.Post.create(body, author = me)
+}
+api PATCH /api/posts/:id -> Post.public {
+  requires login
+  requires owner author
+  return db.Post.update(id, body)
+}
+api DELETE /api/posts/:id {
+  requires login
+  requires owner author
+  return db.Post.delete(id)
+}
 `;
 const isBlock = (s: string) => /^(model|auth|api|page)\b/m.test(s.trimStart());
 /** Compile a snippet: whole blocks as they are (api blocks with the §3 models), single fields inside a model. */

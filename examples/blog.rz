@@ -86,6 +86,7 @@ page / {
   public
   title "Rizo Blog"
   text "Stories from our writers."
+  link "Write a post" /posts/new
   show GET /api/posts
 }
 
@@ -93,7 +94,31 @@ page /posts/:id {
   public
   title "Post"
   show GET /api/posts/:id
+  link "Edit" /posts/:id/edit
+  link "Delete" /posts/:id/delete
   link "Back to all posts" /
+}
+
+page /posts/new {
+  requires login
+  title "Write a post"
+  form POST /api/posts
+  then go /posts/:id
+}
+
+page /posts/:id/edit {
+  requires login
+  title "Edit post"
+  form PATCH /api/posts/:id
+  then go /posts/:id
+}
+
+page /posts/:id/delete {
+  requires login
+  title "Delete post"
+  text "This deletes the post for good."
+  button "Delete post" DELETE /api/posts/:id
+  then go /
 }
 
 page /admin {

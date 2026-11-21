@@ -88,8 +88,8 @@ function shell(title: string, body: string): string {
 }
 
 /** A page: the client runtime renders it from the JSON data block. */
-export function renderPage(page: PageRoute, params: Readonly<Record<string, string>>, loggedIn: boolean): string {
-  const data = { title: page.title, items: page.items, params, loggedIn };
+export function renderPage(page: PageRoute, params: Readonly<Record<string, string>>, loggedIn: boolean, hasAuth: boolean): string {
+  const data = { title: page.title, items: page.items, params, loggedIn, auth: hasAuth };
   return shell(
     page.title,
     [

@@ -164,7 +164,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         const found = pageFor(url.pathname);
         if (found === undefined) throw new Error("unreachable");
         pattern = found.page.pattern;
-        status = await servePage(req, res, found.page, found.parts);
+        status = await servePage(req, res, found.page, found.parts, url.pathname);
       } else {
         const { route, params } = match(method, url.pathname);
         pattern = route.pattern;
@@ -247,7 +247,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     return 200;
   }
 
-  async function servePage(req: IncomingMessage, res: ServerResponse, page: PageRoute, parts: readonly string[]): Promise<number> {
+  async function servePage(req: IncomingMessage, res: ServerResponse, page: PageRoute, parts: readonly string[], pathname: string): Promise<number> {
     const html = (status: number, body: string): number => {
       res.writeHead(status, PAGE_HEADERS);
       res.end(body);
@@ -263,6 +263,12 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     }
     const me = await currentUser(req);
     if (page.access === "login" && me === undefined) {
+      if (app.pages.some((p) => p.pattern === "/login")) {
+        // Back to this page after logging in. The login page only follows internal paths.
+        res.writeHead(302, { ...PAGE_HEADERS, Location: `/login?next=${encodeURIComponent(pathname)}` });
+        res.end();
+        return 302;
+      }
       return html(401, renderMessage("Please log in", "You need to log in to see this page."));
     }
     if (page.roles.length > 0) {
@@ -271,7 +277,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         return html(403, renderMessage("Not allowed", "You don't have permission to see this page."));
       }
     }
-    return html(200, renderPage(page, params, me !== undefined));
+    return html(200, renderPage(page, params, me !== undefined, app.auth !== null));
   }
 
   function match(method: string, pathname: string): Matched {

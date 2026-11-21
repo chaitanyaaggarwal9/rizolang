@@ -23,13 +23,23 @@ class FakeElement {
   children: (FakeElement | FakeText)[] = [];
   parent: FakeElement | undefined;
   hidden = false;
+  disabled = false;
+  checked = false;
+  value = "";
   onclick: (() => void) | null = null;
+  onsubmit: ((e: { preventDefault(): void }) => void) | null = null;
   readonly tagName: string;
   constructor(tagName: string) {
     this.tagName = tagName;
   }
   setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
+  }
+  removeAttribute(name: string): void {
+    this.attributes.delete(name);
+  }
+  focus(): void {
+    focused = this;
   }
   append(...nodes: (FakeElement | FakeText)[]): void {
     for (const n of nodes) {
@@ -47,6 +57,9 @@ class FakeElement {
   get textContent(): string {
     return this.children.map((c) => c.textContent).join("");
   }
+  set textContent(text: string) {
+    this.children = [new FakeText(text)];
+  }
   set innerHTML(_: string) {
     throw new Error("innerHTML must never be used");
   }
@@ -56,6 +69,13 @@ class FakeElement {
 }
 
 let replaced: FakeElement | undefined;
+let focused: FakeElement | undefined;
+const navigation: string[] = [];
+let confirmAnswer = true;
+const fakeWindow = {
+  location: { search: "", pathname: "/", assign: (url: string) => navigation.push(url) },
+  confirm: () => confirmAnswer,
+};
 const byId = new Map<string, unknown>();
 
 function all(node: FakeElement): FakeElement[] {
@@ -74,12 +94,18 @@ beforeAll(async () => {
     createTextNode: (text: string) => new FakeText(text),
     getElementById: (id: string) => byId.get(id) ?? null,
   };
+  (globalThis as { window?: unknown }).window = fakeWindow;
   client = await import("../runtime/client/rizo-client.js");
 });
 
 afterEach(() => {
   byId.clear();
   replaced = undefined;
+  focused = undefined;
+  navigation.length = 0;
+  confirmAnswer = true;
+  fakeWindow.location.search = "";
+  fakeWindow.location.pathname = "/";
 });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -92,6 +118,16 @@ function stubFetch(body: unknown, status = 200): string[] {
     return { ok: status >= 200 && status < 300, status, json: async () => body };
   };
   return urls;
+}
+
+interface Sent { url: string; method: string; body: unknown; headers: Record<string, string> }
+function stubSend(body: unknown, status = 200): Sent[] {
+  const sent: Sent[] = [];
+  (globalThis as { fetch?: unknown }).fetch = async (url: string, init?: { method?: string; body?: string; headers?: Record<string, string> }) => {
+    sent.push({ url, method: init?.method ?? "GET", body: init?.body === undefined ? undefined : JSON.parse(init.body), headers: init?.headers ?? {} });
+    return { ok: status >= 200 && status < 300, status, json: async () => body };
+  };
+  return sent;
 }
 
 describe("el()", () => {
@@ -146,6 +182,7 @@ describe("rendering a page", () => {
       title: HOSTILE,
       params: {},
       loggedIn: false,
+      auth: false,
       items: [
         { kind: "text", text: HOSTILE },
         { kind: "show", endpoint: "/api/posts", mode: "list", model: "Post", fields: [...fields], detail: { path: "/posts/:id", param: "id" } },
@@ -164,7 +201,7 @@ describe("rendering a page", () => {
   it("links each list item to its own page, with the id encoded", async () => {
     stubFetch({ items: [{ id: "a/b", title: "One", published: false }], next: null });
     const page = client.renderPage({
-      title: "Posts", params: {}, loggedIn: false,
+      title: "Posts", params: {}, loggedIn: false, auth: false,
       items: [{ kind: "show", endpoint: "/api/posts", mode: "list", model: "Post", fields: [...fields], detail: { path: "/posts/:id", param: "id" } }],
     }) as unknown as FakeElement;
     await flush();
@@ -175,7 +212,7 @@ describe("rendering a page", () => {
   it("loads the next page with the cursor from the previous one", async () => {
     const urls = stubFetch({ items: [{ id: "1", title: "One", published: true }], next: "abc+/=" });
     const page = client.renderPage({
-      title: "Posts", params: {}, loggedIn: false,
+      title: "Posts", params: {}, loggedIn: false, auth: false,
       items: [{ kind: "show", endpoint: "/api/posts", mode: "list", model: "Post", fields: [...fields], detail: null }],
     }) as unknown as FakeElement;
     await flush();
@@ -189,7 +226,7 @@ describe("rendering a page", () => {
   it("fills the page's parameters into the endpoint and shows one record", async () => {
     const urls = stubFetch({ id: "42", title: "Answer", published: false });
     const page = client.renderPage({
-      title: "Post", params: { id: "42" }, loggedIn: false,
+      title: "Post", params: { id: "42" }, loggedIn: false, auth: false,
       items: [{ kind: "show", endpoint: "/api/posts/:id", mode: "one", model: "Post", fields: [...fields], detail: null }],
     }) as unknown as FakeElement;
     await flush();
@@ -200,7 +237,7 @@ describe("rendering a page", () => {
   it("shows readable errors, never the server's raw response", async () => {
     stubFetch({ error: { message: HOSTILE } }, 500);
     const page = client.renderPage({
-      title: "Post", params: { id: "1" }, loggedIn: false,
+      title: "Post", params: { id: "1" }, loggedIn: false, auth: false,
       items: [{ kind: "show", endpoint: "/api/posts/:id", mode: "one", model: "Post", fields: [...fields], detail: null }],
     }) as unknown as FakeElement;
     await flush();
@@ -230,4 +267,138 @@ describe("runtime source", () => {
       expect(source).not.toContain(api);
     },
   );
+});
+
+describe("navigation", () => {
+  it.each([
+    ["/posts/1", "/posts/1"],
+    ["//evil.example", "/"],
+    ["https://evil.example", "/"],
+    ["javascript:alert(1)", "/"],
+    ["/\\evil.example", "/"],
+  ])("go(%j) opens %j", (target, expected) => {
+    client.go(target);
+    expect(navigation).toEqual([expected]);
+  });
+
+  it.each([
+    ["?next=%2Fposts%2F1", "/posts/1"],
+    ["?next=%2F%2Fevil.example", "/"],
+    ["?next=https%3A%2F%2Fevil.example", "/"],
+    ["?next=javascript%3Aalert(1)", "/"],
+    ["", "/"],
+  ])("follows ?next= only to this site (%j)", (search, expected) => {
+    fakeWindow.location.search = search;
+    expect(client.nextPath()).toBe(expected);
+  });
+});
+
+describe("forms", () => {
+  const field = (key: string, kind: string, extra: Record<string, unknown> = {}) =>
+    ({ key, kind, label: key, required: false, nullable: true, multiline: false, ...extra }) as never;
+  const input = (props: Partial<FakeElement>) => Object.assign(new FakeElement("input"), props) as never;
+
+  it("reads values as the API expects them", () => {
+    expect(client.readField(field("n", "Number"), input({ value: "42" }), false)).toBe(42);
+    expect(client.readField(field("t", "Text"), input({ value: "" }), false)).toBeNull();
+    expect(client.readField(field("t", "Text", { nullable: false }), input({ value: "" }), false)).toBeUndefined();
+    expect(client.readField(field("t", "Text"), input({ value: "" }), true)).toBeUndefined();
+    expect(client.readField(field("p", "Password"), input({ value: "" }), false)).toBeUndefined();
+    expect(client.readField(field("b", "Bool"), input({ checked: true }), false)).toBe(true);
+    expect(client.readField(field("d", "Date"), input({ value: "2026-01-31T12:00" }), false)).toBe(new Date("2026-01-31T12:00").toISOString());
+  });
+
+  const formPage = (extra: Record<string, unknown> = {}) => client.renderPage({
+    title: "New", params: {}, loggedIn: true, auth: false,
+    items: [{
+      kind: "form", method: "POST", endpoint: "/api/posts", submit: "Save", prefill: null, then: "/posts/:id",
+      fields: [{ key: "title", kind: "Text", label: "Title", required: true, nullable: false, max: 200, multiline: false }],
+      ...extra,
+    } as never],
+  }) as unknown as FakeElement;
+
+  it("labels every input and passes limits to the browser", () => {
+    const page = formPage();
+    const input = all(page).find((e) => e.tagName === "input");
+    const label = all(page).find((e) => e.tagName === "label");
+    expect(label?.attributes.get("for")).toBe(input?.attributes.get("id"));
+    expect(input?.attributes.get("maxlength")).toBe("200");
+    expect(input?.attributes.has("required")).toBe(true);
+  });
+
+  it("never marks a checkbox as required (unticked means false)", () => {
+    const page = formPage({ fields: [{ key: "published", kind: "Bool", label: "Published", required: true, nullable: false, multiline: false }] });
+    const box = all(page).find((e) => e.tagName === "input");
+    expect(box?.attributes.get("type")).toBe("checkbox");
+    expect(box?.attributes.has("required")).toBe(false);
+  });
+
+  it("sends hostile input as data, then goes to the saved record", async () => {
+    const sent = stubSend({ id: "new/1" }, 201);
+    const page = formPage();
+    const box = all(page).find((e) => e.tagName === "input");
+    if (box) box.value = HOSTILE;
+    all(page).find((e) => e.tagName === "form")?.onsubmit?.({ preventDefault: () => undefined });
+    await flush();
+    expect(sent).toEqual([{ url: "/api/posts", method: "POST", body: { title: HOSTILE }, headers: { Accept: "application/json", "Content-Type": "application/json" } }]);
+    expect(navigation).toEqual(["/posts/new%2F1"]);
+  });
+
+  it("shows a server error next to its field, as text", async () => {
+    stubSend({ error: { code: "validation_failed", message: HOSTILE, field: "title" } }, 400);
+    const page = formPage();
+    all(page).find((e) => e.tagName === "form")?.onsubmit?.({ preventDefault: () => undefined });
+    await flush();
+    const error = all(page).find((e) => e.attributes.get("id") === "rizo-field-title-error");
+    expect(error?.children).toEqual([new FakeText(HOSTILE)]);
+    expect(focused?.attributes.get("aria-invalid")).toBe("true");
+    expect(navigation).toEqual([]);
+  });
+
+  it("goes to ?next= after logging in, only if it is on this site", async () => {
+    stubSend({ id: "u1" });
+    fakeWindow.location.search = "?next=%2F%2Fevil.example";
+    const page = formPage({ endpoint: "/auth/login", then: null });
+    all(page).find((e) => e.tagName === "form")?.onsubmit?.({ preventDefault: () => undefined });
+    await flush();
+    expect(navigation).toEqual(["/"]);
+  });
+});
+
+describe("buttons and the menu", () => {
+  const buttonPage = () => client.renderPage({
+    title: "Post", params: { id: "7" }, loggedIn: true, auth: false,
+    items: [{ kind: "button", label: "Delete", method: "DELETE", endpoint: "/api/posts/:id", then: "/" }],
+  }) as unknown as FakeElement;
+
+  it("asks before deleting, and does nothing when cancelled", async () => {
+    const sent = stubSend(null, 204);
+    confirmAnswer = false;
+    all(buttonPage()).find((e) => e.tagName === "button")?.onclick?.();
+    await flush();
+    expect(sent).toEqual([]);
+  });
+
+  it("deletes, then goes to the next page", async () => {
+    const sent = stubSend(null, 204);
+    all(buttonPage()).find((e) => e.tagName === "button")?.onclick?.();
+    await flush();
+    expect(sent.map((s) => `${s.method} ${s.url}`)).toEqual(["DELETE /api/posts/7"]);
+    expect(navigation).toEqual(["/"]);
+  });
+
+  it("offers log in and sign up, returning to the current page", () => {
+    fakeWindow.location.pathname = "/posts/7";
+    const page = client.renderPage({ title: "x", params: {}, loggedIn: false, auth: true, items: [] }) as unknown as FakeElement;
+    expect(all(page).filter((e) => e.tagName === "a").map((a) => a.attributes.get("href"))).toEqual(["/", "/login?next=%2Fposts%2F7", "/signup"]);
+  });
+
+  it("logs out through the API", async () => {
+    const sent = stubSend(null, 204);
+    const page = client.renderPage({ title: "x", params: {}, loggedIn: true, auth: true, items: [] }) as unknown as FakeElement;
+    all(page).find((e) => e.tagName === "button")?.onclick?.();
+    await flush();
+    expect(sent.map((s) => `${s.method} ${s.url}`)).toEqual(["POST /auth/logout"]);
+    expect(navigation).toEqual(["/"]);
+  });
 });

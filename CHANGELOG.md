@@ -12,12 +12,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Pages have `public` or `requires login` (with optional `requires role`), `title "..."`, `text "..."`, `link "..." /path` and `show GET /api/...`.
   - Lists have "Load more", single records are shown as fields, and lists link automatically to the page that shows one record.
   - The generated server serves pages with a strict Content-Security-Policy. The browser runtime (`/_rizo/client.js`) never uses `innerHTML`.
+- Milestone 4, part 2: forms and buttons.
+  - `form POST|PUT|PATCH /api/...` builds a form from the endpoint's body: labels, required fields and limits, checked in the browser and on the server. Edit forms are prefilled.
+  - `button "..." DELETE /api/...` deletes after a confirmation.
+  - `then go /path` says where to go afterwards; `:id` can come from the saved record.
+  - Apps with an auth line get built-in `/login` and `/signup` pages and a log-in/log-out menu. Login-only pages redirect to `/login?next=...`, and `next` is followed only to pages on the same site.
 - Quoted text, allowed only in pages.
-- New errors RZ0103, RZ0220, RZ0221 and RZ0333–RZ0337.
+- New errors RZ0103, RZ0220, RZ0221 and RZ0333–RZ0338.
 
 ### Changed
 
-- The example app's endpoints moved under `/api`, the convention when a file has pages.
+- The example app's endpoints moved under `/api`, the convention when a file has pages. It is now a complete blog in the browser: list, read, write, edit and delete posts, log in and sign up.
 
 ## [0.3.1] - 2026-11-21
 

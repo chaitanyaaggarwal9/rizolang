@@ -159,3 +159,56 @@ describe("rizolang build: migrations", () => {
     expect(err).toContain("no rizo-schema.json");
   });
 });
+
+describe("rizolang build --json", () => {
+  const parse = () => JSON.parse(out) as Record<string, unknown>;
+
+  it("prints one JSON object with what was built, and nothing else", () => {
+    writeFileSync(join(dir, "app.rz"), "model Note {\n  title: Text\n}\napi GET /api/notes -> list Note.public {\n  public\n  return db.Note.list()\n}\n");
+    expect(cli("build", "app.rz", "--json")).toBe(0);
+    expect(out.trim().split("\n")).toHaveLength(1);
+    expect(err).toBe("");
+    expect(parse()).toMatchObject({
+      rizolang: VERSION, ok: true, file: "app.rz", models: 1, endpoints: 1, pages: 0, auth: false,
+      migration: { file: "migrations/0001_initial.sql" }, dataLoss: [],
+    });
+    expect(parse()["written"]).toEqual(expect.arrayContaining(["dist/schema.sql", "dist/openapi.json"]));
+    out = "";
+    expect(cli("build", "--json", "app.rz")).toBe(0);
+    expect(parse()["migration"]).toBeNull();
+  });
+
+  it("lists every error with its code, location and fix", () => {
+    writeFileSync(join(dir, "bad.rz"), "model User {\n  name: String\n  age: Integr\n}\n");
+    expect(cli("build", "bad.rz", "--json")).toBe(1);
+    expect(err).toBe("");
+    const result = parse();
+    expect(result["ok"]).toBe(false);
+    expect(result["errors"]).toEqual([
+      { code: "RZ0301", message: expect.any(String), fix: expect.stringContaining('Use "Text" instead.'), file: "bad.rz", line: 2, column: 9, length: 6 },
+      { code: "RZ0301", message: expect.any(String), fix: expect.stringContaining("Number"), file: "bad.rz", line: 3, column: 8, length: 6 },
+    ]);
+    expect(existsSync(join(dir, "dist"))).toBe(false);
+  });
+
+  it("reports command-line problems as JSON too, without a location", () => {
+    expect(cli("build", "missing.rz", "--json")).toBe(1);
+    expect(parse()).toMatchObject({ ok: false, errors: [{ code: "RZ0901", file: null, line: null, column: null, length: null }] });
+    out = "";
+    expect(cli("build", "a.rz", "--json", "--fast")).toBe(1);
+    expect(parse()).toMatchObject({ ok: false, errors: [{ code: "RZ0903", fix: "The options are --allow-data-loss and --json." }] });
+    expect(err).toBe("");
+  });
+
+  it("refuses data loss with the list of what would be lost", () => {
+    writeFileSync(join(dir, "app.rz"), "model Note {\n  title: Text\n  body: Text\n}\n");
+    expect(cli("build", "app.rz", "--json")).toBe(0);
+    writeFileSync(join(dir, "app.rz"), "model Note {\n  title: Text\n}\n");
+    out = "";
+    expect(cli("build", "app.rz", "--json")).toBe(1);
+    expect(parse()).toMatchObject({ ok: false, errors: [{ code: "RZ0904", file: "app.rz" }], dataLoss: [expect.stringContaining('"notes.body"')] });
+    out = "";
+    expect(cli("build", "app.rz", "--json", "--allow-data-loss")).toBe(0);
+    expect(parse()).toMatchObject({ ok: true, dataLoss: [expect.stringContaining('"notes.body"')] });
+  });
+});

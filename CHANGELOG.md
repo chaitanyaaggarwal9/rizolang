@@ -54,6 +54,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Milestone 7, part 2: OpenAPI.
   - Every build writes `dist/openapi.json` (OpenAPI 3.1), generated from the same route data the server runs on, and the server serves it at `/_rizo/openapi.json`.
   - It describes each endpoint's parameters, exact request body (with limits, no extra fields), public response fields and errors, how to log in (session cookie or API token), and Rizo's rules as `x-rizo-access`, `x-rizo-roles`, `x-rizo-owner` and `x-rizo-rate-limit`.
+  - `openapi.json` declares `servers: [{ "url": "/" }]` (the server that serves it), as Redocly's recommended rules require.
+- Milestone 7, part 3: `rizolang build --json`.
+  - Prints one line of JSON instead of text: on failure, every error with its code, message, fix, file, line, column and length (location fields are null for command-line problems, and refused data-loss builds list `dataLoss`); on success, what was built, the files written and the new migration. Exit codes are unchanged, and nothing goes to stderr.
 
 ## [0.4.0] - 2026-11-21
 

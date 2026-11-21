@@ -653,6 +653,9 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 - The first line is always `<file>:<line>:<column> error <code>: <message>`. The `fix:` line says exactly what to change.
 - Syntax errors (RZ01xx, RZ02xx) stop at the first error. Checking errors (RZ03xx) are all reported together.
 - `rizolang` exits with 0 on success and 1 on any error.
+- **`--json`** (`rizolang build app.rz --json`) prints one line of JSON to stdout instead, and nothing to stderr, for editors and AI agents. The exit codes are the same.
+  - On failure: `{ "rizolang": "<version>", "ok": false, "errors": [{ "code", "message", "fix", "file", "line", "column", "length" }] }`. `line`, `column` and `length` are null for errors that aren't about a line of the file (such as a missing file). A refused data-loss build (RZ0904) also lists `dataLoss`.
+  - On success: `{ "rizolang", "ok": true, "file", "models", "endpoints", "pages", "auth", "written": [...], "migration": { "file", "changes": [...] } or null, "dataLoss": [...] }`.
 
 | Code   | Meaning                                                                 |
 |--------|-------------------------------------------------------------------------|

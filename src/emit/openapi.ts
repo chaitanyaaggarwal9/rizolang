@@ -69,6 +69,8 @@ export function emitOpenApi(apis: readonly ResolvedApi[], auth: ResolvedAuth | u
         "Request bodies are strict: unknown fields are rejected with 400.",
       ].join(" "),
     },
+    // Relative: the same server that serves this document, wherever the app runs.
+    servers: [{ url: "/", description: "The server that serves this document." }],
     paths,
     components: {
       schemas,

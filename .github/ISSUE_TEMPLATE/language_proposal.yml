@@ -1,0 +1,38 @@
+name: Language proposal
+description: Propose a new feature or a change to Rizo Lang's syntax or behaviour.
+labels: ["proposal"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Rizo Lang stays small and secure on purpose. A good proposal shows how a change keeps the design principles in CLAUDE.md: dangerous mistakes impossible, strict and clear, small, secure by default, AI-first docs.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today, or what goes wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed syntax and behaviour
+      description: Show short Rizo Lang examples, and what they should compile to.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security impact
+      description: Could this let someone leak secrets, skip validation or build SQL from text? How does the design prevent that?
+    validations:
+      required: true
+  - type: textarea
+    id: errors
+    attributes:
+      label: New errors
+      description: Which mistakes should the compiler catch, and what should each error's `fix` say?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

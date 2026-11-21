@@ -14,6 +14,8 @@ import pg from "pg";
 import { BusyError, hashPassword, dummyHash, verifyPassword } from "./password.ts";
 import { Audit, DEFAULT_AUDIT_RETENTION_DAYS } from "./audit.ts";
 import { Limits, limitKey } from "./limits.ts";
+import { CHALLENGE_SECONDS, MAX_PASSKEYS, PASSKEY_SQL, challengeHash, challengeOf, newChallenge } from "./passkeys.ts";
+import { PasskeyError, SUPPORTED_ALGORITHMS, verifyAssertion, verifyRegistration } from "./webauthn.ts";
 import { SESSION_SECONDS, SQL, clearedCookie, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
 import { PAGE_HEADERS, asset, renderMessage, renderPage } from "./pages.ts";
 import type { App, FieldKind, FieldSpec, PageRoute, PathPart, Route, ValueSource } from "./types.ts";
@@ -603,6 +605,166 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     await limited(async () => (await limits.clear(key), { allowed: true, retryAfter: 0 }));
   }
 
+  // ------------------------------------------------------------- passkeys
+
+  /**
+   * The site a passkey belongs to comes from the request's Origin header,
+   * which checkOrigin() has already matched against this server's host.
+   */
+  function passkeySite(req: IncomingMessage): { origin: string; rpId: string } {
+    const origin = req.headers.origin;
+    if (origin === undefined) throw new HttpError(400, "passkey_failed", "Passkeys can only be used from a browser.");
+    let rpId: string;
+    try {
+      rpId = new URL(origin).hostname;
+    } catch {
+      throw new HttpError(400, "passkey_failed", "Passkeys can only be used from a browser.");
+    }
+    return { origin, rpId };
+  }
+
+  /** Use a one-time challenge named in the browser's response. */
+  async function useChallenge(clientDataJSON: unknown, purpose: "register" | "login", userId: string | null): Promise<string> {
+    const challenge = challengeOf(clientDataJSON);
+    const r = challenge === undefined ? { rows: [] } : await db.query(PASSKEY_SQL.useChallenge, [challengeHash(challenge), purpose, userId]);
+    if (challenge === undefined || r.rows.length === 0) {
+      throw new HttpError(400, "passkey_failed", "This passkey request has expired. Please try again.");
+    }
+    return challenge;
+  }
+
+  async function passkeys(req: IncomingMessage, res: ServerResponse, path: string, method: string): Promise<number> {
+    const auth = app.auth;
+    if (auth === null) throw new HttpError(404, "not_found", "No endpoint matches this path.");
+    checkOrigin(req, method);
+    const ip = clientIp(req);
+    const one = /^\/auth\/passkeys\/([A-Za-z0-9_-]{16,1400})$/.exec(path);
+    const allow = (expected: string): void => {
+      if (method !== expected) throw new HttpError(405, "method_not_allowed", `This path does not support ${method}.`, undefined, { Allow: expected });
+    };
+
+    if (path === "/auth/passkeys/login-options") {
+      allow("POST");
+      const gate = await limited(() => limits.consume(limitKey("passkey-options", ip), 30, 60));
+      if (!gate.allowed) throw tooMany(gate.retryAfter, "Too many requests. Try again later.");
+      const site = passkeySite(req);
+      const { challenge, hash } = newChallenge();
+      await db.query(PASSKEY_SQL.createChallenge, [hash, "login", null, CHALLENGE_SECONDS]);
+      return send(res, 200, { challenge, rpId: site.rpId, timeout: CHALLENGE_SECONDS * 1000, userVerification: "required" });
+    }
+
+    if (path === "/auth/passkeys/login") {
+      allow("POST");
+      const ipKey = limitKey("login-ip", ip);
+      const byIp = await limited(() => limits.blocked(ipKey, 20, LOGIN_WINDOW));
+      if (!byIp.allowed) {
+        await audit.record({ action: "login_blocked", ip, detail: "passkey" });
+        throw tooMany(byIp.retryAfter, "Too many login attempts. Try again later.");
+      }
+      const body = await readJson(req) as { id?: unknown; response?: Record<string, unknown> };
+      const site = passkeySite(req);
+      const fail = async (userId?: string): Promise<never> => {
+        await limited(() => limits.consume(ipKey, 20, LOGIN_WINDOW));
+        await audit.record({ action: "login_failed", userId, ip, detail: "passkey" });
+        throw new HttpError(401, "invalid_credentials", "That passkey can't be used to log in here.");
+      };
+      if (typeof body !== "object" || body === null || typeof body.id !== "string" || typeof body.response !== "object" || body.response === null) {
+        throw new HttpError(400, "validation_failed", "Send the passkey response from the browser.");
+      }
+      const challenge = await useChallenge(body.response["clientDataJSON"], "login", null);
+      const stored = (await db.query(PASSKEY_SQL.find, [body.id])).rows[0];
+      if (stored === undefined) return fail();
+      const userId = String(stored["user_id"]);
+      try {
+        const count = verifyAssertion(
+          { clientDataJSON: body.response["clientDataJSON"], authenticatorData: body.response["authenticatorData"], signature: body.response["signature"] },
+          { publicKey: String(stored["public_key"]), algorithm: Number(stored["algorithm"]), signCount: Number(stored["sign_count"]) },
+          { challenge, ...site },
+        );
+        await db.query(PASSKEY_SQL.used, [body.id, count]);
+      } catch (e) {
+        if (e instanceof PasskeyError) return fail(userId);
+        throw e;
+      }
+      await startSession(res, userId);
+      await audit.record({ action: "login", userId, ip, detail: "passkey" });
+      const me = await db.query(auth.meSql, [userId]);
+      return send(res, 200, pick(me.rows[0] ?? {}, auth.publicKeys));
+    }
+
+    // Everything else is for managing your own passkeys.
+    const me = await requireUser(req);
+
+    if (path === "/auth/passkeys/register-options") {
+      allow("POST");
+      const site = passkeySite(req);
+      const login = auth.nameSql === "" ? undefined : (await db.query(auth.nameSql, [me])).rows[0]?.["name"];
+      const name = typeof login === "string" ? login : `${site.rpId} account`;
+      const existing = (await db.query(PASSKEY_SQL.ids, [me])).rows.map((r) => ({ type: "public-key", id: String(r["id"]) }));
+      const { challenge, hash } = newChallenge();
+      await db.query(PASSKEY_SQL.createChallenge, [hash, "register", me, CHALLENGE_SECONDS]);
+      return send(res, 200, {
+        challenge,
+        rp: { id: site.rpId, name: site.rpId },
+        user: { id: Buffer.from(me).toString("base64url"), name, displayName: name },
+        pubKeyCredParams: SUPPORTED_ALGORITHMS.map((alg) => ({ type: "public-key", alg })),
+        timeout: CHALLENGE_SECONDS * 1000,
+        attestation: "none",
+        authenticatorSelection: { residentKey: "required", userVerification: "required" },
+        excludeCredentials: existing,
+      });
+    }
+
+    if (path === "/auth/passkeys" && method === "POST") {
+      const body = await readJson(req) as { response?: Record<string, unknown>; name?: unknown };
+      if (typeof body !== "object" || body === null || typeof body.response !== "object" || body.response === null) {
+        throw new HttpError(400, "validation_failed", "Send the passkey response from the browser.");
+      }
+      const name = body.name === undefined ? "Passkey" : body.name;
+      if (typeof name !== "string" || [...name].length < 1 || [...name].length > 60 || /[\u0000-\u001f]/.test(name)) {
+        throw new HttpError(400, "validation_failed", "name must be 1 to 60 characters.", "name");
+      }
+      const site = passkeySite(req);
+      const challenge = await useChallenge(body.response["clientDataJSON"], "register", me);
+      if (Number((await db.query(PASSKEY_SQL.count, [me])).rows[0]?.["n"] ?? 0) >= MAX_PASSKEYS) {
+        throw new HttpError(409, "too_many_passkeys", `An account can have at most ${MAX_PASSKEYS} passkeys. Remove one first.`);
+      }
+      let passkey;
+      try {
+        passkey = verifyRegistration(
+          { clientDataJSON: body.response["clientDataJSON"], attestationObject: body.response["attestationObject"] },
+          { challenge, ...site },
+        );
+      } catch (e) {
+        if (e instanceof PasskeyError) throw new HttpError(400, "passkey_failed", e.message);
+        throw e;
+      }
+      try {
+        await db.query(PASSKEY_SQL.insert, [passkey.credentialId, me, passkey.publicKey, passkey.algorithm, passkey.signCount, name]);
+      } catch (e) {
+        if ((e as { code?: string }).code === "23505") throw new HttpError(409, "already_exists", "This passkey is already registered.");
+        throw e;
+      }
+      await audit.record({ action: "passkey_added", userId: me, ip, detail: name.slice(0, 60) });
+      return send(res, 201, { id: passkey.credentialId, name });
+    }
+
+    if (path === "/auth/passkeys") {
+      allow("GET");
+      return send(res, 200, { items: (await db.query(PASSKEY_SQL.list, [me])).rows });
+    }
+
+    if (one !== null) {
+      allow("DELETE");
+      const r = await db.query(PASSKEY_SQL.remove, [one[1], me]);
+      if ((r.rowCount ?? 0) === 0) throw new HttpError(404, "not_found", "Passkey not found.");
+      await audit.record({ action: "passkey_removed", userId: me, ip });
+      res.writeHead(204, SECURITY_HEADERS).end();
+      return 204;
+    }
+    throw new HttpError(404, "not_found", "No endpoint matches this path.");
+  }
+
   /** PUT /auth/users/:id/role, admins only. Body: { "role": "<role>" } or { "role": null }. */
   async function setRole(req: IncomingMessage, res: ServerResponse, method: string, rawId: string): Promise<number> {
     const auth = app.auth;
@@ -639,6 +801,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
   async function handleAuth(req: IncomingMessage, res: ServerResponse, path: string, method: string): Promise<number> {
     const auth = app.auth;
     if (auth === null) throw new HttpError(404, "not_found", "No endpoint matches this path.");
+    if (path === "/auth/passkeys" || path.startsWith("/auth/passkeys/")) return passkeys(req, res, path, method);
     const roleRoute = /^\/auth\/users\/([^/]+)\/role$/.exec(path);
     if (roleRoute !== null && auth.roles.length > 0) return setRole(req, res, method, roleRoute[1] ?? "");
     const known = AUTH_ROUTES.find((r) => r.path === path);
@@ -883,6 +1046,7 @@ export function startServer(app: App): void {
   // Delete expired rate-limit counters and audit entries older than the retention period.
   const sweep = (): void => {
     void sweeper.sweep().catch(() => undefined);
+    if (app.auth !== null) void pool.query(PASSKEY_SQL.sweepChallenges).catch(() => undefined);
     void auditLog.sweep(retention).catch(() => undefined);
   };
   setInterval(sweep, 10 * 60_000).unref();

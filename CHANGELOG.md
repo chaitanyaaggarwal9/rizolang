@@ -22,6 +22,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - The `_rizo_audit` table (added by migration) records sign-ups, logins, failed and blocked logins, logouts, password changes and failed password checks, account deletions, role changes, admins granted at startup, and records deleted through endpoints. Each entry holds the time, actor, target, IP address and a short fixed detail, and never a secret.
   - Admins read it at `GET /auth/audit` (`?account=`, `?limit=`).
   - Entries are deleted after `RIZO_AUDIT_RETENTION_DAYS` (365 by default). A failed write never breaks the action.
+- Milestone 6, part 1: passkeys.
+  - Every app with an `auth` line supports passkeys alongside passwords, with no change to the `.rz` file. Users add and remove them on the new built-in `/account` page and log in with "Log in with a passkey" on `/login`.
+  - New endpoints under `/auth/passkeys`, and the `_rizo_passkeys` and `_rizo_challenges` tables (added by migration).
+  - Verification uses only `node:crypto` and a small strict CBOR decoder, with no new dependencies. It checks single-use 5-minute challenges, origin, site id, user verification, signature, and the signature counter (copied keys are refused). ES256 and RS256 keys.
+  - Adding and removing passkeys and passkey logins are recorded in the audit log.
+  - `/account` is now a reserved page path.
 
 ## [0.4.0] - 2026-11-21
 

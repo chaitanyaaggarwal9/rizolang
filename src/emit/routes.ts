@@ -49,8 +49,10 @@ function authPages(auth: AuthSpec): PageRoute[] {
           { key: auth.passwordKey, kind: "Password", required: true, nullable: false, max: 128, label: labelFor(auth.passwordKey), multiline: false },
         ],
       },
+      { kind: "passkeyLogin" },
       { kind: "link", label: "No account yet? Sign up", path: "/signup" },
     ]),
+    { ...page("/account", "Your account", [{ kind: "passkeys" }]), access: "login" },
     page("/signup", "Create an account", [
       { kind: "form", method: "POST", endpoint: "/auth/signup", submit: "Create account", prefill: null, then: null, fields: auth.signup.body.map(formField) },
       { kind: "link", label: "Already have an account? Log in", path: "/login" },
@@ -396,6 +398,8 @@ function authSpec(auth: ResolvedAuth): AuthSpec {
     passwordKey: auth.passwordField.name,
     loginSql: `SELECT ${q("id")}, ${q(auth.passwordField.column)} AS "hash" FROM ${table} WHERE ${q(auth.loginField.column)} = $1`,
     meSql: `SELECT ${select.sql} FROM ${table} WHERE ${q("id")} = $1`,
+    // A private login field is never sent, not even to its owner (SPEC §7).
+    nameSql: auth.loginField.private ? "" : `SELECT ${q(auth.loginField.column)} AS "name" FROM ${table} WHERE ${q("id")} = $1`,
     publicKeys: select.keys,
     roles: auth.roles,
     roleSql: auth.roles.length > 0 ? `SELECT ${q("role")} FROM ${table} WHERE ${q("id")} = $1` : "",

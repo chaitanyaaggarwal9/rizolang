@@ -125,12 +125,12 @@ page /posts/:id {
 ```
 
 - Pages are generated from endpoints. Never write HTML. Quoted text is only allowed in pages: one line, at most 200 characters.
-- Put endpoints under `/api`. A page can't share a path with an endpoint. `/login` and `/signup` are reserved.
+- Put endpoints under `/api`. A page can't share a path with an endpoint. `/login`, `/signup` and `/account` are reserved.
 - `show` takes one GET endpoint from the file. Page `:params` fill the endpoint's params by name, and every page param must be used.
 - A page must be at least as strict as what it shows: use `requires login` if the endpoint does.
 - Lists link to a page that shows one record of the same model.
 - `form POST /api/posts` (or PUT or PATCH) builds a form from the endpoint's body. `button "Delete" DELETE /api/posts/:id` deletes. Each page has at most one form or button, followed by `then go /path` (`:id` can be the saved record).
-- With an auth line, `/login`, `/signup` and a log-in/log-out menu are built in. Don't write login pages.
+- With an auth line, `/login`, `/signup`, `/account` (passkeys) and a log-in/log-out menu are built in. Don't write login or passkey pages.
 
 ## Migrations
 

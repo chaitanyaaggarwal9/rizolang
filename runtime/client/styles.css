@@ -227,3 +227,20 @@ a.rizo-card:hover {
 [hidden] {
   display: none !important;
 }
+
+/* Passkeys */
+.rizo-secondary {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.6rem 1.2rem;
+  border: 1px solid var(--accent);
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.rizo-page h2 {
+  font-size: 1.25rem;
+  margin: 1.5rem 0 0.5rem;
+}

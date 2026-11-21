@@ -92,6 +92,11 @@ export interface AuthSpec {
   readonly setRoleSql: string;
   /** Grants admin to existing accounts whose login email is in $1 (empty string without roles). */
   readonly grantAdminSql: string;
+  /**
+   * `SELECT <login column> AS name FROM <users> WHERE id = $1`, shown in the
+   * device's passkey picker; empty when the login field is private.
+   */
+  readonly nameSql: string;
   /** Account management. */
   readonly account: {
     /** Limits for a new password (the Password field's min and max). */
@@ -148,7 +153,11 @@ export type PageItemSpec =
       /** Page to open afterwards (:id may come from the saved record), or null for "?next= or home". */
       readonly then: string | null;
     }
-  | { readonly kind: "button"; readonly label: string; readonly method: "DELETE"; readonly endpoint: string; readonly then: string };
+  | { readonly kind: "button"; readonly label: string; readonly method: "DELETE"; readonly endpoint: string; readonly then: string }
+  /** "Log in with a passkey" (built-in login page). */
+  | { readonly kind: "passkeyLogin" }
+  /** List, add and remove your passkeys (built-in account page). */
+  | { readonly kind: "passkeys" };
 
 export interface PageRoute {
   /** Original path, used in logs. */

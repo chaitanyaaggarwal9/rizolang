@@ -14,6 +14,7 @@ import { PASSKEY_SQL, challengeHash, newChallenge } from "../runtime/passkeys.ts
 import { EMAIL_SQL, MESSAGES, newEmailToken } from "../runtime/email.ts";
 import { EncryptionError, decryptValue, encryptValue, parseKeys } from "../runtime/encryption.ts";
 import { IDLE_SECONDS, MAX_SECONDS, SQL as SESSION_SQL } from "../runtime/session.ts";
+import { MAX_TOKEN_DAYS, TOKEN_SQL } from "../runtime/tokens.ts";
 import { PasskeyError, verifyAssertion, verifyRegistration } from "../runtime/webauthn.ts";
 import { SoftAuthenticator } from "./authenticator.js";
 import { compile } from "../src/compiler.js";
@@ -430,5 +431,15 @@ describe("security: sessions", () => {
   it("lists and logs out only your own devices, and never shows token hashes", () => {
     expect(SESSION_SQL.list).toMatch(/^SELECT "id", "device", "created_at" AS "createdAt", "last_seen_at" AS "lastSeenAt", "token_hash" = \$2 AS "current" FROM .* WHERE "user_id" = \$1 /);
     expect(SESSION_SQL.deleteById).toContain('WHERE "id" = $1 AND "user_id" = $2');
+  });
+});
+
+describe("security: API tokens", () => {
+  it("stores only hashes, looks up only unexpired tokens, and revokes only your own", () => {
+    expect(TOKEN_SQL.create).toMatch(/^INSERT INTO "_rizo_tokens" \("token_hash", "user_id", "name", "endpoints", "expires_at"\) VALUES \(\$1, \$2, \$3, \$4, now\(\) \+ make_interval\(days => \$5\)\)/);
+    expect(TOKEN_SQL.lookup).toContain('WHERE "token_hash" = $1 AND "expires_at" > now()');
+    expect(TOKEN_SQL.list).not.toContain("token_hash");
+    expect(TOKEN_SQL.remove).toContain('WHERE "id" = $1 AND "user_id" = $2');
+    expect(MAX_TOKEN_DAYS).toBe(90);
   });
 });

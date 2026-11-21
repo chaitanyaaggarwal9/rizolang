@@ -167,6 +167,9 @@ It adds these endpoints. Paths under `/auth` are reserved.
 | `POST /auth/password` | `{ "currentPassword": ..., "newPassword": ... }` | 204. Every other session of the account is logged out |
 | `POST /auth/logout-all` | none                          | 204. Every session of the account is deleted, including this one |
 | `GET /auth/sessions` | none                             | Login required. 200 `{ "items": [{ "id", "device", "createdAt", "lastSeenAt", "current" }] }`: the devices you are logged in on |
+| `GET /auth/tokens`  | none                              | Login required (cookie). 200 `{ "items": [...], "endpoints": [...] }`: your API tokens (never the token itself), and the endpoints a token may be made for |
+| `POST /auth/tokens` | `{ "name": ..., "endpoints": ["POST /api/posts", ...], "days": 1–90 }` | Login required (cookie). 201 with the token in `token`, shown only this once. `days` defaults to 90. 409 over 20 tokens |
+| `DELETE /auth/tokens/:id` | none                        | Login required (cookie). 204: the token stops working. 404 if it isn't yours |
 | `DELETE /auth/sessions/:id` | none                      | Login required. 204: that device is logged out (if it is this one, the cookie is cleared too). 404 if it isn't one of yours |
 | `DELETE /auth/me`   | `{ "password": ... }`             | 204, and the account and its sessions are deleted. 409 if other records still link to it |
 | `GET /auth/audit`   | `?account=<id>&limit=<1–500>` (optional) | Admins only (needs `roles admin`): the newest security audit entries, `{ "items": [...] }` |
@@ -188,6 +191,13 @@ It adds these endpoints. Paths under `/auth` are reserved.
 - **Limits:** at most 3 emails an hour go to one account, and requests that send email are limited to 10 an hour per address.
 - **Emails** are plain text, made of fixed sentences plus the link. Nothing from a request is put in them. They are sent through [Resend](https://resend.com) in the background, so the response never waits for them or depends on them, and failures are logged without the address.
 - Accounts that existed before email confirmation was added count as confirmed.
+
+**API tokens.** Scripts and AI agents can call your endpoints with an API token instead of a session cookie: `Authorization: Bearer rzt_...`.
+- A token acts as the account that made it, but **only on the endpoints chosen** when it was made (any endpoint that needs a login). Other endpoints answer 403 `token_not_allowed`.
+- It expires after at most 90 days, can be revoked at any time, and is deleted with the account. A password reset revokes all of the account's tokens.
+- Tokens never work on `/auth/*` endpoints, so a token can't make tokens, see sessions, change the password or delete the account. Those need a session cookie.
+- When an `Authorization` header is sent, it is used instead of the cookie. An unknown, malformed or expired token answers 401 `invalid_token`.
+- Only SHA-256 hashes are stored. Creating, using and revoking tokens are recorded in the audit log (each use with its endpoint).
 
 **Passkeys.** Every app with an `auth` line also supports passkeys (fingerprint, face or device PIN), alongside passwords. A logged-in user adds one on the built-in `/account` page (or through the endpoints above), then logs in with it on `/login`. Nothing in the `.rz` file changes.
 - The server checks each step as WebAuthn requires: a random challenge that is used once and expires after 5 minutes, the site's origin and id, that the user was verified, the signature, and that the signature counter went up (a counter that goes backwards means the key was copied, and login is refused).
@@ -487,7 +497,7 @@ page /posts/:id/delete {
 **Built-in pages.** In an app with an `auth` line and at least one page:
 - `/login` and `/signup` are generated, with forms for `/auth/login` and `/auth/signup`. `/login` also has "Log in with a passkey", and links to reset the password or get a new confirmation link.
 - `/verify-email` and `/reset-password` open from the emailed links: they confirm the email, or ask for a new password. Opened without a link, they ask for an email address and send a new link.
-- `/account` (login required) lists the user's passkeys, and adds and removes them. It also lists the devices the user is logged in on, with "Log out" for each and "Log out everywhere".
+- `/account` (login required) lists the user's passkeys, and adds and removes them. It also lists the devices the user is logged in on, with "Log out" for each and "Log out everywhere", and lets the user create and revoke API tokens.
 - Every page shows a menu with a link home, plus "Log in" and "Sign up", or "Account" and "Log out".
 - A page that needs a login sends logged-out visitors to `/login?next=<the page>`. After logging in they return there. `next` is followed only if it is a path on this site.
 
@@ -617,6 +627,7 @@ These are enforced by the compiler and the runtime, and covered by `tests/securi
 11. A passkey works only on the site that created it, only once per challenge, and only with the user verified. The server never stores a private key, and a copied passkey (counter going backwards) is refused.
 12. Signup, resending a confirmation link and asking for a password reset answer the same whether or not the email has an account. Emailed links work once, expire, are stored only as hashes and never appear in logs, and accounts can't log in before confirming their email.
 13. Encrypted fields are stored only as AES-256-GCM ciphertext, tied to their column, and are decrypted only by the server. They can never be compared, sorted or made unique in the database.
+14. An API token works only on the endpoints chosen for it, never on account endpoints, and never after it expires (at most 90 days) or is revoked. Only its hash is stored.
 
 ---
 

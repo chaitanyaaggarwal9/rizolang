@@ -79,7 +79,7 @@ function authPages(auth: AuthSpec): PageRoute[] {
       { kind: "link", label: "Didn't get the confirmation email?", path: "/verify-email" },
       { kind: "link", label: "No account yet? Sign up", path: "/signup" },
     ]),
-    { ...page("/account", "Your account", [{ kind: "passkeys" }, { kind: "sessions" }]), access: "login" },
+    { ...page("/account", "Your account", [{ kind: "passkeys" }, { kind: "sessions" }, { kind: "tokens" }]), access: "login" },
     page("/signup", "Create an account", [
       {
         kind: "form", method: "POST", endpoint: "/auth/signup", submit: "Create account", prefill: null, then: null, fields: auth.signup.body.map(formField),

@@ -746,6 +746,106 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     });
   });
 
+  describe("API tokens", () => {
+    const LEE = { email: "lee@example.com", password: "lees long password", name: "Lee" };
+    const at = { "X-Forwarded-For": "198.51.100.50" };
+    let lee: string;
+    let token: string;
+    let tokenId: string;
+    const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
+
+    beforeAll(async () => {
+      lee = (await join(LEE, "198.51.100.50")).cookie;
+    });
+
+    it("offers only endpoints that need a login, and creates a token shown once", async () => {
+      const offer = await call("GET", "/auth/tokens", { cookie: lee });
+      const endpoints = (offer.body as { endpoints: string[] }).endpoints;
+      expect(endpoints).toContain("POST /api/posts");
+      expect(endpoints).toContain("GET /api/my/posts");
+      expect(endpoints).not.toContain("GET /api/posts");
+      const r = await call("POST", "/auth/tokens", { cookie: lee, headers: at, body: { name: "Agent", endpoints: ["POST /api/posts", "GET /api/my/posts"], days: 30 } });
+      expect(r.status).toBe(201);
+      const body = r.body as { id: string; token: string; expiresAt: string; endpoints: string[] };
+      expect(body.token).toMatch(/^rzt_[A-Za-z0-9_-]{43}$/);
+      expect(body.endpoints).toEqual(["POST /api/posts", "GET /api/my/posts"]);
+      expect(Math.round((Date.parse(body.expiresAt) - Date.now()) / 86_400_000)).toBe(30);
+      token = body.token;
+      tokenId = body.id;
+      const listed = await call("GET", "/auth/tokens", { cookie: lee });
+      expect(JSON.stringify(listed.body)).not.toContain(token);
+      expect((await pool.query('SELECT "token_hash" FROM "_rizo_tokens"')).rows.every((row) => /^[0-9a-f]{64}$/.test(row.token_hash) && !token.includes(row.token_hash))).toBe(true);
+    });
+
+    it("refuses tokens with no endpoints, unknown or public endpoints, or more than 90 days", async () => {
+      for (const body of [
+        { name: "x", endpoints: [] },
+        { name: "x", endpoints: ["DELETE /auth/me"] },
+        { name: "x", endpoints: ["GET /api/posts"] },
+        { name: "x", endpoints: ["POST /api/posts"], days: 91 },
+        { name: "x", endpoints: ["POST /api/posts"], days: 0 },
+        { name: "", endpoints: ["POST /api/posts"] },
+        { name: "x", endpoints: ["POST /api/posts"], scope: "admin" },
+      ]) {
+        expect((await call("POST", "/auth/tokens", { cookie: lee, headers: at, body })).status, JSON.stringify(body)).toBe(400);
+      }
+      expect((await call("POST", "/auth/tokens", { body: { name: "x", endpoints: ["POST /api/posts"] } })).status).toBe(401);
+    });
+
+    it("acts as its account, but only on its endpoints", async () => {
+      const post = await call("POST", "/api/posts", { headers: bearer(token), body: { title: "By agent", body: "x", published: false } });
+      expect(post.status).toBe(201);
+      const mine = items<{ title: string }>(await call("GET", "/api/my/posts", { headers: bearer(token) }));
+      expect(mine.map((p) => p.title)).toContain("By agent");
+      const id = (post.body as { id: string }).id;
+      expect(await call("DELETE", `/api/posts/${id}`, { headers: bearer(token) })).toMatchObject({ status: 403, body: { error: { code: "token_not_allowed" } } });
+      expect((await call("GET", `/api/posts/${id}`, { cookie: lee })).status).toBe(200);
+    });
+
+    it("never works on account endpoints, so a token can't make tokens or take over the account", async () => {
+      for (const [method, path, body] of [
+        ["GET", "/auth/me", undefined],
+        ["POST", "/auth/tokens", { name: "y", endpoints: ["POST /api/posts"] }],
+        ["POST", "/auth/password", { currentPassword: "x", newPassword: "yyyyyyyyyy" }],
+        ["DELETE", "/auth/me", { password: "x" }],
+        ["GET", "/auth/sessions", undefined],
+      ] as const) {
+        expect((await call(method, path, { headers: bearer(token), ...(body === undefined ? {} : { body }) })).status, path).toBe(401);
+      }
+    });
+
+    it("refuses unknown, malformed and expired tokens", async () => {
+      const unknown = `rzt_${"A".repeat(43)}`;
+      expect(await call("GET", "/api/my/posts", { headers: bearer(unknown) })).toMatchObject({ status: 401, body: { error: { code: "invalid_token" } } });
+      expect((await call("GET", "/api/my/posts", { headers: { Authorization: "Bearer nonsense" } })).status).toBe(401);
+      expect((await call("GET", "/api/my/posts", { headers: { Authorization: `Basic ${token}` } })).status).toBe(401);
+      // A bad token is refused even with a valid session cookie: the header wins.
+      expect((await call("GET", "/api/my/posts", { cookie: lee, headers: bearer(unknown) })).status).toBe(401);
+      await pool.query(`UPDATE "_rizo_tokens" SET "expires_at" = now() - interval '1 second' WHERE "id" = $1`, [tokenId]);
+      expect((await call("GET", "/api/my/posts", { headers: bearer(token) })).status).toBe(401);
+      await pool.query(`UPDATE "_rizo_tokens" SET "expires_at" = now() + interval '1 day' WHERE "id" = $1`, [tokenId]);
+    });
+
+    it("records use and can be revoked, only by its owner", async () => {
+      const listed = (await call("GET", "/auth/tokens", { cookie: lee }).then((r) => (r.body as { items: { id: string; lastUsedAt: string | null }[] }).items));
+      expect(listed.find((t) => t.id === tokenId)?.lastUsedAt).not.toBeNull();
+      const used = (await pool.query(`SELECT "detail" FROM "_rizo_audit" WHERE "action" = 'token_used'`)).rows.map((r) => r.detail);
+      expect(used).toEqual(expect.arrayContaining(["POST /api/posts", "GET /api/my/posts"]));
+      expect((await call("DELETE", `/auth/tokens/${tokenId}`, { cookie: bob })).status).toBe(404);
+      expect((await call("DELETE", `/auth/tokens/${tokenId}`, { cookie: lee })).status).toBe(204);
+      expect((await call("GET", "/api/my/posts", { headers: bearer(token) })).status).toBe(401);
+    });
+
+    it("a password reset revokes every token", async () => {
+      const fresh = (await call("POST", "/auth/tokens", { cookie: lee, headers: at, body: { name: "Second", endpoints: ["GET /api/my/posts"] } })).body as { token: string };
+      expect((await call("GET", "/api/my/posts", { headers: bearer(fresh.token) })).status).toBe(200);
+      await call("POST", "/auth/password-reset", { body: { email: LEE.email }, headers: at });
+      const reset = linkToken(LEE.email, "/reset-password");
+      expect((await call("POST", "/auth/password-reset/confirm", { body: { token: reset, newPassword: "lees new password" }, headers: at })).status).toBe(204);
+      expect((await call("GET", "/api/my/posts", { headers: bearer(fresh.token) })).status).toBe(401);
+    });
+  });
+
   describe("email links", () => {
     const FRANK = { email: "frank@example.com", password: "franks first password", name: "Frank" };
     const at = (address: string) => ({ "X-Forwarded-For": address });
@@ -834,7 +934,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect(has("record_deleted", { user_id: aliceId, detail: "Post" })).toBe(true);
     expect(has("login_failed", { user_id: aliceId, detail: "email not confirmed" })).toBe(true);
     expect(has("email_verified", { user_id: aliceId })).toBe(true);
-    for (const action of ["password_changed", "password_check_failed", "account_deleted", "logout_all", "logout", "password_reset_requested", "password_reset", "session_revoked"]) {
+    for (const action of ["password_changed", "password_check_failed", "account_deleted", "logout_all", "logout", "password_reset_requested", "password_reset", "session_revoked", "token_created", "token_used", "token_revoked"]) {
       expect(has(action), action).toBe(true);
     }
     expect(rows.every((r) => r.ip === null || /^[0-9a-f.:]+$/i.test(String(r.ip)))).toBe(true);
@@ -871,6 +971,8 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     for (const secret of [ALICE.password, BOB.password, CAROL.password, CAROL_NEW, "daves long password", "scrypt$", "alice@example.com", "Alice@Example.com", BOB.email, "password_hash"]) {
       expect(everything).not.toContain(secret);
     }
+    // API tokens never appear in logs.
+    expect(logs.join("\n")).not.toMatch(/rzt_[A-Za-z0-9_-]{43}/);
     // Emailed tokens appear only in the emails, never in responses or logs.
     for (const email of mail) {
       const token = /#token=([A-Za-z0-9_-]{43})/.exec(email.text)?.[1];

@@ -22,6 +22,7 @@
  *   | { kind: "passkeyLogin" }
  *   | { kind: "passkeys" }
  *   | { kind: "sessions" }
+ *   | { kind: "tokens" }
  *   | { kind: "verifyEmail" }
  *   | { kind: "newPassword", field: FormField }} PageItem
  * @typedef {{ title: string, items: PageItem[], params: Record<string, string>, loggedIn: boolean, auth: boolean }} PageData
@@ -565,6 +566,90 @@ function passkeysItem() {
   return box;
 }
 
+/** API tokens for scripts and AI agents, for the account page. */
+function tokensItem() {
+  const box = el("section", { class: "rizo-show", "aria-live": "polite" }, el("h2", {}, "API tokens"),
+    el("p", {}, "Let a script or AI agent use this site as you, on the endpoints you choose, until the token expires. It can never change your account."));
+  const list = el("ul", { class: "rizo-list" });
+  const form = el("div", {});
+  const created = el("div", {});
+  const status = el("p", { class: "rizo-error", role: "alert" });
+  status.hidden = true;
+  const fail = (/** @type {unknown} */ e) => {
+    status.textContent = e instanceof Error ? e.message : String(e);
+    status.hidden = false;
+  };
+  /** @type {string[]} */
+  let shownEndpoints = [];
+
+  const load = () => getJson("/auth/tokens").then((data) => {
+    const { items, endpoints } = /** @type {{ items: { id: string, name: string, endpoints: string[], expiresAt: string, lastUsedAt: string | null }[], endpoints: string[] }} */ (data);
+    list.replaceChildren(...(items.length === 0 ? [el("li", { class: "rizo-empty" }, "You have no API tokens.")] : items.map((t) => {
+      const revoke = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-link" }, "Revoke"));
+      revoke.onclick = () => {
+        if (!window.confirm(`Revoke the token "${t.name}"? Anything using it stops working.`)) return;
+        sendJson("DELETE", `/auth/tokens/${encodeURIComponent(t.id)}`, undefined).then(load, fail);
+      };
+      const used = t.lastUsedAt === null ? "never used" : `last used ${formatValue(t.lastUsedAt, "Date")}`;
+      return el("li", { class: "rizo-card" }, el("strong", {}, t.name), el("p", {}, t.endpoints.join(", ")),
+        el("p", {}, `Expires ${formatValue(t.expiresAt, "Date")}, ${used}.`), revoke);
+    })));
+    if (endpoints.join("\n") !== shownEndpoints.join("\n")) {
+      shownEndpoints = endpoints;
+      form.replaceChildren(...newTokenForm(endpoints));
+    }
+  }, fail);
+
+  /** @param {string[]} endpoints */
+  function newTokenForm(endpoints) {
+    if (endpoints.length === 0) return [el("p", { class: "rizo-empty" }, "This site has no endpoints that need a login, so tokens aren't needed.")];
+    const name = /** @type {HTMLInputElement} */ (el("input", { id: "rizo-token-name", type: "text", maxlength: "60" }));
+    name.value = "My agent";
+    const days = /** @type {HTMLInputElement} */ (el("input", { id: "rizo-token-days", type: "number", min: "1", max: "90", step: "1" }));
+    days.value = "90";
+    const boxes = endpoints.map((endpoint, i) => {
+      const input = /** @type {HTMLInputElement} */ (el("input", { id: `rizo-token-endpoint-${i}`, type: "checkbox" }));
+      return { endpoint, input, row: el("div", { class: "rizo-field rizo-check" }, input, el("label", { for: `rizo-token-endpoint-${i}` }, endpoint)) };
+    });
+    const create = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-submit" }, "Create token"));
+    create.onclick = () => {
+      status.hidden = true;
+      const chosen = boxes.filter((b) => b.input.checked).map((b) => b.endpoint);
+      if (chosen.length === 0) {
+        fail(new Error("Choose at least one endpoint."));
+        return;
+      }
+      create.disabled = true;
+      sendJson("POST", "/auth/tokens", { name: name.value.trim(), endpoints: chosen, days: Number(days.value) }).then((result) => {
+        create.disabled = false;
+        const { token } = /** @type {{ token: string }} */ (result);
+        const shown = /** @type {HTMLInputElement} */ (el("input", { id: "rizo-token-value", type: "text" }));
+        shown.value = token;
+        shown.readOnly = true;
+        created.replaceChildren(el("div", { class: "rizo-done", role: "status" },
+          el("p", {}, "Copy this token now. It won't be shown again."), shown,
+          el("p", {}, "Send it as: Authorization: Bearer <token>")));
+        for (const b of boxes) b.input.checked = false;
+        load();
+      }, (e) => {
+        create.disabled = false;
+        fail(e);
+      });
+    };
+    return [
+      el("h2", {}, "New token"),
+      el("div", { class: "rizo-field" }, el("label", { for: "rizo-token-name" }, "Name"), name),
+      el("p", {}, "Endpoints it may call:"), ...boxes.map((b) => b.row),
+      el("div", { class: "rizo-field" }, el("label", { for: "rizo-token-days" }, "Expires after (days, at most 90)"), days),
+      el("div", { class: "rizo-actions" }, create),
+    ];
+  }
+
+  box.append(list, created, form, status);
+  load();
+  return box;
+}
+
 /** The devices this account is logged in on, for the account page. */
 function sessionsItem() {
   const box = el("section", { class: "rizo-show", "aria-live": "polite" }, el("h2", {}, "Devices"),
@@ -646,6 +731,7 @@ export function renderPage(data) {
     else if (item.kind === "passkeyLogin") main.append(passkeyLoginItem());
     else if (item.kind === "passkeys") main.append(passkeysItem());
     else if (item.kind === "sessions") main.append(sessionsItem());
+    else if (item.kind === "tokens") main.append(tokensItem());
     else if (item.kind === "verifyEmail") {
       if (token !== null) main.append(verifyEmailItem(token));
     } else if (item.kind === "newPassword") {

@@ -47,6 +47,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `GET /auth/sessions` lists the devices you are logged in on, each with a label such as "Chrome on macOS" (from fixed names only; the raw User-Agent and IP address are not stored), and `DELETE /auth/sessions/:id` logs one out. Recorded in the audit log.
   - The built-in `/account` page lists your devices, with "Log out" for each and "Log out everywhere".
   - "Last active" is updated at most once a minute. The `_rizo_sessions` table gets `id`, `ends_at`, `last_seen_at` and `device` columns, added by migration; existing sessions keep working.
+- Milestone 7, part 1: API tokens for scripts and AI agents.
+  - Users create tokens on the `/account` page or with `POST /auth/tokens`, choosing a name, the endpoints the token may call (any endpoint that needs a login) and an expiry of 1–90 days (90 by default). The token (`rzt_...`) is shown once; only its hash is stored.
+  - Agents send `Authorization: Bearer rzt_...`. A token acts as its account only on its endpoints (others answer 403), never on `/auth/*`, and stops working when it expires or is revoked (`DELETE /auth/tokens/:id`). A password reset revokes every token of the account.
+  - Creating, using (with the endpoint) and revoking tokens are recorded in the audit log. The `_rizo_tokens` table is added by migration.
 
 ## [0.4.0] - 2026-11-21
 

@@ -1,6 +1,6 @@
 # Rizo Lang Specification
 
-Version 0.3 (draft) · Milestone 3: roles
+Version 0.3 (draft) · Milestone 3: roles and pagination
 
 Rizo Lang is a secure, simple, full-stack web language. Source files end in `.rz`. The compiler, `rizolang`, turns Rizo Lang into existing technology: a PostgreSQL schema, TypeScript types and a Node.js server. HTML and TypeScript frontends come later.
 
@@ -244,15 +244,15 @@ The return line is `return db.<Model>.<action>(...)`. There are five actions. Ea
 | Action   | Method        | Arguments                                         | Result                                    |
 |----------|---------------|---------------------------------------------------|-------------------------------------------|
 | `find`   | GET           | `(id)`: a path parameter                          | 200 with the record, or 404               |
-| `list`   | GET           | filters, `order`, `limit` (all optional)          | 200 with an array                         |
+| `list`   | GET           | filters, `order`, `limit` (all optional)          | 200 with `{ "items": [...], "next": ... }` (§5.4) |
 | `create` | POST          | `(body)` then optional `field = value`            | 201 with the new record                   |
 | `update` | PUT or PATCH  | `(id, body)`                                      | 200 with the updated record, or 404       |
 | `delete` | DELETE        | `(id)`                                            | 204, or 404                               |
 
 **`list` arguments**, separated by commas:
 - `field = value`: filters by equality, combined with AND.
-- `order field` or `order field desc`: sorts. The default order is by `id`.
-- `limit N`: N is 1 to 100, and the default is 50.
+- `order field` or `order field desc`: sorts. The default order is by `id`. You can't order by an `optional` field, because pages need a sort value in every record.
+- `limit N`: the largest page size, from 1 to 100. The default is 50.
 
 Hidden fields (Password or `private`) cannot be used in filters or ordering.
 
@@ -278,7 +278,22 @@ The auth model itself cannot be created, updated or deleted through `api` blocks
 
 Every path parameter must be used in the query (RZ0323).
 
-### 5.4 A complete example
+### 5.4 Pages
+
+A `list` endpoint returns one page at a time:
+
+```
+GET /posts?limit=10                →  { "items": [ ...10 posts... ], "next": "WyJIZWxsbyIs..." }
+GET /posts?limit=10&after=WyJI...  →  { "items": [ ...the next posts... ], "next": null }
+```
+
+- `limit` is optional. It must be a whole number from 1 to the endpoint's `limit`, which is also the default.
+- `after` is the `next` value from the previous page. `next` is `null` on the last page.
+- Pages continue exactly after the last record of the previous page, ordered by the sort field and then by `id`. Records added between requests can't cause records to be skipped or repeated.
+- Cursors are opaque. Clients must not build or change them. An invalid cursor is rejected with 400.
+- Endpoints accept no other query parameters. Any unknown or repeated parameter gets 400, on every endpoint.
+
+### 5.5 A complete example
 
 ```rizo
 auth User by email
@@ -363,6 +378,7 @@ DATABASE_URL=postgres://user:pass@localhost:5432/app node server.ts
 ### HTTP behaviour
 
 - **Requests:**
+  - Only `list` endpoints accept query parameters (`limit` and `after`, §5.4). Any other query parameter gets 400.
   - Bodies must be JSON (`Content-Type: application/json`) and at most 1 MB. Endpoints without `body` reject a request body.
   - Path parameters are validated by type. An invalid id gets 400 before any query runs.
 - **Responses** are JSON:

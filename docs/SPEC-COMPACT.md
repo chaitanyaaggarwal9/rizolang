@@ -100,13 +100,14 @@ api METHOD /path/:param -> Model.public {
 | Action                          | Method       | Result             |
 |---------------------------------|--------------|--------------------|
 | `db.M.find(id)`                 | GET          | one record or 404  |
-| `db.M.list(filters, order f desc, limit N)` | GET | list (limit ≤ 100, default 50) |
+| `db.M.list(filters, order f desc, limit N)` | GET | `{ items, next }` page (limit ≤ 100, default 50) |
 | `db.M.create(body)`             | POST         | 201 new record     |
 | `db.M.update(id, body)`         | PUT or PATCH | changed record or 404 |
 | `db.M.delete(id)`               | DELETE       | 204 or 404         |
 
 - Filters are `field = value`. A value is `me`, a path parameter, a number, `true` or `false`.
 - `body` is the validated JSON request body.
+- `list` returns pages: clients call `?limit=10`, then `?after=<next>`. You can't order by an optional field.
 - A link to the auth model must be set with `= me` in create, and is never taken from body.
 - You cannot create, update or delete the auth model through `api`.
 

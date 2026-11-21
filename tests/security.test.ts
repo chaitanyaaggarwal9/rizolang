@@ -233,7 +233,17 @@ api GET /users/:id -> User.public {
       expect(placeholders.size).toBe(r.values.length);
       expect(Math.max(0, ...placeholders)).toBe(r.values.length);
     }
-    expect(app.routes[0]?.values).toEqual([{ from: "const", value: true }]);
+    expect(app.routes[0]?.values).toEqual([
+      { from: "const", value: true },
+      { from: "cursorSet" },
+      { from: "cursorValue" },
+      { from: "cursorId" },
+      { from: "pageLimit" },
+    ]);
+    expect(app.routes[0]?.sql).toBe(
+      'SELECT "id", "author_id" AS "author", "title", "published", "title"::text AS "_cursor" FROM "posts" ' +
+      'WHERE "published" = $1 AND ($2 IS NOT TRUE OR ("title", "id") > ($3::text, $4::uuid)) ORDER BY "title" ASC, "id" ASC LIMIT $5',
+    );
   });
 
   it("never selects password or private columns for responses", () => {

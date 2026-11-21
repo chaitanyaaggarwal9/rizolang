@@ -141,6 +141,12 @@ describe("queries", () => {
     expect(firstError(withApi(src)).code).toBe(code);
   });
 
+  it("does not allow ordering by optional fields, which pages could not resume after", () => {
+    const d = firstError(withApi("api GET /posts -> list Post.public {\n  public\n  return db.Post.list(order views)\n}"));
+    expect(d.code).toBe("RZ0325");
+    expect(d.message).toContain("optional");
+  });
+
   it("accepts filters, ordering and limits", () => {
     const { apis } = compileOk(withApi(
       "api GET /users/:userId/posts -> list Post.public {\n  public\n  return db.Post.list(author = userId, published = true, order title desc, limit 10)\n}",

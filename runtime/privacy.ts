@@ -13,7 +13,7 @@
  * nobody can ever log in as it.
  */
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
-import type { GhostSpec, GhostValue } from "./types.ts";
+import type { App, GhostSpec, GhostValue } from "./types.ts";
 
 export const GHOST = '"_rizo_deleted_user"';
 
@@ -47,4 +47,29 @@ export function ghostValue(v: GhostValue): unknown {
 /** The values for the "Deleted user" account, keyed by JSON key (so encrypted fields can be encrypted). */
 export function ghostValues(spec: GhostSpec): Map<string, unknown> {
   return new Map(spec.fields.map((f) => [f.key, ghostValue(f.value)]));
+}
+
+/** Most batches of 1,000 deleted per model in one sweep, so a sweep never runs for long. */
+const MAX_BATCHES = 20;
+
+/**
+ * Delete records older than their model's `keep` (run every few minutes by
+ * the server). Returns how many were deleted per model. Records that other
+ * records still need are skipped until those are gone.
+ */
+export async function expireRecords(
+  app: App,
+  db: { query(sql: string, values: unknown[]): Promise<{ rowCount: number | null }> },
+): Promise<{ model: string; deleted: number }[]> {
+  const done: { model: string; deleted: number }[] = [];
+  for (const r of app.retention ?? []) {
+    let deleted = 0;
+    for (let batch = 0; batch < MAX_BATCHES; batch++) {
+      const n = (await db.query(r.sql, [r.amount])).rowCount ?? 0;
+      deleted += n;
+      if (n < 1000) break;
+    }
+    if (deleted > 0) done.push({ model: r.model, deleted });
+  }
+  return done;
 }

@@ -250,6 +250,34 @@ Each account has at most one role, or none.
 
 ---
 
+### 4.2 Privacy: `privacy for` and `keep`
+
+```rizo
+privacy for EU, UK, IN, US-CA, BR
+
+auth User by email
+
+model User {
+  email: Email unique private
+  password: Password
+}
+
+model Message {
+  sender: User
+  body: Text
+  keep 2 years
+}
+```
+
+**`privacy for`** names the regions the app serves: `EU` (GDPR), `UK` (UK GDPR), `IN` (India's DPDP Act), `US-CA` (California's CCPA) and `BR` (Brazil's LGPD). At most one line, with each region once (RZ0341). It needs an `auth` line, because privacy rights belong to accounts. Every app with accounts already lets people download and delete their data (§4, "Your data"). These rules help an app meet the technical parts of these laws; they are not legal advice.
+
+**`keep N days|months|years`**, on its own line in a model, deletes records that long after they were created (`day`, `month` and `year` work too).
+- From 1 day to 100 years. At most one per model. Not on the auth model: people delete their own accounts (RZ0342).
+- It adds a hidden `_created_at` column (with an index). Records that already exist when `keep` is added count from the time of that migration.
+- The server deletes expired records every 10 minutes, at most 1,000 at a time, and records each batch in the audit log as `records_expired`.
+- A record that another record must link to (a required link) is kept until that record is gone.
+- It needs a server, so the file must have an `auth` line, `api` or `page` blocks (RZ0342).
+
 ## 5. Endpoints and pages: `api` and `page` blocks
 
 ```rizo
@@ -691,6 +719,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0220 | Unknown or incomplete line in a `page` block                            |
 | RZ0221 | Missing quoted text (after `title`, `text` or `link`)                   |
 | RZ0222 | Invalid `limit` line (expected `limit <number> per <unit>`)             |
+| RZ0223 | Malformed `privacy for` or `keep` line                                  |
 | RZ0301 | Unknown field type                                                      |
 | RZ0302 | Modifier not allowed on this type                                       |
 | RZ0303 | Modifier repeated                                                       |
@@ -731,6 +760,8 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0338 | Missing, misplaced or invalid `then go`                                  |
 | RZ0339 | Invalid rate limit (unknown unit, out of range, repeated)               |
 | RZ0340 | An encrypted field used as unique, as the login field, in a filter or in an order |
+| RZ0341 | Invalid `privacy for` line (unknown or repeated region, more than one line, no `auth` line) |
+| RZ0342 | Invalid `keep` (unknown unit, out of range, repeated, on the auth model, or without a server) |
 | RZ0901 | Cannot read the input file                                              |
 | RZ0902 | Input file does not end in `.rz`                                        |
 | RZ0903 | Wrong command-line usage                                                |
@@ -900,10 +931,13 @@ page /posts {
 ## 10. Grammar
 
 ```ebnf
-file       = { model | auth | api | page } ;
-model      = "model" NAME "{" { field } "}" ;
+file       = { model | auth | api | page | privacy } ;
+model      = "model" NAME "{" { field | keep } "}" ;
+keep       = "keep" INT ( "day" | "days" | "month" | "months" | "year" | "years" ) NEWLINE ;
+privacy    = "privacy" "for" REGION { "," REGION } NEWLINE ;
+REGION     = "EU" | "UK" | "IN" | "US-CA" | "BR" ;
 field      = NAME ":" TYPE { modifier } NEWLINE ;
-modifier   = "unique" | "optional" | "private" | "min" INT | "max" INT ;
+modifier   = "unique" | "optional" | "private" | "encrypted" | "min" INT | "max" INT ;
 TYPE       = "Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID" | NAME ;
 auth       = "auth" NAME "by" NAME [ "roles" NAME { "," NAME } ] NEWLINE ;
 api        = "api" METHOD PATH [ "->" rettype ] "{" { statement NEWLINE } "}" ;

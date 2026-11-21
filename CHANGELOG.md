@@ -66,6 +66,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - **Changed:** `DELETE /auth/me` no longer refuses while records link to the account. Records that need an owner are given to one shared "Deleted user" account in the same statement, which holds only placeholders and can't be logged into. The `_rizo_deleted_user` table is added by migration.
   - The `/account` page has "Download my data" and "Delete my account" (with the password and a confirmation).
 
+- Milestone 8, part 2: `privacy for` and `keep`.
+  - `privacy for EU, UK, IN, US-CA, BR` names the regions an app serves (GDPR, UK GDPR, India's DPDP Act, California's CCPA, Brazil's LGPD). It needs an `auth` line.
+  - `keep 2 years` (days, months or years) in a model deletes its records that long after they were created: every 10 minutes, at most 1,000 at a time, recorded in the audit log, skipping records that others still need. It adds a hidden, indexed `_created_at` column by migration.
+  - New errors RZ0223, RZ0341 and RZ0342.
+
 ### Fixed
 
 - Signup SQL no longer crashes the compiler when the auth model has a camelCase field, such as `displayName` (introduced earlier in this release cycle).

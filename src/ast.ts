@@ -7,12 +7,29 @@ export interface Program {
   readonly auths: readonly AuthDecl[];
   readonly apis: readonly ApiDecl[];
   readonly pages: readonly PageDecl[];
+  readonly privacy: readonly PrivacyDecl[];
+}
+
+/** `privacy for EU, UK, IN, US-CA, BR` */
+export interface PrivacyDecl {
+  readonly span: Span;
+  readonly regions: readonly { readonly name: string; readonly span: Span }[];
+}
+
+/** `keep 2 years` inside a model: records are deleted this long after they were created. */
+export interface KeepDecl {
+  readonly span: Span;
+  readonly amount: number;
+  readonly amountSpan: Span;
+  readonly unit: string;
+  readonly unitSpan: Span;
 }
 
 export interface ModelDecl {
   readonly name: string;
   readonly nameSpan: Span;
   readonly fields: readonly FieldDecl[];
+  readonly keep: readonly KeepDecl[];
 }
 
 export interface FieldDecl {

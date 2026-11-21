@@ -81,6 +81,10 @@ A field named `password` (or ending in `Password`) must have the type `Password`
 
 Roles: `auth User by email roles admin, editor` (must include admin). Admins assign roles with `PUT /auth/users/:id/role`. Never add a `role` field yourself; it is hidden and never comes from request bodies.
 
+## privacy
+
+`privacy for EU, UK, IN, US-CA, BR` (one top-level line, needs auth) names the regions the app serves. In a model, a line `keep 2 years` (or days, months) deletes its records that long after creation; not on the auth model. Use keep for data that shouldn't be kept forever, such as messages or logs.
+
 ## api
 
 ```

@@ -11,7 +11,21 @@ export interface ResolvedModel {
   readonly table: string;
   /** Explicitly declared fields (the automatic `id` is not included). */
   readonly fields: readonly ResolvedField[];
+  /** `keep 2 years`: records are deleted this long after they were created. */
+  readonly keep: Retention | undefined;
 }
+
+export interface Retention {
+  readonly amount: number;
+  readonly unit: "days" | "months" | "years";
+}
+
+/** Regions a `privacy for` line may name. */
+export const PRIVACY_REGIONS = ["EU", "UK", "IN", "US-CA", "BR"] as const;
+export type PrivacyRegion = (typeof PRIVACY_REGIONS)[number];
+
+/** Longest `keep`, in each unit (100 years). */
+const MAX_KEEP: Readonly<Record<Retention["unit"], number>> = { days: 36_500, months: 1_200, years: 100 };
 
 export interface ResolvedField {
   readonly name: string;
@@ -40,6 +54,8 @@ export type CheckResult =
       readonly auth: ResolvedAuth | undefined;
       readonly apis: readonly ResolvedApi[];
       readonly pages: readonly ResolvedPage[];
+      /** The regions named by `privacy for`, or undefined without that line. */
+      readonly privacy: readonly PrivacyRegion[] | undefined;
     }
   | { readonly ok: false; readonly diagnostics: readonly Diagnostic[] };
 
@@ -116,7 +132,7 @@ export function check(program: Program, file: string): CheckResult {
         `Add at least one field, for example \`name: Text\`, or remove the model.`);
     }
     checkColumnCollisions(model, fields);
-    models.push({ name: model.name, table: tableName(model.name), fields });
+    models.push({ name: model.name, table: tableName(model.name), fields, keep: checkKeep(model) });
   }
 
   // Endpoint checks need resolved models; skip them if any model is invalid,
@@ -125,7 +141,66 @@ export function check(program: Program, file: string): CheckResult {
   const auth = checkAuth(program.auths, models, err);
   const apis = checkApis(program.apis, models, auth, program.auths.length > 0, err);
   const pages = checkPages(program.pages, auth, apis, program.auths.length > 0, err);
-  return errors.length > 0 ? { ok: false, diagnostics: errors } : { ok: true, models, auth, apis, pages };
+  const privacy = checkPrivacy();
+  if (program.auths.length === 0 && program.apis.length === 0 && program.pages.length === 0) {
+    for (const m of program.models) {
+      const k = m.keep[0];
+      if (k !== undefined) {
+        err("RZ0342", k.span, `Model "${m.name}" uses keep, but this file has no server to delete expired records.`,
+          "Add the api or page blocks that use the model, or remove the keep line.");
+      }
+    }
+  }
+  if (auth !== undefined && auth.model.keep !== undefined) {
+    const decl = program.models.find((m) => m.name === auth.model.name)?.keep[0];
+    if (decl !== undefined) {
+      err("RZ0342", decl.span, `"${auth.model.name}" is the account model, so its records can't be deleted after a fixed time.`,
+        "Remove the keep line. People delete their own accounts from the account page.");
+    }
+  }
+  return errors.length > 0 ? { ok: false, diagnostics: errors } : { ok: true, models, auth, apis, pages, privacy };
+
+  function checkKeep(model: ModelDecl): Retention | undefined {
+    const [first, ...extra] = model.keep;
+    for (const k of extra) {
+      err("RZ0342", k.span, `Model "${model.name}" has more than one keep line.`, "Keep one `keep ...` line.");
+    }
+    if (first === undefined) return undefined;
+    const unit = ({ day: "days", days: "days", month: "months", months: "months", year: "years", years: "years" } as const)[first.unit as "days"];
+    if (unit === undefined) {
+      err("RZ0342", first.unitSpan, `"${first.unit}" is not a unit for keep.`, "Use days, months or years, for example `keep 2 years`.");
+      return undefined;
+    }
+    if (first.amount < 1 || first.amount > MAX_KEEP[unit]) {
+      err("RZ0342", first.amountSpan, `keep ${first.amount} ${unit} is out of range.`, `Use a number from 1 to ${MAX_KEEP[unit]} ${unit} (at most 100 years).`);
+      return undefined;
+    }
+    return { amount: first.amount, unit };
+  }
+
+  function checkPrivacy(): PrivacyRegion[] | undefined {
+    const [first, ...extra] = program.privacy;
+    for (const p of extra) err("RZ0341", p.span, "Only one privacy line is allowed.", "List every region on one line, for example `privacy for EU, UK, IN, US-CA, BR`.");
+    if (first === undefined) return undefined;
+    if (program.auths.length === 0) {
+      err("RZ0341", first.span, "Privacy rules need accounts, so people can see and delete their data.",
+        "Add an auth line, for example `auth User by email`, with a User model that has an email and a password.");
+    }
+    const regions: PrivacyRegion[] = [];
+    for (const r of first.regions) {
+      const region = PRIVACY_REGIONS.find((x) => x === r.name);
+      if (region === undefined) {
+        const guess = PRIVACY_REGIONS.find((x) => x.toLowerCase() === r.name.toLowerCase().replace("_", "-"));
+        err("RZ0341", r.span, `"${r.name}" is not a region Rizo Lang has privacy rules for.`,
+          guess !== undefined ? `Write "${guess}".` : `Use one or more of: ${PRIVACY_REGIONS.join(", ")}.`);
+      } else if (regions.includes(region)) {
+        err("RZ0341", r.span, `Region "${region}" is listed twice.`, "Remove the duplicate.");
+      } else {
+        regions.push(region);
+      }
+    }
+    return regions;
+  }
 
   function checkModelName(model: ModelDecl): void {
     const { name, nameSpan } = model;

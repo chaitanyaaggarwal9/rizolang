@@ -2,6 +2,9 @@
 
 auth User by email roles admin, editor
 
+// The regions this blog serves. People can download and delete their data on /account.
+privacy for EU, UK, IN, US-CA, BR
+
 model User {
   email: Email unique private
   password: Password min 12
@@ -21,6 +24,7 @@ model Comment {
   post: Post
   author: User
   body: Text min 1 max 2000
+  keep 5 years
 }
 
 // Anyone can read published posts.

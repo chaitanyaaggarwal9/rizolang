@@ -96,7 +96,19 @@ export interface ResolvedApi {
   readonly roles: readonly string[];
   readonly returns: "one" | "list" | "none";
   readonly query: ResolvedQuery;
+  /** Requests allowed per window, per account (logged in) or per IP address (logged out). */
+  readonly rateLimit: RateLimit;
 }
+
+export interface RateLimit {
+  readonly max: number;
+  readonly windowSeconds: number;
+}
+
+/** Every endpoint gets this limit unless it has its own `limit` line. */
+export const DEFAULT_RATE_LIMIT: RateLimit = { max: 120, windowSeconds: 60 };
+const RATE_UNITS: Readonly<Record<string, number>> = { second: 1, minute: 60, hour: 3600, day: 86_400 };
+const MAX_RATE = 100_000;
 
 type Err = (code: string, span: Span, message: string, fix: string) => void;
 
@@ -271,6 +283,30 @@ export function checkApis(
         "Add `auth User by email` (using your user model and its Email field) at the top level.");
     }
     const access: "public" | "login" = publics.length > 0 ? "public" : "login";
+
+    // --- rate limit
+    const limits = stmts.flatMap((s) => (s.kind === "limit" ? [s] : []));
+    for (const extra of limits.slice(1)) {
+      ok = false;
+      err("RZ0339", extra.span, `Endpoint "${name}" has more than one limit line.`, "Keep one `limit ... per ...` line.");
+    }
+    let rateLimit = DEFAULT_RATE_LIMIT;
+    const lim = limits[0];
+    if (lim !== undefined) {
+      const seconds = RATE_UNITS[lim.unit];
+      if (seconds === undefined) {
+        ok = false;
+        const guess = didYouMean(lim.unit.replace(/s$/, ""), Object.keys(RATE_UNITS));
+        err("RZ0339", lim.unitSpan, `"${lim.unit}" is not a time unit.`,
+          guess !== undefined ? `Write \`per ${guess}\`.` : "Use second, minute, hour or day, for example `limit 20 per minute`.");
+      } else if (lim.count < 1 || lim.count > MAX_RATE) {
+        ok = false;
+        err("RZ0339", lim.countSpan, `A limit of ${lim.count} is out of range.`, `Use a number from 1 to ${MAX_RATE}.`);
+      } else {
+        rateLimit = { max: lim.count, windowSeconds: seconds };
+      }
+    }
+
     const roleList = (refs: readonly RoleRef[]): string[] => {
       const out: string[] = [];
       for (const r of refs) {
@@ -647,6 +683,7 @@ export function checkApis(
       owner,
       ownerBypassRoles: ownerStmt === undefined ? [] : roleList(ownerStmt.orRoles),
       roles: requiredRoles,
+      rateLimit,
       returns: expected,
       query,
     };

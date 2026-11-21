@@ -355,3 +355,34 @@ api DELETE /posts/:id {
     expect(firstError(withApi("api GET /drafts -> list Post.public {\n  public\n  requires role admin\n  return db.Post.list()\n}", ROLES)).code).toBe("RZ0318");
   });
 });
+
+describe("rate limits", () => {
+  it("defaults every endpoint to 120 requests per minute", () => {
+    const { apis } = compileOk(withApi("api GET /posts -> list Post.public {\n  public\n  return db.Post.list()\n}"));
+    expect(apis[0]?.rateLimit).toEqual({ max: 120, windowSeconds: 60 });
+  });
+
+  it.each([
+    ["limit 5 per second", { max: 5, windowSeconds: 1 }],
+    ["limit 20 per minute", { max: 20, windowSeconds: 60 }],
+    ["limit 100 per hour", { max: 100, windowSeconds: 3600 }],
+    ["limit 1000 per day", { max: 1000, windowSeconds: 86400 }],
+  ])("accepts %s", (line, rateLimit) => {
+    const { apis } = compileOk(withApi(`api GET /posts -> list Post.public {\n  public\n  ${line}\n  return db.Post.list()\n}`));
+    expect(apis[0]?.rateLimit).toEqual(rateLimit);
+  });
+
+  it.each([
+    ["limit 20", "RZ0222", "per minute"],
+    ["limit lots per minute", "RZ0222", "per minute"],
+    ["limit 20 per minutes", "RZ0339", "per minute"],
+    ["limit 20 per fortnight", "RZ0339", "second, minute, hour or day"],
+    ["limit 0 per minute", "RZ0339", "from 1 to"],
+    ["limit 200000 per minute", "RZ0339", "from 1 to"],
+    ["limit 5 per minute\n  limit 6 per minute", "RZ0339", "one"],
+  ])("rejects %j with %s", (line, code, fix) => {
+    const d = firstError(withApi(`api GET /posts -> list Post.public {\n  public\n  ${line}\n  return db.Post.list()\n}`));
+    expect(d.code).toBe(code);
+    expect(`${d.message} ${d.fix}`).toContain(fix);
+  });
+});

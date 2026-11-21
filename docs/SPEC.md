@@ -1,6 +1,6 @@
 # Rizo Lang Specification
 
-Version 0.4 (draft) · Milestone 4: pages
+Version 0.5 (draft) · Milestone 5: hardening
 
 Rizo Lang is a secure, simple, full-stack web language. Source files end in `.rz`. The compiler, `rizolang`, turns Rizo Lang into existing technology: a PostgreSQL schema, TypeScript types and a Node.js server. HTML and TypeScript frontends come later.
 
@@ -207,6 +207,7 @@ api <METHOD> <path> [-> <return type>] {
   public | requires login
   [requires role <role>, <role>]
   [requires owner <link field> [or role <role>, <role>]]
+  [limit <number> per second|minute|hour|day]
   return db.<Model>.<action>(<arguments>)
 }
 ```
@@ -246,6 +247,23 @@ There is no default, so an endpoint can never be left open by accident. `require
 - It needs `requires login`, and the roles must be declared on the `auth` line (RZ0332).
 - With `update` or `delete`, it lets those roles change any record.
 - A public endpoint can't update or delete such a model either: `requires owner` needs `requires login`.
+
+### Rate limits
+
+Every endpoint is rate-limited. The default is **120 requests per minute**, counted per account for logged-in callers and per IP address otherwise. You can set your own limit:
+
+```rizo
+api POST /api/drafts -> Post.public {
+  requires login
+  limit 10 per minute
+  return db.Post.create(body, author = me)
+}
+```
+
+- The number is 1 to 100,000, and the unit is `second`, `minute`, `hour` or `day`. One `limit` line per endpoint (RZ0222, RZ0339). There's no way to turn limits off.
+- Over the limit, the response is 429 with a `Retry-After` header. Every request counts, including rejected ones.
+- Counters live in PostgreSQL (`_rizo_rate_limits`), so the limits hold when the app runs on several servers.
+- The table stores only hashes of IP addresses and account ids, never the values themselves, and old counters are deleted automatically.
 
 ### 5.3 Queries
 
@@ -516,9 +534,10 @@ To start a brand-new database, `psql "$DATABASE_URL" -f schema.sql` works too. T
   - Path parameters are validated by type. An invalid id gets 400 before any query runs.
 - **Responses** are JSON:
   - Errors look like `{ "error": { "code": "...", "message": "...", "field": "..." } }`.
-  - Status codes: 400 invalid input, 401 not logged in, 403 cross-site request or missing role, 404 not found, 405 wrong method, 409 duplicate or still in use, 413 too large, 415 not JSON, 429 too many attempts, 500 internal error (with a request id).
+  - Status codes: 400 invalid input, 401 not logged in, 403 cross-site request or missing role, 429 too many requests (`Retry-After`), 503 server busy (`Retry-After`), 404 not found, 405 wrong method, 409 duplicate or still in use, 413 too large, 415 not JSON, 429 too many attempts, 500 internal error (with a request id).
   - Every response carries `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and a `Content-Security-Policy` that allows nothing.
-- **Cross-site requests:** POST, PUT, PATCH and DELETE requests with an `Origin` header from another site are rejected with 403.
+- **Cross-site requests:** POST, PUT, PATCH and DELETE requests are rejected with 403 when the browser marks them as coming from another site (`Sec-Fetch-Site` is not `same-origin` or `none`), or when their `Origin` is another site. `RIZO_ALLOWED_ORIGINS` lists exceptions.
+- **Password hashing** runs at most two at a time. If too many are waiting (a login flood), new requests get 503 with `Retry-After`, instead of slowing down every other request.
 - **Logs:** one line per request: the method, the route pattern (such as `/posts/:id`), the status, the time and a request id. Logs never contain URLs with values, bodies, cookies or passwords.
 
 ---
@@ -534,8 +553,9 @@ These are enforced by the compiler and the runtime, and covered by `tests/securi
 5. A record's owner is always the logged-in user, and a user's role is only ever set by an admin. Neither is taken from the request body.
 6. All input is validated against the model before it reaches the database, and unknown fields are rejected.
 7. `GET` endpoints never change data. Cross-site writes are rejected.
-8. When there is any compile error, or a change would delete data without `--allow-data-loss`, no output is written.
-9. Pages contain no HTML or code. All text is inserted as text, links stay on the site, and pages are served with a strict Content-Security-Policy. A page is never more open than the data it shows.
+8. Every endpoint is rate-limited, with counters shared by all server processes. Login, signup and password checks have their own stricter limits.
+9. When there is any compile error, or a change would delete data without `--allow-data-loss`, no output is written.
+10. Pages contain no HTML or code. All text is inserted as text, links stay on the site, and pages are served with a strict Content-Security-Policy. A page is never more open than the data it shows.
 
 ---
 
@@ -578,6 +598,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0219 | Missing role name in a role list                                        |
 | RZ0220 | Unknown or incomplete line in a `page` block                            |
 | RZ0221 | Missing quoted text (after `title`, `text` or `link`)                   |
+| RZ0222 | Invalid `limit` line (expected `limit <number> per <unit>`)             |
 | RZ0301 | Unknown field type                                                      |
 | RZ0302 | Modifier not allowed on this type                                       |
 | RZ0303 | Modifier repeated                                                       |
@@ -616,6 +637,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0336 | `link` to a page that doesn't exist, or that needs missing parameters   |
 | RZ0337 | `title`, `show`, `then go`, or the page's form or button repeated        |
 | RZ0338 | Missing, misplaced or invalid `then go`                                  |
+| RZ0339 | Invalid rate limit (unknown unit, out of range, repeated)               |
 | RZ0901 | Cannot read the input file                                              |
 | RZ0902 | Input file does not end in `.rz`                                        |
 | RZ0903 | Wrong command-line usage                                                |
@@ -781,6 +803,7 @@ PATH       = "/" [ segment { "/" segment } ] ;
 segment    = LOWER { LOWER | DIGIT | "-" } | ":" NAME ;
 rettype    = [ "list" ] NAME "." "public" ;
 statement  = "public" | "requires" "login" | "requires" "role" NAME { "," NAME }
+           | "limit" INT "per" ( "second" | "minute" | "hour" | "day" )
            | "requires" "owner" NAME [ "or" "role" NAME { "," NAME } ] | "return" query ;
 query      = "db" "." NAME "." ACTION "(" [ arg { "," arg } ] ")" ;
 ACTION     = "find" | "list" | "create" | "update" | "delete" ;

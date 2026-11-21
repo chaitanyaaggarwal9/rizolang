@@ -82,6 +82,8 @@ export type Statement =
   | { readonly kind: "requiresOwner"; readonly span: Span; readonly field: string; readonly fieldSpan: Span; readonly orRoles: readonly RoleRef[] }
   /** `requires role admin` or `requires role admin, editor` (any of) */
   | { readonly kind: "requiresRole"; readonly span: Span; readonly roles: readonly RoleRef[] }
+  /** `limit 20 per minute` */
+  | { readonly kind: "limit"; readonly span: Span; readonly count: number; readonly countSpan: Span; readonly unit: string; readonly unitSpan: Span }
   | { readonly kind: "return"; readonly span: Span; readonly query: Query };
 
 export const QUERY_ACTIONS = ["find", "list", "create", "update", "delete"] as const;

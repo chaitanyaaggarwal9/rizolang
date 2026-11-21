@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Milestone 5, part 1: abuse protection.
+  - Every endpoint is rate-limited: 120 requests per minute by default, per account or per IP address. `limit 20 per minute` (second, minute, hour or day) sets an endpoint's own limit, and over-limit requests get 429 with `Retry-After`.
+  - Rate-limit counters live in PostgreSQL (`_rizo_rate_limits`, added by migration), so limits hold across several server processes. Login, signup and password-check limits moved there too. Keys are hashes, never raw IP addresses.
+  - Password hashing runs at most two at a time; a full queue answers 503 with `Retry-After`.
+  - `Sec-Fetch-Site` checks reject cross-site writes, in addition to the `Origin` check.
+- New errors RZ0222 and RZ0339.
+
 ## [0.4.0] - 2026-11-21
 
 Milestone 4: web pages, forms and built-in login pages, generated from your endpoints.

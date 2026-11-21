@@ -10,8 +10,8 @@ export { SESSIONS_TABLE, q, roleLiteral } from "../schema.js";
  * only allows letters and digits in names, so no identifier can break out of
  * its quotes.
  */
-export function emitSql(models: readonly ResolvedModel[], auth: ResolvedAuth | undefined, sourceFile: string): string {
-  return emitSchemaSql(buildSchema(models, auth), sourceFile);
+export function emitSql(models: readonly ResolvedModel[], auth: ResolvedAuth | undefined, sourceFile: string, server = false): string {
+  return emitSchemaSql(buildSchema(models, auth, server), sourceFile);
 }
 
 export function emitSchemaSql(schema: Schema, sourceFile: string): string {

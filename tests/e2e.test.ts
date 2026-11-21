@@ -257,6 +257,37 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     });
   });
 
+  it("shares rate limits between server processes through PostgreSQL", async () => {
+    // A second, independent server on the same database (as when running several copies).
+    const second = createRequestHandler(app, { db: { query: (sql, values) => pool.query(sql, values) }, log: () => undefined });
+    const other = createServer((req, res) => void second(req, res));
+    await new Promise<void>((resolve) => other.listen(0, "127.0.0.1", resolve));
+    const otherBase = `http://127.0.0.1:${(other.address() as AddressInfo).port}`;
+    try {
+      const target = await call("POST", "/api/posts", { cookie: bob, body: { title: "For comments", body: "x", published: true } });
+      const post = (target.body as { id: string }).id;
+      // Alice (who hasn't commented yet) may comment 10 times per minute in
+      // total, however the requests are spread over the two servers.
+      const comment = (url: string, cookie = alice) =>
+        fetch(`${url}/api/comments`, { method: "POST", headers: { "Content-Type": "application/json", Cookie: cookie }, body: JSON.stringify({ post, body: "hi" }) });
+      const statuses: number[] = [];
+      for (let i = 0; i < 10; i++) statuses.push((await comment(i % 2 === 0 ? base : otherBase)).status);
+      expect(statuses).toEqual(Array(10).fill(201));
+      const blocked = await comment(otherBase);
+      expect(blocked.status).toBe(429);
+      expect(Number(blocked.headers.get("retry-after"))).toBeGreaterThan(0);
+      expect((await comment(base)).status).toBe(429);
+      // Other accounts have their own budget (Bob has used 2 of his 10 this minute).
+      expect((await comment(base, bob)).status).toBe(201);
+      // Counters are keyed by hashes, never by raw identities.
+      const keys = (await pool.query('SELECT "key" FROM "_rizo_rate_limits"')).rows.map((r) => String(r.key));
+      expect(keys.length).toBeGreaterThan(0);
+      expect(keys.join(" ")).not.toMatch(/127\.0\.0\.1|[0-9a-f]{8}-[0-9a-f]{4}-/);
+    } finally {
+      await new Promise((resolve) => other.close(resolve));
+    }
+  });
+
   describe("pages", () => {
     const page = async (path: string, cookie?: string) => {
       const r = await fetch(base + path, { redirect: "manual", ...(cookie ? { headers: { Cookie: cookie } } : {}) });

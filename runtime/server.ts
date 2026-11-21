@@ -11,8 +11,8 @@
 import { randomUUID } from "node:crypto";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import pg from "pg";
-import { hashPassword, dummyHash, verifyPassword } from "./password.ts";
-import { RateLimiter } from "./ratelimit.ts";
+import { BusyError, hashPassword, dummyHash, verifyPassword } from "./password.ts";
+import { Limits, limitKey } from "./limits.ts";
 import { SESSION_SECONDS, SQL, clearedCookie, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
 import { PAGE_HEADERS, asset, renderMessage, renderPage } from "./pages.ts";
 import type { App, FieldKind, FieldSpec, PageRoute, PathPart, Route, ValueSource } from "./types.ts";
@@ -141,9 +141,24 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
   const now = options.now ?? Date.now;
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
 
-  const loginByIp = new RateLimiter(20, 15 * 60_000, now);
-  const loginByAccount = new RateLimiter(5, 15 * 60_000, now);
-  const signupByIp = new RateLimiter(10, 60 * 60_000, now);
+  const limits = new Limits(db, now);
+  const LOGIN_WINDOW = 15 * 60;
+
+  /**
+   * Run a rate-limit check. If the counter table can't be reached, the
+   * request is allowed and the problem logged: a database hiccup must not
+   * lock everyone out.
+   */
+  async function limited(check: () => Promise<{ allowed: boolean; retryAfter: number }>): Promise<{ allowed: boolean; retryAfter: number }> {
+    try {
+      return await check();
+    } catch (e) {
+      log(`warning rate limit check failed: ${describeError(e)}`);
+      return { allowed: true, retryAfter: 0 };
+    }
+  }
+  const tooMany = (retryAfter: number, message: string): HttpError =>
+    new HttpError(429, "too_many_requests", message, undefined, { "Retry-After": String(retryAfter) });
 
   return async (req, res) => {
     const started = now();
@@ -170,7 +185,10 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         pattern = route.pattern;
         status = await handleRoute(req, res, route, params, url.searchParams);
       }
-    } catch (e) {
+    } catch (caught) {
+      const e = caught instanceof BusyError
+        ? new HttpError(503, "busy", "The server is busy. Try again in a moment.", undefined, { "Retry-After": "2" })
+        : caught;
       if (e instanceof HttpError) {
         status = e.status;
         send(res, e.status, { error: { code: e.code, message: e.message, ...(e.field ? { field: e.field } : {}) } }, e.headers);
@@ -323,8 +341,14 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
   function checkOrigin(req: IncomingMessage, method: string): void {
     if (method === "GET") return;
     const origin = req.headers.origin;
+    if (origin !== undefined && allowedOrigins.has(origin)) return;
+    // Browsers say where a request comes from. Anything but this site itself
+    // ("same-origin") or a typed-in address ("none") is refused.
+    const site = req.headers["sec-fetch-site"];
+    if (site !== undefined && site !== "same-origin" && site !== "none") {
+      throw new HttpError(403, "forbidden_origin", "Requests from other sites are not allowed.");
+    }
     if (origin === undefined) return;
-    if (allowedOrigins.has(origin)) return;
     let host: string;
     try {
       host = new URL(origin).host;
@@ -498,6 +522,11 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       me = await currentUser(req);
       if (me === undefined) throw new HttpError(401, "login_required", "You need to log in.");
     }
+    // Rate limit: per account when logged in, per IP address otherwise.
+    const identity = me !== undefined ? `user:${me}` : `ip:${clientIp(req)}`;
+    const gate = await limited(() => limits.consume(limitKey(`${route.method} ${route.pattern}`, identity), route.rateLimit.max, route.rateLimit.windowSeconds));
+    if (!gate.allowed) throw tooMany(gate.retryAfter, `Too many requests. Try again in ${gate.retryAfter} seconds.`);
+
     const needsRole = route.roles.length > 0 || route.values.some((v) => v.from === "hasRole");
     const role = needsRole && me !== undefined ? await roleOf(me) : null;
     if (route.roles.length > 0 && (role === null || !route.roles.includes(role))) {
@@ -549,17 +578,17 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
   async function confirmPassword(userId: string, password: string, field: string): Promise<void> {
     const auth = app.auth;
     if (auth === null) throw new HttpError(404, "not_found", "No endpoint matches this path.");
-    const key = `id:${userId}`;
-    const wait = loginByAccount.retryAfter(key);
-    if (wait > 0) throw new HttpError(429, "too_many_requests", "Too many wrong passwords. Try again later.", undefined, { "Retry-After": String(wait) });
+    const key = limitKey("password-check", userId);
+    const gate = await limited(() => limits.blocked(key, 5, LOGIN_WINDOW));
+    if (!gate.allowed) throw tooMany(gate.retryAfter, "Too many wrong passwords. Try again later.");
     const r = await db.query(auth.account.hashSql, [userId]);
     const stored = r.rows[0]?.["hash"];
     const valid = await verifyPassword(password, typeof stored === "string" ? stored : await dummyHash());
     if (!valid) {
-      loginByAccount.hit(key);
+      await limited(() => limits.consume(key, 5, LOGIN_WINDOW));
       throw new HttpError(403, "invalid_credentials", "The password is incorrect.", field);
     }
-    loginByAccount.reset(key);
+    await limited(async () => (await limits.clear(key), { allowed: true, retryAfter: 0 }));
   }
 
   /** PUT /auth/users/:id/role, admins only. Body: { "role": "<role>" } or { "role": null }. */
@@ -609,9 +638,8 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     const ip = clientIp(req);
 
     if (path === "/auth/signup") {
-      const wait = signupByIp.retryAfter(ip);
-      if (wait > 0) throw new HttpError(429, "too_many_requests", "Too many signups. Try again later.", undefined, { "Retry-After": String(wait) });
-      signupByIp.hit(ip);
+      const gate = await limited(() => limits.consume(limitKey("signup", ip), 10, 3600));
+      if (!gate.allowed) throw tooMany(gate.retryAfter, "Too many signups. Try again later.");
       const bodyValues = await body(req, auth.signup.body);
       const r = await run(auth.signup.sql, values(auth.signup.values, new Map(), bodyValues, undefined, null), auth.model);
       const row = r.rows[0] ?? {};
@@ -632,19 +660,24 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       const email = validateValue({ key: auth.loginKey, kind: "Email" }, v.values.get(auth.loginKey));
       const password = String(v.values.get(auth.passwordKey));
       const account = "value" in email ? String(email.value) : "";
-      const wait = Math.max(loginByIp.retryAfter(ip), loginByAccount.retryAfter(account));
-      if (wait > 0) throw new HttpError(429, "too_many_requests", "Too many login attempts. Try again later.", undefined, { "Retry-After": String(wait) });
+      const ipKey = limitKey("login-ip", ip);
+      const accountKey = limitKey("login-account", account);
+      const byIp = await limited(() => limits.blocked(ipKey, 20, LOGIN_WINDOW));
+      const byAccount = await limited(() => limits.blocked(accountKey, 5, LOGIN_WINDOW));
+      if (!byIp.allowed || !byAccount.allowed) {
+        throw tooMany(Math.max(byIp.retryAfter, byAccount.retryAfter), "Too many login attempts. Try again later.");
+      }
 
       const r = account === "" ? { rows: [], rowCount: 0 } : await db.query(auth.loginSql, [account]);
       const row = r.rows[0];
       const hash = typeof row?.["hash"] === "string" ? row["hash"] : await dummyHash();
       const valid = await verifyPassword(password, hash);
       if (!valid || row === undefined) {
-        loginByIp.hit(ip);
-        loginByAccount.hit(account);
+        await limited(() => limits.consume(ipKey, 20, LOGIN_WINDOW));
+        await limited(() => limits.consume(accountKey, 5, LOGIN_WINDOW));
         throw new HttpError(401, "invalid_credentials", `The ${auth.loginKey} or ${auth.passwordKey} is incorrect.`);
       }
-      loginByAccount.reset(account);
+      await limited(async () => (await limits.clear(accountKey), { allowed: true, retryAfter: 0 }));
       const userId = String(row["id"]);
       await startSession(res, userId);
       const me = await db.query(auth.meSql, [userId]);
@@ -766,6 +799,9 @@ export function startServer(app: App): void {
     allowedOrigins: (process.env["RIZO_ALLOWED_ORIGINS"] ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   });
   const server = createServer((req, res) => void handler(req, res));
+  // Delete expired rate-limit counters every ten minutes.
+  const sweeper = new Limits({ query: (sql, vals) => pool.query(sql, vals) });
+  setInterval(() => void sweeper.sweep().catch(() => undefined), 10 * 60_000).unref();
   server.requestTimeout = 30_000;
   server.headersTimeout = 10_000;
   const port = Number(process.env["PORT"] ?? "3000");

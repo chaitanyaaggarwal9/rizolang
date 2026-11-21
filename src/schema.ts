@@ -81,7 +81,14 @@ const idColumn: Column = {
   unique: null, check: null, values: null, comment: null,
 };
 
-export function buildSchema(models: readonly ResolvedModel[], auth: ResolvedAuth | undefined): Schema {
+/** Name of the table that holds rate-limit counters (apps with a server). */
+export const LIMITS_TABLE = "_rizo_rate_limits";
+
+/**
+ * @param server true when the app has a generated server (auth, api or pages),
+ *               which needs its own tables, such as rate-limit counters.
+ */
+export function buildSchema(models: readonly ResolvedModel[], auth: ResolvedAuth | undefined, server = false): Schema {
   const tables: Table[] = models.map((model) => {
     const columns: Column[] = [idColumn, ...model.fields.map((f) => fieldColumn(model.table, f))];
     if (auth !== undefined && auth.model === model && auth.roles.length > 0) {
@@ -125,6 +132,17 @@ export function buildSchema(models: readonly ResolvedModel[], auth: ResolvedAuth
         name: constraintName(t, "user_id", "fkey"), column: "user_id", refTable: auth.model.table,
         onDelete: "CASCADE", index: constraintName(t, "user_id", "idx"),
       }],
+    });
+  }
+  if (server) {
+    const col = (name: string, type: string, primaryKey = false): Column => ({
+      name, type, primaryKey, default: null, notNull: !primaryKey, unique: null, check: null, values: null, comment: null,
+    });
+    tables.push({
+      name: LIMITS_TABLE,
+      comment: "Rate-limit counters, shared by every server process. Keys are hashes, never raw IP addresses.",
+      columns: [col("key", "TEXT", true), col("expires_at", "TIMESTAMPTZ"), col("count", "INTEGER")],
+      foreignKeys: [],
     });
   }
   return { version: 1, tables };

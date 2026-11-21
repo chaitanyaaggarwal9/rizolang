@@ -100,7 +100,7 @@ export function run(argv: readonly string[], io: CliIo): number {
 
   // Plan the migration before writing anything, so a refused build leaves no files behind.
   const migDir = join(io.cwd, MIGRATIONS_DIR);
-  const schema = buildSchema(result.models, result.auth);
+  const schema = buildSchema(result.models, result.auth, result.output.server !== undefined);
   const existing = existsSync(migDir) ? readdirSync(migDir).filter((f) => MIGRATION_FILE.test(f)).sort() : [];
   let plan: MigrationPlan;
   const snapshotPath = join(migDir, SNAPSHOT_FILE);

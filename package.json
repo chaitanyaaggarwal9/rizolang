@@ -1,0 +1,31 @@
+{
+  "name": "rizolang",
+  "version": "0.1.0",
+  "description": "Rizo Lang: a secure, simple, full-stack web language for the AI era. Compiles to PostgreSQL and TypeScript.",
+  "license": "Apache-2.0",
+  "homepage": "https://rizobot.com",
+  "type": "module",
+  "bin": {
+    "rizolang": "build/bin.js"
+  },
+  "files": [
+    "build",
+    "docs",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  }
+}

@@ -108,6 +108,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
         mail.push(email);
       },
       publicUrl: "https://blog.example",
+      openapi: result.output.server?.openapi ?? "",
       // Lets a test act from its own address (X-Forwarded-For), so the per-address limits of other tests don't add up.
       trustProxy: true,
     });
@@ -744,6 +745,20 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       await call("GET", "/auth/me", { cookie });
       expect(await seen()).toBe(first);
     });
+  });
+
+  it("serves openapi.json, and real responses have exactly the fields it describes", async () => {
+    const r = await call("GET", "/_rizo/openapi.json");
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    const doc = r.body as { paths: Record<string, unknown>; components: { schemas: Record<string, { required: string[]; properties: Record<string, unknown> }> } };
+    expect(doc.paths).toHaveProperty("/api/posts/{id}");
+    const post = doc.components.schemas["PostPublic"];
+    const listed = items<Record<string, unknown>>(await call("GET", "/api/posts"));
+    expect(listed.length).toBeGreaterThan(0);
+    for (const row of listed) expect(Object.keys(row).sort()).toEqual(Object.keys(post?.properties ?? {}).sort());
+    const user = doc.components.schemas["UserPublic"];
+    expect(Object.keys((await call("GET", `/api/users/${aliceId}`)).body as object).sort()).toEqual(Object.keys(user?.properties ?? {}).sort());
   });
 
   describe("API tokens", () => {

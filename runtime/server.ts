@@ -9,6 +9,7 @@
  * status, the duration and a request id. Never bodies, cookies or values.
  */
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import pg from "pg";
 import { BusyError, hashPassword, dummyHash, verifyPassword } from "./password.ts";
@@ -49,6 +50,8 @@ export interface ServerOptions {
   readonly mailer?: Mailer;
   /** The app's public address, used in links in emails, e.g. "https://blog.example". */
   readonly publicUrl?: string;
+  /** The app's OpenAPI document (dist/openapi.json), served at /_rizo/openapi.json. */
+  readonly openapi?: string;
   /** Keys for encrypted fields (from RIZO_ENCRYPTION_KEYS). Required when the app has any. */
   readonly encryptionKeys?: Keys;
 }
@@ -312,6 +315,12 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
   }
 
   function serveAsset(res: ServerResponse, pathname: string): number {
+    if (pathname === "/_rizo/openapi.json" && options.openapi !== undefined) {
+      // For agents and tools: what every endpoint takes and returns, and who may call it.
+      res.writeHead(200, { ...SECURITY_HEADERS, "Cache-Control": "no-cache" });
+      res.end(options.openapi);
+      return 200;
+    }
     const a = asset(pathname);
     if (a === undefined) throw new HttpError(404, "not_found", "No file matches this path.");
     res.writeHead(200, {
@@ -1332,8 +1341,15 @@ export function startServer(app: App): void {
       process.exit(1);
     }
   }
+  let openapi: string | undefined;
+  try {
+    openapi = readFileSync(new URL("../openapi.json", import.meta.url), "utf8");
+  } catch {
+    openapi = undefined;
+  }
   const pool = new pg.Pool(config);
   const handler = createRequestHandler(app, {
+    ...(openapi === undefined ? {} : { openapi }),
     ...(encryptionKeys === undefined ? {} : { encryptionKeys }),
     ...(email === undefined ? {} : { mailer: email.mailer, publicUrl: email.publicUrl }),
     db: { query: (sql, vals) => pool.query(sql, vals) },

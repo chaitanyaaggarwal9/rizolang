@@ -524,6 +524,8 @@ page /posts/:id/delete {
 | `runtime/pages.ts`, `runtime/client/` | Serves pages, plus the browser runtime and default styles (§5.6) |
 | `migrate.ts`, `migrations/` | Applies the migrations from your project's `migrations/` folder (§6, Migrations) |
 | `server.ts`          | The entry point                                                              |
+| `openapi.json`       | OpenAPI 3.1 description of every endpoint, also served at `/_rizo/openapi.json` (see below) |
+| `reencrypt.ts`       | Only with `encrypted` fields: moves stored values to the current key (§3.2) |
 | `runtime/`           | The Rizo runtime: validation, sessions, password hashing and the HTTP server |
 | `package.json`, `tsconfig.json` | To install `pg` and type-check the app                            |
 
@@ -533,6 +535,14 @@ The three types:
 - `User` is the stored record. It is for server use only, and holds a `PasswordHash`.
 - `UserPublic` (`User.public`) leaves out Password and `private` fields.
 - `UserInput` (`User.input`) is what a client sends. Passwords are plain text here, and links to the auth model are left out.
+
+### openapi.json
+
+Every build writes `openapi.json`, generated from the same route data the server uses, and the server also serves it at `GET /_rizo/openapi.json`. Agents and tools can read it to call the API correctly the first time.
+- **Each endpoint:** its path parameters (`{id}`), `limit` and `after` for lists, the exact request body (with limits; unknown fields are refused), the response (`<Model>Public`: public fields only), and every error status with the `Error` shape.
+- **Security:** endpoints that need a login accept the `session` cookie or a `token` (bearer API token).
+- **Extensions:** `x-rizo-access` (`public` or `login`), `x-rizo-roles`, `x-rizo-owner` (`{ "field": "author", "orRoles": [...] }`) and `x-rizo-rate-limit` (`{ "requests", "perSeconds" }`).
+- Account endpoints under `/auth` are described in §4, not in `openapi.json`.
 
 ### Migrations
 

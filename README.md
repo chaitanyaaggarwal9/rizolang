@@ -138,6 +138,7 @@ That's a complete backend:
 | `types.ts` | TypeScript types: `User` (server-only), `UserPublic` (safe to return) and `UserInput` (what clients send) |
 | `routes.ts` | Every endpoint as plain data, **with its SQL written out in full** so you can review exactly what runs |
 | `server.ts` | The entry point: `node server.ts` |
+| `openapi.json` | An OpenAPI 3.1 description of every endpoint, with its access rules, also served at `/_rizo/openapi.json` for agents and tools |
 | `runtime/` | A small Rizo runtime: validation, sessions, password hashing and the HTTP server |
 | `migrate.ts`, `migrations/` | Applies your project's migrations to the database |
 | `package.json`, `tsconfig.json` | Installs the only dependency, the [`pg`](https://www.npmjs.com/package/pg) driver, and type-checks the app |

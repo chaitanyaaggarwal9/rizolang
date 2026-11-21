@@ -77,7 +77,7 @@ A field named `password` (or ending in `Password`) must have the type `Password`
 
 ## auth
 
-`auth User by email` turns on accounts. User needs `email: Email unique` and one `Password` field. It adds `POST /auth/signup` (emails a confirmation link; login works after it is confirmed), password reset by email, `POST /auth/login`, `POST /auth/logout`, `POST /auth/logout-all`, `GET /auth/sessions` and `DELETE /auth/sessions/:id` (devices), `GET /auth/me`, `PATCH /auth/me` (edit profile), `POST /auth/password` and `DELETE /auth/me`. Sessions use a secure cookie and end after 7 days unused or 30 days in total. Scripts and AI agents use API tokens (`Authorization: Bearer rzt_...`), each limited to chosen login endpoints for at most 90 days. Don't write your own login endpoints.
+`auth User by email` turns on accounts. User needs `email: Email unique` and one `Password` field. It adds `POST /auth/signup` (emails a confirmation link; login works after it is confirmed), password reset by email, `POST /auth/login`, `POST /auth/logout`, `POST /auth/logout-all`, `GET /auth/sessions` and `DELETE /auth/sessions/:id` (devices), `GET /auth/me`, `PATCH /auth/me` (edit profile), `POST /auth/password` and `DELETE /auth/me`. Sessions use a secure cookie and end after 7 days unused or 30 days in total. The build also writes `openapi.json` (served at `/_rizo/openapi.json`). Scripts and AI agents use API tokens (`Authorization: Bearer rzt_...`), each limited to chosen login endpoints for at most 90 days. Don't write your own login endpoints.
 
 Roles: `auth User by email roles admin, editor` (must include admin). Admins assign roles with `PUT /auth/users/:id/role`. Never add a `role` field yourself; it is hidden and never comes from request bodies.
 

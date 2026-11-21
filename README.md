@@ -127,6 +127,7 @@ That's a complete backend:
 | `routes.ts` | Every endpoint as plain data, **with its SQL written out in full** so you can review exactly what runs |
 | `server.ts` | The entry point: `node server.ts` |
 | `runtime/` | A small Rizo runtime: validation, sessions, password hashing and the HTTP server |
+| `migrate.ts`, `migrations/` | Applies your project's migrations to the database |
 | `package.json`, `tsconfig.json` | Installs the only dependency, the [`pg`](https://www.npmjs.com/package/pg) driver, and type-checks the app |
 
 A file with only models (no `auth` or `api`) produces just `schema.sql` and `types.ts`.
@@ -176,10 +177,18 @@ npm link              # optional: makes the `rizolang` command available everywh
 ```sh
 npx rizolang build app.rz
 cd dist
-npm install                           # installs pg
-psql "$DATABASE_URL" -f schema.sql    # create the tables
-DATABASE_URL=postgres://user:pass@localhost:5432/app node server.ts
+npm install
+export DATABASE_URL=postgres://user:pass@localhost:5432/app
+node migrate.ts
+node server.ts
 ```
+
+- `npm install` installs `pg`, the only dependency.
+- `node migrate.ts` creates or updates the tables.
+
+When you change your models, run `rizolang build` again. It writes the change as a new file in `migrations/` (commit that folder), and `node migrate.ts` applies it.
+
+Changes that would delete data are refused unless you add `--allow-data-loss`. That covers removing a field or model, changing a field's type, and removing a role.
 
 ### Try it
 
@@ -314,6 +323,7 @@ The compiler enforces these rules:
 | CSRF | `SameSite=Lax` cookies, JSON-only bodies and an `Origin` check on every POST, PUT, PATCH and DELETE. |
 | Brute force | Rate limits on login and signup. |
 | Account enumeration at login | Identical responses and timing for an unknown account and a wrong password. |
+| Accidental data loss | Migrations that would drop data are refused unless you pass `--allow-data-loss`. Each migration runs in a transaction, and edited migrations are detected. |
 | Leaky logs | Logs contain only the method, route pattern, status, time and request id. |
 | Clickjacking and sniffing | A strict CSP, plus `X-Frame-Options: DENY`, `nosniff` and `no-store` on every response. |
 
@@ -358,7 +368,7 @@ Rizo Lang is in **early development**, so expect the language to change before 1
 
 - [x] **Milestone 1:** models, compiled to a PostgreSQL schema and TypeScript types ([v0.1.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.1.0))
 - [x] **Milestone 2:** `auth`, `api` endpoints, links, `private` fields and a generated Node.js server ([v0.2.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.2.0))
-- [ ] **Milestone 3** (in progress): roles ✓, pagination ✓, account management ✓, migrations
+- [x] **Milestone 3:** roles, pagination, account management and migrations
 - [ ] **Milestone 4:** frontend `page` blocks compiled to HTML and TypeScript
 - [x] Publish the compiler to npm ([`rizolang`](https://www.npmjs.com/package/rizolang))
 - [ ] A VS Code extension with syntax highlighting

@@ -111,6 +111,10 @@ api METHOD /path/:param -> Model.public {
 - A link to the auth model must be set with `= me` in create, and is never taken from body.
 - You cannot create, update or delete the auth model through `api`.
 
+## Migrations
+
+`rizolang build` writes `migrations/NNNN_*.sql` when models change. Removing a model or field, changing a field's type, or removing a role is refused (RZ0904). Never rename a field; add a new one instead. Apply migrations with `node migrate.ts`.
+
 ## Errors
 
 The format is `file.rz:LINE:COL error RZxxxx: message`, followed by a `fix:` line. Apply the fix exactly as written.

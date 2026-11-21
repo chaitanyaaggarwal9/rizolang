@@ -108,6 +108,15 @@ jobs:
         env:
           RIZO_TEST_DATABASE_URL: postgres://rizo:rizo@localhost:5432/rizo
         run: npx vitest run tests/e2e.test.ts
+      - name: Apply migrations to a new database
+        env:
+          DATABASE_URL: postgres://rizo:rizo@localhost:5432/migrated
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE migrated"
+          cd examples/dist
+          node migrate.ts | tee first.log
+          grep -q "applied 0001_initial.sql" first.log
+          node migrate.ts | grep -q "database is up to date"
       - name: Run the generated server
         env:
           DATABASE_URL: postgres://rizo:rizo@localhost:5432/rizo

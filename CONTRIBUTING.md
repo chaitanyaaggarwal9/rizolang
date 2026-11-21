@@ -87,6 +87,27 @@ The `main` branch is protected: nobody can push to it directly, force-push to it
 
 Contributions written with AI tools are welcome. You are responsible for every line you submit: read it, test it, and make sure it follows the rules above.
 
+## Releasing (maintainers)
+
+Releases are published to npm by [`.github/workflows/publish.yml`](.github/workflows/publish.yml), never from a laptop.
+
+1. In a pull request:
+   - bump `version` in `package.json` (and the lockfile) and in `src/version.ts`,
+   - move the "Unreleased" changelog entries under the new version.
+2. Merge the pull request, and wait for CI to pass on `main`.
+3. Create a GitHub release with the tag `v<version>` on that commit.
+
+Publishing the release starts the workflow. It:
+1. checks that the tag matches `package.json`,
+2. runs the type check and the tests, and builds the compiler,
+3. publishes to npm.
+
+How it stays secure:
+- It uses npm trusted publishing: no npm token is stored anywhere.
+- npm adds a provenance attestation, which proves the package was built from this repository.
+- It runs in the `npm` GitHub environment, which only accepts `v*` tags.
+- Release tags are protected, so they can't be moved or deleted.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [Apache License 2.0](LICENSE), the same license as the project.

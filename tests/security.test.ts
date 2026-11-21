@@ -293,6 +293,14 @@ api GET /users/:id -> User.public {
     expect(auth?.publicKeys).not.toContain("role");
   });
 
+  it("never lets a profile update change the login email, password, role or owner links", () => {
+    const profile = app.auth?.account.profile;
+    expect(profile?.body.map((f) => f.key)).toEqual(["name"]);
+    expect(profile?.sql).toBe('UPDATE "users" SET "name" = CASE WHEN $2 THEN $3 ELSE "name" END WHERE "id" = $1 RETURNING "id", "name"');
+    expect(profile?.values[0]).toEqual({ from: "me" });
+    expect(app.auth?.account.password).toMatchObject({ key: "newPassword", kind: "Password", min: 8, max: 128 });
+  });
+
   it("keeps private fields out of public types", () => {
     expect(propertyNames(interfaceBody(result.output.typescript, "UserPublic"))).toEqual(["id", "name"]);
     expect(propertyNames(interfaceBody(result.output.typescript, "PostPublic"))).not.toContain("secretNote");

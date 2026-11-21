@@ -15,6 +15,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - New errors RZ0219 and RZ0332.
 - Pagination: `list` endpoints accept `?limit=` and `?after=<cursor>`, using keyset pagination on the sort field and `id`. The cursor only fills query parameters.
 
+- Account management:
+  - `PATCH /auth/me` edits your own profile.
+  - `POST /auth/password` changes your password with the current one, and logs out your other sessions.
+  - `POST /auth/logout-all` logs out every session.
+  - `DELETE /auth/me` deletes your account with your password.
+  - Wrong passwords count toward the login lockout.
+
 ### Changed
 
 - **Breaking:** `list` endpoints now return `{ "items": [...], "next": "<cursor>" | null }` instead of a bare array. `limit N` is now the largest page size, and also the default.

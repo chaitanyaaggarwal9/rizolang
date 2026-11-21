@@ -59,6 +59,8 @@ function items<T = Record<string, unknown>>(r: Res): T[] {
 }
 
 const ALICE = { email: "Alice@Example.com", password: "correct horse battery", name: "Alice", bio: "hi" };
+const CAROL = { email: "carol@example.com", password: "carols first password", name: "Carol" };
+const CAROL_NEW = "carols second password";
 const BOB = { email: "bob@example.com", password: "another long password", name: "Bob" };
 
 describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
@@ -331,6 +333,75 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     });
   });
 
+  describe("account management", () => {
+    let carol: string;
+    let carolId: string;
+    const login = async (password: string) =>
+      call("POST", "/auth/login", { body: { email: CAROL.email, password } });
+
+    beforeAll(async () => {
+      const r = await call("POST", "/auth/signup", { body: CAROL });
+      carol = r.cookie ?? "";
+      carolId = (r.body as { id: string }).id;
+    });
+
+    it("updates your own profile, but never the email, password or role", async () => {
+      const r = await call("PATCH", "/auth/me", { cookie: carol, body: { name: "Carol B", bio: "hello" } });
+      expect(r).toMatchObject({ status: 200, body: { id: carolId, name: "Carol B", bio: "hello" } });
+      for (const field of ["email", "password", "role", "id"]) {
+        const bad = await call("PATCH", "/auth/me", { cookie: carol, body: { [field]: "x" } });
+        expect(bad, field).toMatchObject({ status: 400, body: { error: { field } } });
+      }
+      expect((await call("PATCH", "/auth/me", { body: { name: "x" } })).status).toBe(401);
+    });
+
+    it("changes the password only with the current one, and logs out other sessions", async () => {
+      const other = (await login(CAROL.password)).cookie ?? "";
+      const wrong = await call("POST", "/auth/password", { cookie: carol, body: { currentPassword: "nope nope nope", newPassword: CAROL_NEW } });
+      expect(wrong).toMatchObject({ status: 403, body: { error: { field: "currentPassword" } } });
+      const weak = await call("POST", "/auth/password", { cookie: carol, body: { currentPassword: CAROL.password, newPassword: "short" } });
+      expect(weak).toMatchObject({ status: 400, body: { error: { field: "newPassword" } } });
+      const ok = await call("POST", "/auth/password", { cookie: carol, body: { currentPassword: CAROL.password, newPassword: CAROL_NEW } });
+      expect(ok.status).toBe(204);
+      expect((await call("GET", "/auth/me", { cookie: carol })).status).toBe(200);
+      expect((await call("GET", "/auth/me", { cookie: other })).status).toBe(401);
+      expect((await login(CAROL.password)).status).toBe(401);
+      expect((await login(CAROL_NEW)).status).toBe(200);
+    });
+
+    it("logs out every session", async () => {
+      const a = (await login(CAROL_NEW)).cookie ?? "";
+      const b = (await login(CAROL_NEW)).cookie ?? "";
+      const r = await call("POST", "/auth/logout-all", { cookie: a });
+      expect(r.status).toBe(204);
+      expect(r.headers.get("set-cookie")).toContain("Max-Age=0");
+      expect((await call("GET", "/auth/me", { cookie: a })).status).toBe(401);
+      expect((await call("GET", "/auth/me", { cookie: b })).status).toBe(401);
+      expect((await call("GET", "/auth/me", { cookie: carol })).status).toBe(401);
+      carol = (await login(CAROL_NEW)).cookie ?? "";
+    });
+
+    it("deletes the account only with the password, and only when nothing links to it", async () => {
+      const post = await call("POST", "/posts", { cookie: carol, body: { title: "Mine", body: "x", published: false } });
+      const blocked = await call("DELETE", "/auth/me", { cookie: carol, body: { password: CAROL_NEW } });
+      expect(blocked).toMatchObject({ status: 409, body: { error: { code: "in_use" } } });
+      await call("DELETE", `/posts/${(post.body as { id: string }).id}`, { cookie: carol });
+      expect((await call("DELETE", "/auth/me", { cookie: carol, body: { password: "wrong wrong wrong" } })).status).toBe(403);
+      const r = await call("DELETE", "/auth/me", { cookie: carol, body: { password: CAROL_NEW } });
+      expect(r.status).toBe(204);
+      expect((await call("GET", "/auth/me", { cookie: carol })).status).toBe(401);
+      expect((await login(CAROL_NEW)).status).toBe(401);
+      expect((await call("GET", `/users/${carolId}`)).status).toBe(404);
+    });
+
+    it("locks out repeated wrong passwords on sensitive changes", async () => {
+      const dave = (await call("POST", "/auth/signup", { body: { email: "dave@example.com", password: "daves long password", name: "Dave" } })).cookie ?? "";
+      const attempt = () => call("POST", "/auth/password", { cookie: dave, body: { currentPassword: "guess guess guess", newPassword: "whatever whatever" } });
+      for (let i = 0; i < 5; i++) expect((await attempt()).status).toBe(403);
+      expect((await attempt()).status).toBe(429);
+    });
+  });
+
   it("rejects cross-site writes, wrong content types, oversized and unexpected bodies", async () => {
     const evil = await call("POST", "/posts", {
       cookie: alice, body: { title: "x", body: "x", published: true }, headers: { Origin: "https://evil.example" },
@@ -382,7 +453,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
 
   it("never leaks passwords, hashes or emails in responses or logs", () => {
     const everything = [...responses, ...logs].join("\n");
-    for (const secret of [ALICE.password, BOB.password, "scrypt$", "alice@example.com", "Alice@Example.com", BOB.email, "password_hash"]) {
+    for (const secret of [ALICE.password, BOB.password, CAROL.password, CAROL_NEW, "daves long password", "scrypt$", "alice@example.com", "Alice@Example.com", BOB.email, "password_hash"]) {
       expect(everything).not.toContain(secret);
     }
     // Logs name the route pattern, never the concrete URL or body.

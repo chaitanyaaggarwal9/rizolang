@@ -1,6 +1,6 @@
 # Rizo Lang Specification
 
-Version 0.3 (draft) · Milestone 3: roles and pagination
+Version 0.3 (draft) · Milestone 3: roles, pagination and accounts
 
 Rizo Lang is a secure, simple, full-stack web language. Source files end in `.rz`. The compiler, `rizolang`, turns Rizo Lang into existing technology: a PostgreSQL schema, TypeScript types and a Node.js server. HTML and TypeScript frontends come later.
 
@@ -142,7 +142,7 @@ Rules (error RZ0317):
 - There can be at most one `auth` line per file.
 - Roles, if declared, are camelCase names, at most 20 of them, and must include `admin`. The model must not have its own field named `role`.
 
-It adds four endpoints. Paths under `/auth` are reserved.
+It adds these endpoints. Paths under `/auth` are reserved.
 
 | Endpoint            | Body                              | Result                                        |
 |---------------------|-----------------------------------|-----------------------------------------------|
@@ -150,6 +150,10 @@ It adds four endpoints. Paths under `/auth` are reserved.
 | `POST /auth/login`  | `{ "email": ..., "password": ... }` | 200 with `User.public`, or 401               |
 | `POST /auth/logout` | none                              | 204; the session is deleted                   |
 | `GET /auth/me`      | none                              | 200 with `User.public`, or 401                |
+| `PATCH /auth/me`    | Any profile fields                | 200 with `User.public`. Every field is optional. The login email, the password, the role and links to the auth model can't be changed here |
+| `POST /auth/password` | `{ "currentPassword": ..., "newPassword": ... }` | 204. Every other session of the account is logged out |
+| `POST /auth/logout-all` | none                          | 204. Every session of the account is deleted, including this one |
+| `DELETE /auth/me`   | `{ "password": ... }`             | 204, and the account and its sessions are deleted. 409 if other records still link to it |
 
 **How login works**
 - Passwords are hashed with scrypt (N=2^15, r=8, p=3) and a random salt.
@@ -174,6 +178,12 @@ Each account has at most one role, or none.
 | `PUT /auth/users/:id/role` | `{ "role": "editor" }` or `{ "role": null }` | 200 `{ "id", "role" }`. Admins only: 401 if not logged in, 403 if not an admin or if it's your own account |
 
 **The first admin.** Sign up normally, then start the server with `RIZO_ADMIN_EMAILS=you@example.com`. At startup, accounts that **already exist** with a listed email become admins. Accounts created later are never promoted this way, so nobody can claim admin by signing up with a listed email.
+
+**Sensitive changes:**
+- Changing the password and deleting the account need the current password.
+- A wrong password gets 403 and counts toward the same lockout as login.
+- New passwords follow the Password field's `min` and `max`.
+- Changing the login email isn't available yet, because it needs email verification.
 
 **How sessions work**
 - The session is a random 256-bit token in the `rizo_session` cookie: `HttpOnly; Secure; SameSite=Lax; Path=/`, lasting 7 days.
@@ -638,5 +648,5 @@ comment    = "//" { any character except newline } ;
 These are **not** part of the language yet. Using them is an error.
 
 - Pagination, and filters other than `=`.
-- Changing or deleting accounts.
+- Changing the login email, and password reset by email (these need email verification).
 - Frontend `page` blocks.

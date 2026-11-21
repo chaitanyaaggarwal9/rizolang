@@ -272,8 +272,33 @@ function authSpec(auth: ResolvedAuth): AuthSpec {
   const p = new Params();
   const cols = fields.map((f) => q(f.column));
   const vals = fields.map((f) => p.add({ from: "body", key: f.name }));
+  // Profile updates: every field except the login email, the password and
+  // links to the auth model (and the hidden role column, which is not a field).
+  const profileFields = model.fields.filter(
+    (f) => f !== auth.loginField && f !== auth.passwordField && f.link !== model.name,
+  );
+  const pp = new Params();
+  const id = pp.add({ from: "me" });
+  const sets = profileFields.map((f) => {
+    const provided = pp.add({ from: "provided", key: f.name });
+    const value = pp.add({ from: "body", key: f.name });
+    return `${q(f.column)} = CASE WHEN ${provided} THEN ${value} ELSE ${q(f.column)} END`;
+  });
   return {
     model: model.name,
+    account: {
+      password: { ...fieldSpec(auth.passwordField, true), key: "newPassword" },
+      hashSql: `SELECT ${q(auth.passwordField.column)} AS "hash" FROM ${table} WHERE ${q("id")} = $1`,
+      setPasswordSql: `UPDATE ${table} SET ${q(auth.passwordField.column)} = $2 WHERE ${q("id")} = $1`,
+      deleteSql: `DELETE FROM ${table} WHERE ${q("id")} = $1`,
+      profile: profileFields.length === 0
+        ? null
+        : {
+            body: profileFields.map((f) => fieldSpec(f, false)),
+            sql: `UPDATE ${table} SET ${sets.join(", ")} WHERE ${q("id")} = ${id} RETURNING ${select.sql}`,
+            values: pp.values,
+          },
+    },
     signup: {
       body: fields.map((f) => fieldSpec(f, !f.optional)),
       sql: `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${vals.join(", ")}) RETURNING ${select.sql}`,

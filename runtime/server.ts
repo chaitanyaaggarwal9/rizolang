@@ -73,15 +73,17 @@ interface Matched {
   readonly params: ReadonlyMap<string, unknown>;
 }
 
-interface AuthRoutes {
-  readonly method: string;
+interface AuthRoute {
   readonly path: string;
+  readonly methods: readonly string[];
 }
-const AUTH_ROUTES: readonly AuthRoutes[] = [
-  { method: "POST", path: "/auth/signup" },
-  { method: "POST", path: "/auth/login" },
-  { method: "POST", path: "/auth/logout" },
-  { method: "GET", path: "/auth/me" },
+const AUTH_ROUTES: readonly AuthRoute[] = [
+  { path: "/auth/signup", methods: ["POST"] },
+  { path: "/auth/login", methods: ["POST"] },
+  { path: "/auth/logout", methods: ["POST"] },
+  { path: "/auth/logout-all", methods: ["POST"] },
+  { path: "/auth/password", methods: ["POST"] },
+  { path: "/auth/me", methods: ["GET", "PATCH", "DELETE"] },
 ];
 
 interface Page {
@@ -440,6 +442,32 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
 
   // ----------------------------------------------------------------- auth
 
+  async function requireUser(req: IncomingMessage): Promise<string> {
+    const me = await currentUser(req);
+    if (me === undefined) throw new HttpError(401, "login_required", "You need to log in.");
+    return me;
+  }
+
+  /**
+   * Check the logged-in user's password before a sensitive change. Wrong
+   * guesses count toward the same per-account lockout as login.
+   */
+  async function confirmPassword(userId: string, password: string, field: string): Promise<void> {
+    const auth = app.auth;
+    if (auth === null) throw new HttpError(404, "not_found", "No endpoint matches this path.");
+    const key = `id:${userId}`;
+    const wait = loginByAccount.retryAfter(key);
+    if (wait > 0) throw new HttpError(429, "too_many_requests", "Too many wrong passwords. Try again later.", undefined, { "Retry-After": String(wait) });
+    const r = await db.query(auth.account.hashSql, [userId]);
+    const stored = r.rows[0]?.["hash"];
+    const valid = await verifyPassword(password, typeof stored === "string" ? stored : await dummyHash());
+    if (!valid) {
+      loginByAccount.hit(key);
+      throw new HttpError(403, "invalid_credentials", "The password is incorrect.", field);
+    }
+    loginByAccount.reset(key);
+  }
+
   /** PUT /auth/users/:id/role, admins only. Body: { "role": "<role>" } or { "role": null }. */
   async function setRole(req: IncomingMessage, res: ServerResponse, method: string, rawId: string): Promise<number> {
     const auth = app.auth;
@@ -479,8 +507,9 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     if (roleRoute !== null && auth.roles.length > 0) return setRole(req, res, method, roleRoute[1] ?? "");
     const known = AUTH_ROUTES.find((r) => r.path === path);
     if (known === undefined) throw new HttpError(404, "not_found", "No endpoint matches this path.");
-    if (known.method !== method) {
-      throw new HttpError(405, "method_not_allowed", `This path does not support ${method}.`, undefined, { Allow: known.method });
+    const methods = known.methods.filter((m) => !(path === "/auth/me" && m === "PATCH" && auth.account.profile === null));
+    if (!methods.includes(method)) {
+      throw new HttpError(405, "method_not_allowed", `This path does not support ${method}.`, undefined, { Allow: methods.join(", ") });
     }
     checkOrigin(req, method);
     const ip = clientIp(req);
@@ -526,6 +555,57 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       await startSession(res, userId);
       const me = await db.query(auth.meSql, [userId]);
       return send(res, 200, pick(me.rows[0] ?? {}, auth.publicKeys));
+    }
+
+    if (path === "/auth/password") {
+      const me = await requireUser(req);
+      const v = validateBody(
+        [{ key: "currentPassword", kind: "Text", required: true, nullable: false, max: 128 }, auth.account.password],
+        await readJson(req),
+      );
+      if (!v.ok) throw new HttpError(400, "validation_failed", v.message, v.field || undefined);
+      await confirmPassword(me, String(v.values.get("currentPassword")), "currentPassword");
+      await db.query(auth.account.setPasswordSql, [me, await hashPassword(String(v.values.get("newPassword")))]);
+      // Everyone else using this account is logged out; this session stays.
+      await db.query(SQL.deleteOthers, [me, hashToken(readToken(req.headers.cookie) ?? "")]);
+      res.writeHead(204, SECURITY_HEADERS).end();
+      return 204;
+    }
+
+    if (path === "/auth/logout-all") {
+      const me = await requireUser(req);
+      await db.query(SQL.deleteAll, [me]);
+      res.setHeader("Set-Cookie", clearedCookie(secure));
+      res.writeHead(204, SECURITY_HEADERS).end();
+      return 204;
+    }
+
+    if (path === "/auth/me" && method === "PATCH" && auth.account.profile !== null) {
+      const me = await requireUser(req);
+      const profile = auth.account.profile;
+      const bodyValues = await body(req, profile.body);
+      const r = await run(profile.sql, values(profile.values, new Map(), bodyValues, me, null), auth.model);
+      const row = r.rows[0];
+      if (row === undefined) throw new HttpError(401, "login_required", "You need to log in.");
+      return send(res, 200, pick(row, auth.publicKeys));
+    }
+
+    if (path === "/auth/me" && method === "DELETE") {
+      const me = await requireUser(req);
+      const v = validateBody([{ key: "password", kind: "Text", required: true, nullable: false, max: 128 }], await readJson(req));
+      if (!v.ok) throw new HttpError(400, "validation_failed", v.message, v.field || undefined);
+      await confirmPassword(me, String(v.values.get("password")), "password");
+      try {
+        await run(auth.account.deleteSql, [me], auth.model);
+      } catch (e) {
+        if (e instanceof HttpError && e.code === "in_use") {
+          throw new HttpError(409, "in_use", "This account still owns records. Delete them first, then delete the account.");
+        }
+        throw e;
+      }
+      res.setHeader("Set-Cookie", clearedCookie(secure));
+      res.writeHead(204, SECURITY_HEADERS).end();
+      return 204;
     }
 
     if (path === "/auth/logout") {

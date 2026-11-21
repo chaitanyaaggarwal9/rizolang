@@ -1,16 +1,74 @@
-// A small blog: users write posts.
+// A small blog: people sign up, write posts and comment.
+
+auth User by email
+
 model User {
-  email: Email unique
+  email: Email unique private
   password: Password min 12
   name: Text max 100
   bio: Text max 500 optional
-  isAdmin: Bool
 }
 
-model BlogPost {
-  authorId: ID
+model Post {
+  author: User
   title: Text min 1 max 200
   body: Text
-  views: Number min 0
-  publishedAt: Date optional
+  published: Bool
+  views: Number min 0 optional
+}
+
+model Comment {
+  post: Post
+  author: User
+  body: Text min 1 max 2000
+}
+
+// Anyone can read published posts.
+api GET /posts -> list Post.public {
+  public
+  return db.Post.list(published = true, order title, limit 20)
+}
+
+api GET /posts/:id -> Post.public {
+  public
+  return db.Post.find(id)
+}
+
+// Logged-in users manage their own posts.
+api GET /my/posts -> list Post.public {
+  requires login
+  return db.Post.list(author = me)
+}
+
+api POST /posts -> Post.public {
+  requires login
+  return db.Post.create(body, author = me)
+}
+
+api PATCH /posts/:id -> Post.public {
+  requires login
+  requires owner author
+  return db.Post.update(id, body)
+}
+
+api DELETE /posts/:id {
+  requires login
+  requires owner author
+  return db.Post.delete(id)
+}
+
+// Comments on a post.
+api GET /posts/:postId/comments -> list Comment.public {
+  public
+  return db.Comment.list(post = postId, limit 100)
+}
+
+api POST /comments -> Comment.public {
+  requires login
+  return db.Comment.create(body, author = me)
+}
+
+api GET /users/:id -> User.public {
+  public
+  return db.User.find(id)
 }

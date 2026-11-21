@@ -5,6 +5,7 @@ import { compile } from "../src/compiler.js";
 
 const read = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 const spec = read("docs/SPEC.md");
+const readme = read("README.md");
 const compact = read("docs/SPEC-COMPACT.md");
 
 function sourceFiles(dir: string): string[] {
@@ -14,6 +15,28 @@ function sourceFiles(dir: string): string[] {
 }
 
 const wrapField = (line: string) => `model Example {\n  ${line}\n}\n`;
+
+/** The models from SPEC §3, which the spec's api examples use. */
+const PRELUDE = `auth User by email
+model User {
+  email: Email unique private
+  password: Password
+  name: Text max 100
+}
+model Post {
+  author: User
+  title: Text max 200
+  published: Bool
+}
+`;
+const isBlock = (s: string) => /^(model|auth|api)\b/m.test(s.trimStart());
+/** Compile a snippet: whole blocks as they are (api blocks with the §3 models), single fields inside a model. */
+const asFile = (s: string): string => {
+  const t = s.trimStart();
+  if (t.startsWith("auth") && !t.includes("model")) return PRELUDE; // the bare auth line from SPEC §4
+  if (/^api\b/m.test(t) && !/^model\b/m.test(t)) return PRELUDE + s;
+  return isBlock(s) ? s : wrapField(s.split("\n").join("\n  "));
+};
 
 describe("docs", () => {
   it("documents every error code the compiler can produce, and no others", () => {
@@ -27,10 +50,10 @@ describe("docs", () => {
   });
 
   it("the main examples in both specs compile", () => {
-    const blocks = [spec, compact].flatMap((d) => [...d.matchAll(/```rizo\n([\s\S]*?)```/g)].map((m) => m[1] ?? ""));
-    const full = blocks.filter((b) => b.trimStart().startsWith("model") || b.trimStart().startsWith("// comment"));
-    expect(full.length).toBeGreaterThanOrEqual(2);
-    for (const b of full) expect(compile(b, "doc.rz").ok, b).toBe(true);
+    const blocks = [spec, compact, readme].flatMap((d) => [...d.matchAll(/```rizo\n([\s\S]*?)```/g)].map((m) => m[1] ?? ""));
+    const full = blocks.filter((b) => !b.includes("// Wrong") && !b.includes("→") && (isBlock(b) || b.trimStart().startsWith("// ")));
+    expect(full.length).toBeGreaterThanOrEqual(5);
+    for (const b of full) expect(compile(asFile(b), "doc.rz").ok, b).toBe(true);
   });
 
   it("every Wrong → Right pair in the compact spec behaves as documented", () => {
@@ -51,12 +74,11 @@ describe("docs", () => {
 
   it("every 'Wrong' snippet in SPEC.md fails and every 'Right' snippet compiles", () => {
     const blocks = [...spec.matchAll(/```rizo\n\/\/ Wrong\n([\s\S]*?)\n\n\/\/ Right\n([\s\S]*?)```/g)];
-    expect(blocks.length).toBeGreaterThanOrEqual(6);
+    expect(blocks.length).toBeGreaterThanOrEqual(8);
     for (const [, wrong = "", right = ""] of blocks) {
-      const asFile = (s: string) => (s.trimStart().startsWith("model") ? s : wrapField(s.split("\n").join("\n  ")));
       // Each wrong line must fail on its own.
-      if (wrong.trimStart().startsWith("model")) {
-        expect(compile(wrong, "doc.rz").ok, wrong).toBe(false);
+      if (isBlock(wrong)) {
+        expect(compile(asFile(wrong), "doc.rz").ok, wrong).toBe(false);
       } else {
         for (const line of wrong.split("\n").filter((l) => l.trim())) {
           expect(compile(wrapField(line.trim()), "doc.rz").ok, line).toBe(false);

@@ -1,6 +1,19 @@
 import { type Diagnostic, type Span, diagnostic } from "./diagnostics.js";
 
-export type TokenKind = "ident" | "int" | "lbrace" | "rbrace" | "colon" | "eof";
+export type TokenKind =
+  | "ident"
+  | "int"
+  | "path"
+  | "lbrace"
+  | "rbrace"
+  | "lparen"
+  | "rparen"
+  | "colon"
+  | "comma"
+  | "dot"
+  | "equals"
+  | "arrow"
+  | "eof";
 
 export interface Token {
   readonly kind: TokenKind;
@@ -19,25 +32,39 @@ const MAX_DIGITS = 10;
 
 /** Targeted advice for characters people (and AIs) commonly type by habit. */
 const CHARACTER_FIXES: Readonly<Record<string, string>> = {
-  ",": "Rizo Lang does not use commas. Put each field on its own line.",
   ";": "Rizo Lang does not use semicolons. Remove it.",
   "_": "Names may contain only letters and digits. Use camelCase (userName) for fields and PascalCase (BlogPost) for models.",
   "?": 'Mark optional fields with the optional modifier: `nickname: Text optional`.',
-  "(": "Write limits as modifiers, not arguments: `name: Text max 100`.",
-  ")": "Write limits as modifiers, not arguments: `name: Text max 100`.",
   "@": "Write modifiers without @: `email: Email unique`.",
-  "=": "Default values are not supported. Remove the `=` and the value after it.",
-  '"': "Quoted text is not used in model blocks. Remove the quotes.",
-  "'": "Quoted text is not used in model blocks. Remove the quotes.",
-  "[": "Lists are not supported yet. Use a single value.",
-  "]": "Lists are not supported yet. Use a single value.",
-  "/": "Comments start with two slashes: `// like this`.",
+  '"': "Quoted text is not supported. Remove the quotes.",
+  "'": "Quoted text is not supported. Remove the quotes.",
+  "[": "Lists are not supported. To return many records, write `-> list Post.public`.",
+  "]": "Lists are not supported. To return many records, write `-> list Post.public`.",
   "#": "Comments start with two slashes: `// like this`.",
+  "&": "Combine filters with commas: `db.Post.list(author = me, published = true)`.",
+  "|": "Rizo Lang has no `or`. Write separate api blocks instead.",
+  "!": "Rizo Lang has no `!=`. Filters compare with `=` only.",
+  "<": "Only `=` comparisons are supported in filters.",
+  ">": "Only `=` comparisons are supported in filters. The return arrow is written `->`.",
+  "-": "A minus sign must be followed by a digit (-5), and the return arrow is written `->`.",
 };
 
 const isLetter = (c: string | undefined): boolean => c !== undefined && /[A-Za-z]/.test(c);
 const isDigit = (c: string | undefined): boolean => c !== undefined && c >= "0" && c <= "9";
 const isAlnum = (c: string | undefined): boolean => isLetter(c) || isDigit(c);
+/** Characters a URL path token may contain. The checker validates paths strictly. */
+const isPathChar = (c: string | undefined): boolean => c !== undefined && /[A-Za-z0-9/:_-]/.test(c);
+
+const SINGLE: Readonly<Record<string, TokenKind>> = {
+  "{": "lbrace",
+  "}": "rbrace",
+  "(": "lparen",
+  ")": "rparen",
+  ":": "colon",
+  ",": "comma",
+  ".": "dot",
+  "=": "equals",
+};
 
 export function lex(rawSource: string, file: string): LexResult {
   // Normalize line endings so line/column numbers are the same on every OS.
@@ -67,10 +94,18 @@ export function lex(rawSource: string, file: string): LexResult {
         i++;
         col++;
       }
+    } else if (c === "/") {
+      let j = i;
+      // Inside a path, "//" is part of the path (the checker reports the empty
+      // segment). A comment after a path must be separated by a space.
+      while (isPathChar(src[j])) j++;
+      push("path", src.slice(i, j));
     } else if (isLetter(c)) {
       let j = i;
       while (isAlnum(src[j])) j++;
       push("ident", src.slice(i, j));
+    } else if (c === "-" && src[i + 1] === ">") {
+      push("arrow", "->");
     } else if (isDigit(c) || (c === "-" && isDigit(src[i + 1]))) {
       let j = c === "-" ? i + 1 : i;
       while (isDigit(src[j])) j++;
@@ -96,12 +131,8 @@ export function lex(rawSource: string, file: string): LexResult {
           "Use a number between -2147483648 and 2147483647.");
       }
       push("int", text, Number(text));
-    } else if (c === "{") {
-      push("lbrace", c);
-    } else if (c === "}") {
-      push("rbrace", c);
-    } else if (c === ":") {
-      push("colon", c);
+    } else if (c !== undefined && SINGLE[c] !== undefined) {
+      push(SINGLE[c], c);
     } else {
       const ch = String.fromCodePoint(src.codePointAt(i) ?? 0);
       const shown = /^[\x21-\x7e]$/.test(ch)
@@ -110,7 +141,7 @@ export function lex(rawSource: string, file: string): LexResult {
       return fail("RZ0101", { line, col, length: 1 },
         `Unexpected character ${shown}.`,
         CHARACTER_FIXES[ch] ??
-          "Remove it. Model blocks may contain only letters, digits, {, }, :, - and // comments.");
+          "Remove it. Rizo Lang uses only letters, digits, paths like /posts/:id, the symbols { } ( ) : , . = -> and // comments.");
     }
   }
   tokens.push({ kind: "eof", text: "", value: 0, span: { line, col, length: 1 } });

@@ -28,8 +28,12 @@ Only you and the maintainers can see the report.
 
 In scope:
 
-- The `rizolang` compiler and the code it generates.
-- Any case where a guarantee in [docs/SPEC.md §8](docs/SPEC.md#8-security-guarantees) does not hold.
+- The `rizolang` compiler, the code it generates and the runtime copied into generated apps (`runtime/`).
+- Any case where a guarantee in [docs/SPEC.md §7](docs/SPEC.md#7-security-guarantees) does not hold, for example:
+  - a way to reach data without the required login or ownership,
+  - a password, hash or private field appearing in a response or log,
+  - request data changing a SQL query,
+  - a way around validation, rate limits or the cross-site check.
 
 Out of scope:
 

@@ -24,12 +24,13 @@ Rizo Lang is a secure, simple, full-stack web language for the AI era. Source fi
 - TypeScript on Node.js, in strict mode (see `tsconfig.json`).
 - Hand-written lexer and recursive-descent parser. Never use a parser generator.
 - Tests use Vitest.
-- Keep dependencies to an absolute minimum. The compiler has **zero runtime dependencies**, and every dev dependency is pinned to an exact version.
+- Keep dependencies to an absolute minimum. The compiler has **zero runtime dependencies**, and every dev dependency is pinned to an exact version. Generated apps depend only on `pg` (pinned), which the maintainer approved.
 - License: Apache 2.0.
 
 ## Project layout
 
-- `src/lexer.ts` → `src/parser.ts` (builds an AST, see `src/ast.ts`) → `src/checker.ts` → `src/emit/{sql,typescript}.ts`, orchestrated by `src/compiler.ts`.
+- `src/lexer.ts` → `src/parser.ts` (builds an AST, see `src/ast.ts`) → `src/checker.ts` (models) and `src/check-api.ts` (auth and api) → `src/emit/{sql,typescript,routes}.ts`, orchestrated by `src/compiler.ts`.
+- `runtime/` is copied verbatim into every generated app (`dist/runtime/`). It must stay small, readable, free of dependencies other than `pg`, and use erasable TypeScript only (Node runs it with type stripping). The runtime never builds SQL: all SQL comes from `routes.ts`, generated at compile time.
 - `src/types.ts` is the single source of truth for field types, their SQL/TS mappings and allowed modifiers.
 - `src/diagnostics.ts` holds the error format. Every diagnostic has a code, a span, a message and a fix.
 - `src/cli.ts` and `src/bin.ts` contain the `rizolang build file.rz` command, which writes to `./dist`.
@@ -39,18 +40,25 @@ Rizo Lang is a secure, simple, full-stack web language for the AI era. Source fi
 
 - **The spec is the contract.** Any language change must update `docs/SPEC.md`, `docs/SPEC-COMPACT.md` and the tests in the same change. If code and spec disagree, that is a bug.
 - New errors get a new `RZxxxx` code, are added to the table in SPEC.md, and must include a concrete `fix`.
-- Security guarantees (SPEC §8) need a test in `tests/security.test.ts`.
+- Security guarantees (SPEC §7) need a test in `tests/security.test.ts`, and runtime behaviour needs one in `tests/e2e.test.ts` (run with `RIZO_TEST_DATABASE_URL`).
 - Never emit SQL built from user-controlled text. Identifiers come only from validated names (letters and digits) and are always double-quoted. Values, from Milestone 2 on, always go through parameters.
-- TypeScript types are structural: a `User` can be assigned to `UserPublic` without error. Runtime code (Milestone 2+) must therefore select or copy only public fields explicitly. It must never rely on types alone to strip secrets.
+- TypeScript types are structural: a `User` can be assigned to `UserPublic` without error. The runtime therefore selects only public columns in SQL **and** copies only `publicKeys` into responses. Never rely on types alone to strip secrets.
+- Access control is never optional: every endpoint declares `public` or `requires login`, ownership checks live in the SQL `WHERE` clause, and links to the auth model are set from the session (`= me`), never from request bodies.
 - If a design decision is unclear, ask the maintainer instead of guessing.
 
 ## Commands
 
-- `npm test`: run all tests
+- `npm test`: run all tests (`RIZO_TEST_DATABASE_URL=postgres://... npm test` also runs the end-to-end tests)
 - `npm run typecheck`: run strict type checking over src and tests
 - `npm run build`: compile the compiler to `build/`
-- `node build/bin.js build examples/blog.rz`: try it out
+- `node build/src/bin.js build examples/blog.rz`: try it out
 
 ## Current milestone
 
-Milestone 1 covers only `model` blocks, compiled to a PostgreSQL schema and TypeScript types. Do not implement `api` routes or frontend until the maintainer starts Milestone 2.
+Milestone 2 adds `auth`, `api` blocks, links between models and `private` fields, compiled to a Node.js server. Maintainer decisions for this milestone:
+- `api` blocks use braces, like `model` blocks.
+- Sessions are server-side, stored as hashed tokens in `_rizo_sessions` and sent in an HttpOnly cookie.
+- Generated apps use `pg` plus the runtime copied into `dist/`.
+- Permissions are `requires login` and `requires owner`. Roles come in Milestone 3.
+
+Do not implement roles, pagination or frontend `page` blocks until the maintainer starts Milestone 3.

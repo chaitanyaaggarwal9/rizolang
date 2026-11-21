@@ -23,7 +23,11 @@ npm ci                 # install the exact locked dependencies
 npm test               # run all tests
 npm run typecheck      # strict type checking
 npm run build          # compile the compiler to build/
-node build/bin.js build examples/blog.rz
+node build/src/bin.js build examples/blog.rz
+
+# End-to-end tests need a PostgreSQL database you control.
+# They create and drop their own temporary schema.
+RIZO_TEST_DATABASE_URL=postgres://user:pass@localhost:5432/dev npm test
 ```
 
 `.npmrc` turns off dependency install scripts and saves dependency versions exactly.
@@ -34,14 +38,16 @@ node build/bin.js build examples/blog.rz
 |--------------------------|---------------------------------------------------------------------|
 | `src/lexer.ts`           | Turns source text into tokens                                        |
 | `src/parser.ts`          | Hand-written recursive-descent parser that builds the AST (`src/ast.ts`) |
-| `src/checker.ts`         | Validates names, types and modifiers, and collects every error        |
+| `src/checker.ts`         | Validates models: names, types, modifiers and links                  |
+| `src/check-api.ts`       | Validates `auth` and `api` blocks: access, ownership, queries        |
 | `src/types.ts`           | The single source of truth for field types and their mappings       |
-| `src/emit/`              | Generates PostgreSQL (`sql.ts`) and TypeScript (`typescript.ts`)    |
+| `src/emit/`              | Generates PostgreSQL (`sql.ts`), types (`typescript.ts`) and routes (`routes.ts`) |
+| `runtime/`               | Copied into every generated app: validation, sessions, passwords, HTTP server |
 | `src/diagnostics.ts`     | The error format: code, location, message and fix                   |
 | `src/cli.ts`, `src/bin.ts` | The `rizolang` command                                            |
 | `docs/SPEC.md`           | The language specification                                          |
 | `docs/SPEC-COMPACT.md`   | Short spec for AI system prompts (under 1,500 words)                |
-| `tests/`                 | Vitest tests, including `security.test.ts` and `docs.test.ts`       |
+| `tests/`                 | Vitest tests, including `security.test.ts`, `docs.test.ts` and `e2e.test.ts` |
 
 ## Rules every change must follow
 
@@ -52,10 +58,10 @@ These rules come from the project's design principles (see [CLAUDE.md](CLAUDE.md
    - a new `RZxxxx` code, added to the table in `docs/SPEC.md`,
    - a precise location,
    - a concrete `fix` line.
-3. **Security guarantees are tested.** Anything that touches passwords, public types, generated SQL or input validation needs a test in `tests/security.test.ts`.
-4. **No SQL from text.** Generated SQL must never contain user-controlled text. Identifiers come only from validated names and are always quoted. Values (from Milestone 2 on) always go through query parameters.
+3. **Security guarantees are tested.** Anything that touches passwords, public types, generated SQL, access rules or input validation needs a test in `tests/security.test.ts`. Runtime behaviour needs a test in `tests/e2e.test.ts`.
+4. **No SQL from text.** All SQL is generated at compile time. Identifiers come only from validated names and are always quoted, and request values always go through query parameters. The runtime never builds SQL.
 5. **Never rely on types alone to hide secrets.** TypeScript types are structural, so runtime code must copy or select public fields explicitly.
-6. **No new dependencies without discussion.** The compiler has zero runtime dependencies. Open an issue before adding any package, including dev dependencies. Every version is pinned exactly.
+6. **No new dependencies without discussion.** The compiler has zero runtime dependencies, and generated apps depend only on `pg`. Open an issue before adding any package, including dev dependencies. Every version is pinned exactly.
 7. **Keep it small.** A feature that makes the spec much longer needs a strong reason.
 
 ## Pull requests

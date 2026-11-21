@@ -1,20 +1,40 @@
+import type { ResolvedApi, ResolvedAuth } from "./check-api.js";
 import { type ResolvedModel, check } from "./checker.js";
-import type { Diagnostic } from "./diagnostics.js";
+import { type Diagnostic, diagnostic, sourceLines } from "./diagnostics.js";
+import { emitPackageJson, emitRoutes, emitServer, emitTsconfig } from "./emit/routes.js";
 import { emitSql } from "./emit/sql.js";
 import { emitTypeScript } from "./emit/typescript.js";
 import { lex } from "./lexer.js";
 import { FUTURE_BLOCKS, parse } from "./parser.js";
-import { diagnostic, sourceLines } from "./diagnostics.js";
+
+/** The generated backend. Present only when the file has an auth line or api blocks. */
+export interface ServerOutput {
+  /** dist/routes.ts: every endpoint as data, with SQL fixed at compile time. */
+  readonly routes: string;
+  /** dist/server.ts: the entry point. */
+  readonly server: string;
+  /** dist/package.json */
+  readonly packageJson: string;
+  /** dist/tsconfig.json */
+  readonly tsconfig: string;
+}
 
 export interface CompileOutput {
   /** Contents of dist/schema.sql */
   readonly sql: string;
   /** Contents of dist/types.ts */
   readonly typescript: string;
+  readonly server: ServerOutput | undefined;
 }
 
 export type CompileResult =
-  | { readonly ok: true; readonly models: readonly ResolvedModel[]; readonly output: CompileOutput }
+  | {
+      readonly ok: true;
+      readonly models: readonly ResolvedModel[];
+      readonly auth: ResolvedAuth | undefined;
+      readonly apis: readonly ResolvedApi[];
+      readonly output: CompileOutput;
+    }
   | { readonly ok: false; readonly diagnostics: readonly Diagnostic[] };
 
 /**
@@ -24,8 +44,8 @@ export type CompileResult =
 export function compile(source: string, file: string): CompileResult {
   const lexed = lex(source, file);
   if (!lexed.ok) {
-    // A block from a later milestone (e.g. `api GET /users`) contains characters
-    // the model lexer rejects. Report the missing feature, not the character.
+    // A block from a later milestone (e.g. `page /home`) may contain characters
+    // the lexer rejects. Report the missing feature, not the character.
     const future = findFutureBlock(source, file, lexed.diagnostic.span.line);
     return { ok: false, diagnostics: [future ?? lexed.diagnostic] };
   }
@@ -38,12 +58,24 @@ export function compile(source: string, file: string): CompileResult {
 
   // The file name is echoed into generated comments; keep it to one printable line.
   const label = file.replace(/[^\x20-\x7e]/g, "?");
+  const { models, auth, apis } = checked;
+  const hasServer = auth !== undefined || apis.length > 0;
   return {
     ok: true,
-    models: checked.models,
+    models,
+    auth,
+    apis,
     output: {
-      sql: emitSql(checked.models, label),
-      typescript: emitTypeScript(checked.models, label),
+      sql: emitSql(models, auth, label),
+      typescript: emitTypeScript(models, auth, label),
+      server: hasServer
+        ? {
+            routes: emitRoutes(apis, auth, label),
+            server: emitServer(label),
+            packageJson: emitPackageJson(),
+            tsconfig: emitTsconfig(),
+          }
+        : undefined,
     },
   };
 }
@@ -57,7 +89,7 @@ function findFutureBlock(source: string, file: string, upToLine: number): Diagno
     if (indent !== undefined && word !== undefined && FUTURE_BLOCKS.includes(word)) {
       return diagnostic("RZ0211", file, { line: i + 1, col: indent.length + 1, length: word.length },
         `"${word}" blocks are not available yet.`,
-        "This version of Rizo Lang supports only model blocks. Remove this block for now.");
+        "This version of Rizo Lang supports model, auth and api blocks. Remove this block for now.");
     }
   }
   return undefined;

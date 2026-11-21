@@ -1,0 +1,16 @@
+# Code owners must approve changes to the files they own.
+# The last matching pattern wins.
+
+# Everything
+*                       @chaitanyaaggarwal9
+
+# Security-sensitive paths (listed explicitly so new maintainers can be
+# added here without giving them review rights over everything).
+/src/emit/              @chaitanyaaggarwal9
+/src/types.ts           @chaitanyaaggarwal9
+/tests/security.test.ts @chaitanyaaggarwal9
+/SECURITY.md            @chaitanyaaggarwal9
+/.github/               @chaitanyaaggarwal9
+/package.json           @chaitanyaaggarwal9
+/package-lock.json      @chaitanyaaggarwal9
+/.npmrc                 @chaitanyaaggarwal9

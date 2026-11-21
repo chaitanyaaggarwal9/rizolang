@@ -1,0 +1,5 @@
+# Normalize line endings so line/column numbers in tests match on every OS.
+* text=auto eol=lf
+
+*.rz linguist-language=Text
+package-lock.json linguist-generated=true -diff

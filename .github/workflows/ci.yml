@@ -32,7 +32,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
+      # .npmrc disables dependency install scripts; the flag makes that explicit.
+      - run: npm ci --ignore-scripts
+      - name: Verify npm registry signatures
+        run: npm audit signatures
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
@@ -74,7 +77,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - name: Compile the example
         run: cd examples && node ../build/bin.js build blog.rz

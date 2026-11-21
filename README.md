@@ -1,5 +1,9 @@
 # Rizo Lang
 
+[![CI](https://github.com/chaitanyaaggarwal9/rizolang/actions/workflows/ci.yml/badge.svg)](https://github.com/chaitanyaaggarwal9/rizolang/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/chaitanyaaggarwal9/rizolang/actions/workflows/codeql.yml/badge.svg)](https://github.com/chaitanyaaggarwal9/rizolang/actions/workflows/codeql.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 **A secure, simple, full-stack web language for the AI era.**
 
 Rizo Lang is part of the [Rizo](https://rizobot.com) ecosystem, alongside **Rizo**, an open-source BYOK AI coding assistant for VS Code. Rizo Lang compiles into technology you already use:
@@ -60,7 +64,7 @@ app.rz:5:9 error RZ0301: Unknown field type "String" on field "User.name".
 Requires Node.js 22.12 or newer.
 
 ```sh
-npm install
+npm ci                 # install the exact locked dependencies
 npm test               # run the test suite
 npm run typecheck      # strict type checking
 npm run build          # compile the compiler to build/
@@ -68,6 +72,10 @@ node build/bin.js build examples/blog.rz
 ```
 
 The compiler has no runtime dependencies. It uses a hand-written lexer and a recursive-descent parser.
+
+## Contributing
+
+Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and please follow our [Code of Conduct](CODE_OF_CONDUCT.md). Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## Security
 

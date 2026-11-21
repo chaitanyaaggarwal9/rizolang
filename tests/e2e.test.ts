@@ -546,6 +546,50 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect((await call("GET", "/auth/me", { cookie: old })).status).toBe(401);
   });
 
+  it("keeps a security audit log, without secrets, readable by admins", async () => {
+    const rows = (await pool.query('SELECT "action", "user_id", "target_id", "ip", "detail" FROM "_rizo_audit" ORDER BY "at", "id"')).rows;
+    const bobId = ((await pool.query('SELECT "id" FROM "users" WHERE "email" = $1', [BOB.email])).rows[0] as { id: string }).id;
+    const has = (action: string, extra: Record<string, unknown> = {}) =>
+      rows.some((r) => r.action === action && Object.entries(extra).every(([k, v]) => r[k] === v));
+    expect(has("signup", { user_id: aliceId })).toBe(true);
+    expect(has("login", { user_id: aliceId })).toBe(true);
+    expect(has("login_failed", { user_id: aliceId, detail: "wrong password" })).toBe(true);
+    expect(has("login_failed", { user_id: null, detail: "unknown account" })).toBe(true);
+    expect(has("login_blocked")).toBe(true);
+    expect(has("role_changed", { user_id: aliceId, target_id: bobId, detail: "editor" })).toBe(true);
+    expect(has("record_deleted", { user_id: aliceId, detail: "Post" })).toBe(true);
+    for (const action of ["password_changed", "password_check_failed", "account_deleted", "logout_all", "logout"]) {
+      expect(has(action), action).toBe(true);
+    }
+    expect(rows.every((r) => r.ip === null || /^[0-9a-f.:]+$/i.test(String(r.ip)))).toBe(true);
+    // Nothing secret is ever written to the log.
+    const dump = JSON.stringify(rows);
+    for (const secret of [ALICE.password, BOB.password, CAROL.password, CAROL_NEW, "alice@example.com", BOB.email, "scrypt$", "rizo_session"]) {
+      expect(dump).not.toContain(secret);
+    }
+
+    // Admins can read it, newest first, optionally for one account.
+    const admin = (await call("POST", "/auth/login", { body: { email: ALICE.email, password: ALICE.password } })).cookie ?? "";
+    const forBob = await call("GET", `/auth/audit?account=${bobId}&limit=50`, { cookie: admin });
+    expect(forBob.status).toBe(200);
+    const items = (forBob.body as { items: { userId: string | null; targetId: string | null; at: string }[] }).items;
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.every((i) => i.userId === bobId || i.targetId === bobId)).toBe(true);
+    expect([...items].sort((a, b) => b.at.localeCompare(a.at)).map((i) => i.at)).toEqual(items.map((i) => i.at));
+    expect((await call("GET", "/auth/audit", { cookie: bob })).status).toBe(403);
+    expect((await call("GET", "/auth/audit")).status).toBe(401);
+    expect((await call("GET", "/auth/audit?limit=9999", { cookie: admin })).status).toBe(400);
+    expect((await call("GET", "/auth/audit?account=x", { cookie: admin })).status).toBe(400);
+  });
+
+  it("deletes audit entries older than the retention period", async () => {
+    await pool.query(`INSERT INTO "_rizo_audit" ("at", "action", "detail") VALUES (now() - interval '400 days', 'login', 'old')`);
+    const { Audit } = await import("../runtime/audit.ts");
+    await new Audit({ query: (sql, values) => pool.query(sql, values) }, () => undefined).sweep(365);
+    expect((await pool.query(`SELECT count(*)::int AS n FROM "_rizo_audit" WHERE "detail" = 'old'`)).rows[0].n).toBe(0);
+    expect((await pool.query(`SELECT count(*)::int AS n FROM "_rizo_audit"`)).rows[0].n).toBeGreaterThan(10);
+  });
+
   it("never leaks passwords, hashes or emails in responses or logs", () => {
     const everything = [...responses, ...logs].join("\n");
     for (const secret of [ALICE.password, BOB.password, CAROL.password, CAROL_NEW, "daves long password", "scrypt$", "alice@example.com", "Alice@Example.com", BOB.email, "password_hash"]) {

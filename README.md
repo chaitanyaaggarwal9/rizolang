@@ -362,6 +362,7 @@ The compiler enforces these rules:
 | Bots, scrapers and brute force | Every endpoint is rate-limited (120/min by default, `limit 10 per minute` to tighten), with counters shared across servers in PostgreSQL. Login, signup and password checks have stricter limits, and password hashing is queued so a login flood can't stall the server. |
 | Account enumeration at login | Identical responses and timing for an unknown account and a wrong password. |
 | Accidental data loss | Migrations that would drop data are refused unless you pass `--allow-data-loss`. Each migration runs in a transaction, and edited migrations are detected. |
+| Attacks nobody notices | A security audit log records logins, failed and blocked logins, password and role changes, and deletes, with no secrets. Admins read it at `GET /auth/audit`, and entries are kept for a year. |
 | Leaky logs | Logs contain only the method, route pattern, status, time and request id. |
 | Cross-site scripting (XSS) | Pages contain no HTML or code. All text is inserted as text (never `innerHTML`), links stay on the site, and a strict CSP allows only the site's own script. |
 | Clickjacking and sniffing | A strict CSP, plus `X-Frame-Options: DENY`, `nosniff` and `no-store` on every response. |

@@ -154,6 +154,7 @@ It adds these endpoints. Paths under `/auth` are reserved.
 | `POST /auth/password` | `{ "currentPassword": ..., "newPassword": ... }` | 204. Every other session of the account is logged out |
 | `POST /auth/logout-all` | none                          | 204. Every session of the account is deleted, including this one |
 | `DELETE /auth/me`   | `{ "password": ... }`             | 204, and the account and its sessions are deleted. 409 if other records still link to it |
+| `GET /auth/audit`   | `?account=<id>&limit=<1–500>` (optional) | Admins only (needs `roles admin`): the newest security audit entries, `{ "items": [...] }` |
 
 **How login works**
 - Passwords are hashed with scrypt (N=2^15, r=8, p=3) and a random salt.
@@ -184,6 +185,12 @@ Each account has at most one role, or none.
 - A wrong password gets 403 and counts toward the same lockout as login.
 - New passwords follow the Password field's `min` and `max`.
 - Changing the login email isn't available yet, because it needs email verification.
+
+**Security audit log.** Every app with a server records security events in the `_rizo_audit` table:
+- **Events:** sign-ups; logins, failed logins (with the account when it exists) and blocked logins; logouts; password changes and wrong password checks; account deletions; role changes; admins granted at startup; and every record deleted through an endpoint.
+- **What each entry holds:** the time, the action, who did it, who or what was affected, the IP address, and a short fixed detail. Never a password, a token or a request body.
+- **Retention:** entries are kept for `RIZO_AUDIT_RETENTION_DAYS` (365 by default), then deleted automatically.
+- **Availability:** if an entry can't be written, the action still succeeds and the failure is logged.
 
 **How sessions work**
 - The session is a random 256-bit token in the `rizo_session` cookie: `HttpOnly; Secure; SameSite=Lax; Path=/`, lasting 7 days.
@@ -529,6 +536,7 @@ To start a brand-new database, `psql "$DATABASE_URL" -f schema.sql` works too. T
 | `RIZO_DEV_INSECURE_COOKIES` | off         | `1` to drop the `Secure` cookie flag for local http. **Never in production.** |
 | `RIZO_DB_POOL_SIZE`         | `10`        | Maximum number of database connections                     |
 | `RIZO_DB_STATEMENT_TIMEOUT_MS` | `5000`   | Longest time one query may run (100–600000). Slower queries are cancelled and answered with 503 |
+| `RIZO_AUDIT_RETENTION_DAYS` | `365`       | How long security audit entries are kept (1–3650 days)     |
 | `RIZO_ADMIN_EMAILS`         | none        | Comma-separated emails of **existing** accounts to make admins at startup (§4.1) |
 
 ### HTTP behaviour
@@ -558,7 +566,7 @@ These are enforced by the compiler and the runtime, and covered by `tests/securi
 5. A record's owner is always the logged-in user, and a user's role is only ever set by an admin. Neither is taken from the request body.
 6. All input is validated against the model before it reaches the database, and unknown fields are rejected.
 7. `GET` endpoints never change data. Cross-site writes are rejected.
-8. Every endpoint is rate-limited, with counters shared by all server processes. Login, signup and password checks have their own stricter limits. No database query runs longer than the statement timeout (5 seconds by default).
+8. Every endpoint is rate-limited, with counters shared by all server processes. Login, signup and password checks have their own stricter limits. No database query runs longer than the statement timeout (5 seconds by default). Security events are recorded in an audit log that never contains secrets.
 9. When there is any compile error, or a change would delete data without `--allow-data-loss`, no output is written.
 10. Pages contain no HTML or code. All text is inserted as text, links stay on the site, and pages are served with a strict Content-Security-Policy. A page is never more open than the data it shows.
 

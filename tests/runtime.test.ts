@@ -181,6 +181,24 @@ describe("rate limits", () => {
   });
 });
 
+describe("audit log", () => {
+  it("never lets a failed write break the action, and logs the failure", async () => {
+    const { Audit } = await import("../runtime/audit.ts");
+    const log: string[] = [];
+    const audit = new Audit({ query: async () => { throw new Error("disk full"); } }, (l) => log.push(l));
+    await expect(audit.record({ action: "login", userId: "8d3f1a2b-0000-4000-8000-000000000000" })).resolves.toBeUndefined();
+    expect(log.join()).toContain("audit log write failed (login): disk full");
+  });
+
+  it("stores only valid ids and short, bounded details", async () => {
+    const { Audit, AUDIT_SQL } = await import("../runtime/audit.ts");
+    const seen: unknown[][] = [];
+    const audit = new Audit({ query: async (sql, values) => (sql === AUDIT_SQL.insert && seen.push(values), { rows: [] }) }, () => undefined);
+    await audit.record({ action: "record_deleted", userId: "not-a-uuid", targetId: "8D3F1A2B-0000-4000-8000-000000000000", ip: "1".repeat(100), detail: "x".repeat(500) });
+    expect(seen[0]).toEqual(["record_deleted", null, "8D3F1A2B-0000-4000-8000-000000000000", "1".repeat(64), "x".repeat(100)]);
+  });
+});
+
 describe("database settings", () => {
   it("cuts off slow queries after 5 seconds by default", () => {
     expect(poolConfig({ DATABASE_URL: "postgres://x" })).toEqual({ connectionString: "postgres://x", max: 10, statement_timeout: DEFAULT_STATEMENT_TIMEOUT_MS });

@@ -169,6 +169,9 @@ api GET /api/all -> list Post.public {
     const legacy = { ...old, tables: old.tables.map(({ indexes: _ignored, ...t }) => t) };
     const parsed = parseSnapshot(JSON.stringify(legacy));
     expect("schema" in parsed).toBe(true);
-    if ("schema" in parsed) expect(planMigration(parsed.schema, old).statements.filter((s) => s.startsWith("CREATE INDEX"))).toHaveLength(2);
+    if ("schema" in parsed) {
+      const created = planMigration(parsed.schema, old).statements.filter((s) => s.startsWith("CREATE INDEX"));
+      expect(created.filter((s) => s.includes('ON "posts"'))).toHaveLength(2);
+    }
   });
 });

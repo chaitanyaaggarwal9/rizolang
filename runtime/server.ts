@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import pg from "pg";
 import { BusyError, hashPassword, dummyHash, verifyPassword } from "./password.ts";
+import { Audit, DEFAULT_AUDIT_RETENTION_DAYS } from "./audit.ts";
 import { Limits, limitKey } from "./limits.ts";
 import { SESSION_SECONDS, SQL, clearedCookie, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
 import { PAGE_HEADERS, asset, renderMessage, renderPage } from "./pages.ts";
@@ -85,6 +86,7 @@ const AUTH_ROUTES: readonly AuthRoute[] = [
   { path: "/auth/logout-all", methods: ["POST"] },
   { path: "/auth/password", methods: ["POST"] },
   { path: "/auth/me", methods: ["GET", "PATCH", "DELETE"] },
+  { path: "/auth/audit", methods: ["GET"] },
 ];
 
 interface Page {
@@ -142,6 +144,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
 
   const limits = new Limits(db, now);
+  const audit = new Audit(db, log);
   const LOGIN_WINDOW = 15 * 60;
 
   /**
@@ -560,10 +563,14 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         if (row === undefined) throw new HttpError(404, "not_found", `${route.model} not found.`);
         return send(res, 200, pick(row, route.publicKeys));
       }
-      case "none":
+      case "none": {
         if ((r.rowCount ?? 0) === 0) throw new HttpError(404, "not_found", `${route.model} not found.`);
+        const idSource = route.values.find((v) => v.from === "path");
+        const target = idSource?.from === "path" ? params.get(idSource.name) : undefined;
+        await audit.record({ action: "record_deleted", userId: me, targetId: typeof target === "string" ? target : undefined, ip: clientIp(req), detail: route.model });
         res.writeHead(204, SECURITY_HEADERS).end();
         return 204;
+      }
     }
   }
 
@@ -590,6 +597,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     const valid = await verifyPassword(password, typeof stored === "string" ? stored : await dummyHash());
     if (!valid) {
       await limited(() => limits.consume(key, 5, LOGIN_WINDOW));
+      await audit.record({ action: "password_check_failed", userId, detail: field });
       throw new HttpError(403, "invalid_credentials", "The password is incorrect.", field);
     }
     await limited(async () => (await limits.clear(key), { allowed: true, retryAfter: 0 }));
@@ -624,6 +632,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     const r = await db.query(auth.setRoleSql, [id.value, role]);
     const row = r.rows[0];
     if (row === undefined) throw new HttpError(404, "not_found", `${auth.model} not found.`);
+    await audit.record({ action: "role_changed", userId: me, targetId: String(id.value), ip: clientIp(req), detail: role ?? "none" });
     return send(res, 200, { id: row["id"], role: row["role"] });
   }
 
@@ -648,6 +657,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       const r = await run(auth.signup.sql, values(auth.signup.values, new Map(), bodyValues, undefined, null), auth.model);
       const row = r.rows[0] ?? {};
       await startSession(res, String(row["id"]));
+      await audit.record({ action: "signup", userId: String(row["id"]), ip });
       return send(res, 201, pick(row, auth.publicKeys));
     }
 
@@ -669,6 +679,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       const byIp = await limited(() => limits.blocked(ipKey, 20, LOGIN_WINDOW));
       const byAccount = await limited(() => limits.blocked(accountKey, 5, LOGIN_WINDOW));
       if (!byIp.allowed || !byAccount.allowed) {
+        await audit.record({ action: "login_blocked", ip, detail: byAccount.allowed ? "address" : "account" });
         throw tooMany(Math.max(byIp.retryAfter, byAccount.retryAfter), "Too many login attempts. Try again later.");
       }
 
@@ -679,11 +690,14 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       if (!valid || row === undefined) {
         await limited(() => limits.consume(ipKey, 20, LOGIN_WINDOW));
         await limited(() => limits.consume(accountKey, 5, LOGIN_WINDOW));
+        // The account id is recorded when the account exists, to spot attacks on it.
+        await audit.record({ action: "login_failed", userId: row === undefined ? undefined : String(row["id"]), ip, detail: row === undefined ? "unknown account" : "wrong password" });
         throw new HttpError(401, "invalid_credentials", `The ${auth.loginKey} or ${auth.passwordKey} is incorrect.`);
       }
       await limited(async () => (await limits.clear(accountKey), { allowed: true, retryAfter: 0 }));
       const userId = String(row["id"]);
       await startSession(res, userId);
+      await audit.record({ action: "login", userId, ip });
       const me = await db.query(auth.meSql, [userId]);
       return send(res, 200, pick(me.rows[0] ?? {}, auth.publicKeys));
     }
@@ -699,6 +713,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       await db.query(auth.account.setPasswordSql, [me, await hashPassword(String(v.values.get("newPassword")))]);
       // Everyone else using this account is logged out; this session stays.
       await db.query(SQL.deleteOthers, [me, hashToken(readToken(req.headers.cookie) ?? "")]);
+      await audit.record({ action: "password_changed", userId: me, ip });
       res.writeHead(204, SECURITY_HEADERS).end();
       return 204;
     }
@@ -706,6 +721,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     if (path === "/auth/logout-all") {
       const me = await requireUser(req);
       await db.query(SQL.deleteAll, [me]);
+      await audit.record({ action: "logout_all", userId: me, ip });
       res.setHeader("Set-Cookie", clearedCookie(secure));
       res.writeHead(204, SECURITY_HEADERS).end();
       return 204;
@@ -734,14 +750,37 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         }
         throw e;
       }
+      await audit.record({ action: "account_deleted", userId: me, targetId: me, ip });
       res.setHeader("Set-Cookie", clearedCookie(secure));
       res.writeHead(204, SECURITY_HEADERS).end();
       return 204;
     }
 
+    if (path === "/auth/audit") {
+      // Admins only: the newest entries, optionally for one account (?account=<id>).
+      const me = await requireUser(req);
+      if (!auth.roles.includes("admin") || (await roleOf(me)) !== "admin") throw new HttpError(403, "forbidden", "You do not have permission to do this.");
+      const url = new URL(req.url ?? "/", "http://localhost");
+      for (const key of new Set(url.searchParams.keys())) {
+        if (key !== "account" && key !== "limit") throw new HttpError(400, "unknown_parameter", "Allowed query parameters: account, limit.", key.slice(0, 50));
+      }
+      const account = url.searchParams.get("account");
+      if (account !== null && !("value" in validatePathParam({ param: "account", kind: "ID" }, account))) {
+        throw new HttpError(400, "invalid_parameter", "account must be an ID (UUID).", "account");
+      }
+      const rawLimit = url.searchParams.get("limit") ?? "100";
+      const limit = /^\d{1,3}$/.test(rawLimit) ? Number(rawLimit) : 0;
+      if (limit < 1 || limit > 500) throw new HttpError(400, "invalid_parameter", "limit must be a whole number from 1 to 500.", "limit");
+      return send(res, 200, { items: await audit.recent(account, limit) });
+    }
+
     if (path === "/auth/logout") {
       const token = readToken(req.headers.cookie);
-      if (token !== undefined) await db.query(SQL.delete, [hashToken(token)]);
+      if (token !== undefined) {
+        const who = await currentUser(req);
+        await db.query(SQL.delete, [hashToken(token)]);
+        if (who !== undefined) await audit.record({ action: "logout", userId: who, ip });
+      }
       res.setHeader("Set-Cookie", clearedCookie(secure));
       res.writeHead(204, SECURITY_HEADERS).end();
       return 204;
@@ -835,7 +874,18 @@ export function startServer(app: App): void {
   const server = createServer((req, res) => void handler(req, res));
   // Delete expired rate-limit counters every ten minutes.
   const sweeper = new Limits({ query: (sql, vals) => pool.query(sql, vals) });
-  setInterval(() => void sweeper.sweep().catch(() => undefined), 10 * 60_000).unref();
+  const auditLog = new Audit({ query: (sql, vals) => pool.query(sql, vals) }, (line) => process.stderr.write(`rizo: ${line}\n`));
+  const retention = Number(process.env["RIZO_AUDIT_RETENTION_DAYS"] ?? String(DEFAULT_AUDIT_RETENTION_DAYS));
+  if (!Number.isInteger(retention) || retention < 1 || retention > 3650) {
+    process.stderr.write("rizo: RIZO_AUDIT_RETENTION_DAYS must be a whole number from 1 to 3650\n");
+    process.exit(1);
+  }
+  // Delete expired rate-limit counters and audit entries older than the retention period.
+  const sweep = (): void => {
+    void sweeper.sweep().catch(() => undefined);
+    void auditLog.sweep(retention).catch(() => undefined);
+  };
+  setInterval(sweep, 10 * 60_000).unref();
   server.requestTimeout = 30_000;
   server.headersTimeout = 10_000;
   const port = Number(process.env["PORT"] ?? "3000");
@@ -846,7 +896,10 @@ export function startServer(app: App): void {
       process.stderr.write("rizo: RIZO_ADMIN_EMAILS is set, but this app declares no roles. Ignoring it.\n");
     } else {
       grantAdmins(app, { query: (sql, vals) => pool.query(sql, vals) }, adminEmails).then(
-        (n) => process.stdout.write(`rizo: RIZO_ADMIN_EMAILS granted admin to ${n} existing account(s)\n`),
+        (n) => {
+          process.stdout.write(`rizo: RIZO_ADMIN_EMAILS granted admin to ${n} existing account(s)\n`);
+          if (n > 0) void auditLog.record({ action: "admin_granted", detail: `${n} existing account(s) from RIZO_ADMIN_EMAILS` });
+        },
         (e: unknown) => process.stderr.write(`rizo: could not apply RIZO_ADMIN_EMAILS: ${describeError(e)}\n`),
       );
     }

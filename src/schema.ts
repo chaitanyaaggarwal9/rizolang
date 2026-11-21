@@ -92,6 +92,9 @@ const idColumn: Column = {
 /** Name of the table that holds rate-limit counters (apps with a server). */
 export const LIMITS_TABLE = "_rizo_rate_limits";
 
+/** Name of the security audit log table (apps with a server). */
+export const AUDIT_TABLE = "_rizo_audit";
+
 /**
  * @param server true when the app has a generated server (auth, api or pages),
  *               which needs its own tables, such as rate-limit counters.
@@ -156,6 +159,27 @@ export function buildSchema(
       comment: "Rate-limit counters, shared by every server process. Keys are hashes, never raw IP addresses.",
       columns: [col("key", "TEXT", true), col("expires_at", "TIMESTAMPTZ"), col("count", "INTEGER")],
       foreignKeys: [],
+    });
+    const optional = (name: string, type: string): Column => ({ ...col(name, type), notNull: false });
+    tables.push({
+      name: AUDIT_TABLE,
+      comment: "Security audit log: logins, password and role changes, deletes. No passwords, tokens or bodies. Kept 365 days by default.",
+      columns: [
+        { ...col("id", "UUID", true), default: "gen_random_uuid()" },
+        { ...col("at", "TIMESTAMPTZ"), default: "now()" },
+        col("action", "TEXT"),
+        // No foreign keys: entries must outlive the accounts and records they describe.
+        optional("user_id", "UUID"),
+        optional("target_id", "UUID"),
+        optional("ip", "TEXT"),
+        optional("detail", "TEXT"),
+      ],
+      foreignKeys: [],
+      indexes: [
+        { name: constraintName(AUDIT_TABLE, "at", "idx"), columns: ["at"] },
+        { name: constraintName(AUDIT_TABLE, "user_id_at", "idx"), columns: ["user_id", "at"] },
+        { name: constraintName(AUDIT_TABLE, "target_id_at", "idx"), columns: ["target_id", "at"] },
+      ],
     });
   }
   return { version: 1, tables };

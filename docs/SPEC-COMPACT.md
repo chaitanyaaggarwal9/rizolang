@@ -76,7 +76,7 @@ A field named `password` (or ending in `Password`) must have the type `Password`
 
 ## auth
 
-`auth User by email` turns on accounts. User needs `email: Email unique` and one `Password` field. It adds `POST /auth/signup`, `POST /auth/login`, `POST /auth/logout`, `POST /auth/logout-all`, `GET /auth/me`, `PATCH /auth/me` (edit profile), `POST /auth/password` and `DELETE /auth/me`. Sessions use a secure cookie. Don't write your own login endpoints.
+`auth User by email` turns on accounts. User needs `email: Email unique` and one `Password` field. It adds `POST /auth/signup` (emails a confirmation link; login works after it is confirmed), password reset by email, `POST /auth/login`, `POST /auth/logout`, `POST /auth/logout-all`, `GET /auth/me`, `PATCH /auth/me` (edit profile), `POST /auth/password` and `DELETE /auth/me`. Sessions use a secure cookie. Don't write your own login endpoints.
 
 Roles: `auth User by email roles admin, editor` (must include admin). Admins assign roles with `PUT /auth/users/:id/role`. Never add a `role` field yourself; it is hidden and never comes from request bodies.
 
@@ -125,12 +125,12 @@ page /posts/:id {
 ```
 
 - Pages are generated from endpoints. Never write HTML. Quoted text is only allowed in pages: one line, at most 200 characters.
-- Put endpoints under `/api`. A page can't share a path with an endpoint. `/login`, `/signup` and `/account` are reserved.
+- Put endpoints under `/api`. A page can't share a path with an endpoint. `/login`, `/signup`, `/account`, `/verify-email` and `/reset-password` are reserved.
 - `show` takes one GET endpoint from the file. Page `:params` fill the endpoint's params by name, and every page param must be used.
 - A page must be at least as strict as what it shows: use `requires login` if the endpoint does.
 - Lists link to a page that shows one record of the same model.
 - `form POST /api/posts` (or PUT or PATCH) builds a form from the endpoint's body. `button "Delete" DELETE /api/posts/:id` deletes. Each page has at most one form or button, followed by `then go /path` (`:id` can be the saved record).
-- With an auth line, `/login`, `/signup`, `/account` (passkeys) and a log-in/log-out menu are built in. Don't write login or passkey pages.
+- With an auth line, `/login`, `/signup`, `/account` (passkeys), `/verify-email`, `/reset-password` and a log-in/log-out menu are built in. Don't write login, passkey or email pages.
 
 ## Migrations
 

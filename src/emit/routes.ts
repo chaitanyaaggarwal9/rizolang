@@ -5,6 +5,7 @@ import { VERSION } from "../version.js";
 import type { App, AuthSpec, FieldSpec, FormFieldSpec, PageItemSpec, PageRoute, PathPart, Route, ValueSource } from "../../runtime/types.ts";
 import { type ResolvedPage, labelFor } from "../check-page.js";
 import { q, roleLiteral } from "./sql.js";
+import { UNVERIFIED_TABLE } from "../schema.js";
 
 /**
  * Emits `routes.ts`: every endpoint as plain data, with its SQL fixed at
@@ -35,27 +36,49 @@ function formField(spec: FieldSpec): FormFieldSpec {
   return { ...spec, label: labelFor(spec.key), multiline: spec.kind === "Text" && (spec.max === undefined || spec.max > 200) };
 }
 
-/** The built-in /login and /signup pages, added when a file has both an auth line and pages. */
+/** The built-in account pages, added when a file has both an auth line and pages. */
 function authPages(auth: AuthSpec): PageRoute[] {
   const page = (path: string, title: string, items: PageItemSpec[]): PageRoute => ({
     pattern: path, path: [{ static: path.slice(1) }], access: "public", roles: [], title, items,
   });
+  const email: FormFieldSpec = { key: auth.loginKey, kind: "Email", required: true, nullable: false, max: 254, label: labelFor(auth.loginKey), multiline: false };
+  const login = { kind: "link", label: "Back to log in", path: "/login" } as const;
   return [
     page("/login", "Log in", [
       {
         kind: "form", method: "POST", endpoint: "/auth/login", submit: "Log in", prefill: null, then: null,
-        fields: [
-          { key: auth.loginKey, kind: "Email", required: true, nullable: false, max: 254, label: labelFor(auth.loginKey), multiline: false },
-          { key: auth.passwordKey, kind: "Password", required: true, nullable: false, max: 128, label: labelFor(auth.passwordKey), multiline: false },
-        ],
+        fields: [email, { key: auth.passwordKey, kind: "Password", required: true, nullable: false, max: 128, label: labelFor(auth.passwordKey), multiline: false }],
       },
       { kind: "passkeyLogin" },
+      { kind: "link", label: "Forgot your password?", path: "/reset-password" },
+      { kind: "link", label: "Didn't get the confirmation email?", path: "/verify-email" },
       { kind: "link", label: "No account yet? Sign up", path: "/signup" },
     ]),
     { ...page("/account", "Your account", [{ kind: "passkeys" }]), access: "login" },
     page("/signup", "Create an account", [
-      { kind: "form", method: "POST", endpoint: "/auth/signup", submit: "Create account", prefill: null, then: null, fields: auth.signup.body.map(formField) },
+      {
+        kind: "form", method: "POST", endpoint: "/auth/signup", submit: "Create account", prefill: null, then: null, fields: auth.signup.body.map(formField),
+        done: "Almost done: check your email for a link to confirm your address.",
+      },
       { kind: "link", label: "Already have an account? Log in", path: "/login" },
+    ]),
+    page("/verify-email", "Confirm your email", [
+      { kind: "verifyEmail" },
+      { kind: "text", text: "Didn't get the email, or did the link expire? Enter your email to get a new link." },
+      {
+        kind: "form", method: "POST", endpoint: "/auth/verify-email/resend", submit: "Send a new link", prefill: null, then: null, fields: [email],
+        done: "If this email has an account that isn't confirmed yet, we sent it a new link.",
+      },
+      login,
+    ]),
+    page("/reset-password", "Reset your password", [
+      { kind: "newPassword", field: { ...auth.account.password, label: "New password", multiline: false } },
+      { kind: "text", text: "Enter your email and we'll send you a link to choose a new password." },
+      {
+        kind: "form", method: "POST", endpoint: "/auth/password-reset", submit: "Send the link", prefill: null, then: null, fields: [email],
+        done: "If an account uses this email, we sent it a link. It works for 1 hour.",
+      },
+      login,
     ]),
   ];
 }
@@ -391,7 +414,10 @@ function authSpec(auth: ResolvedAuth): AuthSpec {
     },
     signup: {
       body: fields.map((f) => fieldSpec(f, !f.optional)),
-      sql: `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${vals.join(", ")}) RETURNING ${select.sql}`,
+      // The account and its "email not confirmed yet" mark are created in one statement.
+      sql: `WITH "created" AS (INSERT INTO ${table} (${cols.join(", ")}) VALUES (${vals.join(", ")}) RETURNING ${select.sql}), ` +
+        `"pending" AS (INSERT INTO ${q(UNVERIFIED_TABLE)} ("user_id") SELECT "id" FROM "created") ` +
+        `SELECT ${select.keys.map(q).join(", ")} FROM "created"`,
       values: p.values,
     },
     loginKey: auth.loginField.name,

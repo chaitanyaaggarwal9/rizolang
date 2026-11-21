@@ -74,6 +74,7 @@ const navigation: string[] = [];
 let confirmAnswer = true;
 const fakeLocation = {
   search: "",
+  hash: "",
   current: "/",
   get pathname(): string {
     return this.current;
@@ -118,7 +119,9 @@ afterEach(() => {
   navigation.length = 0;
   confirmAnswer = true;
   fakeLocation.search = "";
+  fakeLocation.hash = "";
   fakeLocation.current = "/";
+  cleaned.length = 0;
 });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -389,6 +392,82 @@ describe("forms", () => {
     all(page).find((e) => e.tagName === "form")?.onsubmit?.({ preventDefault: () => undefined });
     await flush();
     expect(navigation).toEqual(["/"]);
+  });
+});
+
+describe("emailed links", () => {
+  const TOKEN = "A".repeat(43);
+  const password = { key: "newPassword", kind: "Password", label: "New password", required: true, nullable: false, min: 8, max: 128, multiline: false };
+  const open = (title: string, items: unknown[], hash: string) => {
+    fakeLocation.hash = hash;
+    byId.set("rizo-page", { textContent: JSON.stringify({ title, items, params: {}, loggedIn: false, auth: true }) });
+    byId.set("app", new FakeElement("main"));
+    client.start();
+    return replaced as FakeElement;
+  };
+  const resendForm = {
+    kind: "form", method: "POST", endpoint: "/auth/verify-email/resend", submit: "Send a new link", prefill: null, then: null,
+    fields: [{ key: "email", kind: "Email", label: "Email", required: true, nullable: false, max: 254, multiline: false }],
+    done: "If this email has an account, we sent it a new link.",
+  };
+
+  it("confirms the email with the token from the link, then removes the token from the address bar", async () => {
+    const sent = stubSend(null, 204);
+    const page = open("Confirm your email", [{ kind: "verifyEmail" }, resendForm], `#token=${TOKEN}`);
+    expect(cleaned).toEqual(["/"]);
+    await flush();
+    expect(sent.map((s) => [s.url, s.body])).toEqual([["/auth/verify-email", { token: TOKEN }]]);
+    expect(page.textContent).toContain("Your email is confirmed");
+    expect(all(page).some((e) => e.tagName === "form")).toBe(false); // only what the link is for
+  });
+
+  it("shows the link's page when a link is opened in a tab that already shows the page", async () => {
+    const listeners: Record<string, () => void> = {};
+    (fakeWindow as { addEventListener?: unknown }).addEventListener = (name: string, fn: () => void) => (listeners[name] = fn);
+    try {
+      const sent = stubSend(null, 204);
+      open("Confirm your email", [{ kind: "verifyEmail" }, resendForm], "");
+      expect(sent).toEqual([]);
+      const first = replaced;
+      fakeLocation.hash = `#token=${TOKEN}`;
+      listeners["hashchange"]?.();
+      await flush();
+      expect(replaced).not.toBe(first);
+      expect(sent.map((s) => s.body)).toEqual([{ token: TOKEN }]);
+      expect(cleaned).toEqual(["/"]);
+    } finally {
+      delete (fakeWindow as { addEventListener?: unknown }).addEventListener;
+    }
+  });
+
+  it("ignores a malformed token and shows the form to get a new link", async () => {
+    const sent = stubSend(null, 204);
+    const page = open("Confirm your email", [{ kind: "verifyEmail" }, resendForm], "#token=<script>");
+    await flush();
+    expect(sent).toEqual([]);
+    expect(all(page).some((e) => e.tagName === "form")).toBe(true);
+  });
+
+  it("sends the new password with the token, and shows a message instead of leaving the page", async () => {
+    const sent = stubSend(null, 204);
+    const page = open("Reset your password", [{ kind: "newPassword", field: password }, resendForm], `#token=${TOKEN}`);
+    const input = all(page).find((e) => e.tagName === "input");
+    expect(input?.attributes.get("autocomplete")).toBe("new-password");
+    if (input) input.value = "a brand new password";
+    all(page).find((e) => e.tagName === "form")?.onsubmit?.({ preventDefault: () => undefined });
+    await flush();
+    expect(sent.map((s) => [s.url, s.body])).toEqual([["/auth/password-reset/confirm", { token: TOKEN, newPassword: "a brand new password" }]]);
+    expect(replaced?.textContent).toContain("Your password is changed");
+    expect(navigation).toEqual([]);
+  });
+
+  it("shows the done message after a built-in form, such as signup", async () => {
+    stubSend({ message: "Check your email for a link." }, 202);
+    const page = client.renderPage({ title: "Confirm", params: {}, loggedIn: false, auth: false, items: [resendForm as never] }) as unknown as FakeElement;
+    all(page).find((e) => e.tagName === "form")?.onsubmit?.({ preventDefault: () => undefined });
+    await flush();
+    expect(replaced?.textContent).toBe("If this email has an account, we sent it a new link.");
+    expect(navigation).toEqual([]);
   });
 });
 

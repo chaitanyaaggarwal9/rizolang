@@ -28,6 +28,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Verification uses only `node:crypto` and a small strict CBOR decoder, with no new dependencies. It checks single-use 5-minute challenges, origin, site id, user verification, signature, and the signature counter (copied keys are refused). ES256 and RS256 keys.
   - Adding and removing passkeys and passkey logins are recorded in the audit log.
   - `/account` is now a reserved page path.
+- Milestone 6, part 2: email confirmation and password reset.
+  - **Breaking:** accounts must confirm their email before they can log in. `POST /auth/signup` now answers 202 with the same message whether or not the email already has an account, and no longer logs in. Existing accounts count as confirmed.
+  - **Breaking:** apps with an `auth` line need `RIZO_PUBLIC_URL`, plus `RIZO_EMAIL_API_KEY` and `RIZO_EMAIL_FROM` (Resend), or `RIZO_EMAIL_DEV=1` for local development. The server refuses to start without them.
+  - New endpoints: `POST /auth/verify-email`, `/auth/verify-email/resend`, `/auth/password-reset` and `/auth/password-reset/confirm`. A reset logs out every session.
+  - New built-in pages `/verify-email` and `/reset-password` (now reserved), and links to them on `/login`.
+  - Signing up with an email that has an account emails its owner instead, so signup can't be used to find out who has an account.
+  - Links are one-time, expire (24 hours to confirm, 1 hour to reset), are stored only as hashes, and carry the token after `#` so it never reaches logs. At most 3 emails an hour go to one account.
+  - The `_rizo_unverified` and `_rizo_email_tokens` tables, added by migration. Emails are sent with `fetch`, with no new dependencies.
 
 ## [0.4.0] - 2026-11-21
 

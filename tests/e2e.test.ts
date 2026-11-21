@@ -13,6 +13,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRequestHandler, grantAdmins } from "../runtime/server.ts";
 import type { App } from "../runtime/types.ts";
+import type { Email } from "../runtime/email.ts";
 import { compile } from "../src/compiler.js";
 import { SoftAuthenticator } from "./authenticator.js";
 import { buildApp } from "../src/emit/routes.js";
@@ -26,6 +27,15 @@ let server: Server;
 let base: string;
 const logs: string[] = [];
 const responses: string[] = [];
+const mail: Email[] = [];
+
+/** The token in the newest email to this address with a link to this page. */
+function linkToken(to: string, page: string): string {
+  const email = [...mail].reverse().find((e) => e.to === to && e.text.includes(`${page}#token=`));
+  const token = /#token=([A-Za-z0-9_-]{43})/.exec(email?.text ?? "")?.[1];
+  if (token === undefined) throw new Error(`no ${page} link was emailed to ${to}`);
+  return token;
+}
 
 interface Res {
   status: number;
@@ -64,6 +74,17 @@ const CAROL = { email: "carol@example.com", password: "carols first password", n
 const CAROL_NEW = "carols second password";
 const BOB = { email: "bob@example.com", password: "another long password", name: "Bob" };
 
+/** Sign up, confirm the email with the emailed link, and log in. */
+async function join(account: { email: string; password: string }, address: string): Promise<{ cookie: string; id: string }> {
+  const headers = { "X-Forwarded-For": address };
+  expect((await call("POST", "/auth/signup", { body: account, headers })).status).toBe(202);
+  const token = linkToken(account.email.toLowerCase(), "/verify-email");
+  expect((await call("POST", "/auth/verify-email", { body: { token }, headers })).status).toBe(204);
+  const r = await call("POST", "/auth/login", { body: { email: account.email, password: account.password }, headers });
+  expect(r.status).toBe(200);
+  return { cookie: r.cookie ?? "", id: (r.body as { id: string }).id };
+}
+
 describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
   let alice: string;
   let aliceId: string;
@@ -83,6 +104,12 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     const handler = createRequestHandler(app, {
       db: { query: (sql, values) => pool.query(sql, values) },
       log: (line) => logs.push(line),
+      mailer: async (email) => {
+        mail.push(email);
+      },
+      publicUrl: "https://blog.example",
+      // Lets a test act from its own address (X-Forwarded-For), so the per-address limits of other tests don't add up.
+      trustProxy: true,
     });
     server = createServer((req, res) => void handler(req, res));
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -95,14 +122,34 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     await pool?.end();
   });
 
-  it("signs up, returning only public fields and a hardened session cookie", async () => {
+  it("signs up, confirms the email with a one-time link, then logs in with a hardened session cookie", async () => {
     const r = await call("POST", "/auth/signup", { body: ALICE });
-    expect(r.status).toBe(201);
-    expect(Object.keys(r.body as object).sort()).toEqual(["bio", "id", "name"]);
-    const setCookie = r.headers.get("set-cookie") ?? "";
-    expect(setCookie).toMatch(/^rizo_session=[A-Za-z0-9_-]{43}; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=604800$/);
-    alice = r.cookie ?? "";
-    aliceId = (r.body as { id: string }).id;
+    expect(r).toMatchObject({ status: 202, body: { message: "Check your email for a link." }, cookie: undefined });
+    expect(mail.at(-1)).toMatchObject({ to: "alice@example.com", subject: "Confirm your email for blog.example" });
+    const token = linkToken("alice@example.com", "/verify-email");
+    expect(mail.at(-1)?.text).toContain(`https://blog.example/verify-email#token=${token}`);
+
+    // Not before the email is confirmed.
+    const early = await call("POST", "/auth/login", { body: { email: ALICE.email, password: ALICE.password } });
+    expect(early).toMatchObject({ status: 403, body: { error: { code: "email_not_verified" } }, cookie: undefined });
+    expect((await call("POST", "/auth/login", { body: { email: ALICE.email, password: "wrong password!!" } })).status).toBe(401);
+
+    expect((await call("POST", "/auth/verify-email", { body: { token: "A".repeat(43) } })).status).toBe(400);
+    expect((await call("POST", "/auth/verify-email", { body: { token } })).status).toBe(204);
+    expect((await call("POST", "/auth/verify-email", { body: { token } })).body).toMatchObject({ error: { code: "invalid_link" } });
+
+    const login = await call("POST", "/auth/login", { body: { email: ALICE.email, password: ALICE.password } });
+    expect(login.status).toBe(200);
+    expect(Object.keys(login.body as object).sort()).toEqual(["bio", "id", "name"]);
+    expect(login.headers.get("set-cookie") ?? "").toMatch(/^rizo_session=[A-Za-z0-9_-]{43}; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=604800$/);
+    alice = login.cookie ?? "";
+    aliceId = (login.body as { id: string }).id;
+  });
+
+  it("stores only hashes of emailed links", async () => {
+    const tokens = (await pool.query('SELECT "id" FROM "_rizo_email_tokens"')).rows;
+    expect(tokens.every((t) => /^[0-9a-f]{64}$/.test(t.id))).toBe(true);
+    for (const email of mail) expect(tokens.some((t) => email.text.includes(t.id))).toBe(false);
   });
 
   it("stores the email in lowercase and the password only as an scrypt hash", async () => {
@@ -115,13 +162,31 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect(sessions.some((s) => alice.includes(s.token_hash))).toBe(false);
   });
 
-  it("rejects duplicate accounts, short passwords and unknown fields", async () => {
-    expect((await call("POST", "/auth/signup", { body: { ...ALICE, email: "ALICE@example.com" } })).status).toBe(409);
+  it("never reveals whether an email has an account: the owner gets an email instead", async () => {
+    const users = async () => (await pool.query('SELECT count(*)::int AS "n" FROM "users"')).rows[0].n;
+    const before = await users();
+    const sent = mail.length;
+    const again = await call("POST", "/auth/signup", { body: { ...ALICE, email: "ALICE@example.com", password: "someone elses password" } });
+    const fresh = await call("POST", "/auth/signup", { body: { email: "zed@example.com", password: "zeds long password", name: "Zed" } });
+    expect(again.status).toBe(fresh.status);
+    expect(again.body).toEqual(fresh.body);
+    expect(again.cookie).toBe(fresh.cookie);
+    expect(await users()).toBe(before + 1);
+    expect(mail.slice(sent).map((m) => [m.to, m.subject])).toEqual([
+      ["alice@example.com", "You already have an account on blog.example"],
+      ["zed@example.com", "Confirm your email for blog.example"],
+    ]);
+    expect(mail.at(-2)?.text).not.toContain("#token=");
+    // The other person's password did not replace Alice's.
+    expect((await call("POST", "/auth/login", { body: { email: ALICE.email, password: "someone elses password" } })).status).toBe(401);
+  });
+
+  it("rejects short passwords and unknown fields", async () => {
     const short = await call("POST", "/auth/signup", { body: { ...BOB, password: "short" } });
     expect(short).toMatchObject({ status: 400, body: { error: { code: "validation_failed", field: "password" } } });
     const extra = await call("POST", "/auth/signup", { body: { ...BOB, isAdmin: true } });
     expect(extra).toMatchObject({ status: 400, body: { error: { field: "isAdmin" } } });
-    bob = (await call("POST", "/auth/signup", { body: BOB })).cookie ?? "";
+    bob = (await join(BOB, "198.51.100.1")).cookie;
   });
 
   it("gives the same answer for a wrong password and an unknown account", async () => {
@@ -221,9 +286,8 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
 
     it("grants admin from RIZO_ADMIN_EMAILS only to accounts that already exist", async () => {
       expect(await grantAdmins(app, db(), [" ALICE@example.com ", "late@example.com"])).toBe(1);
-      const late = await call("POST", "/auth/signup", { body: { email: "late@example.com", password: "long enough password", name: "Late" } });
-      expect(late.status).toBe(201);
-      expect((await call("GET", "/api/admin/posts", { cookie: late.cookie ?? "" })).status).toBe(403);
+      const late = await join({ email: "late@example.com", password: "long enough password", name: "Late" } as never, "198.51.100.2");
+      expect((await call("GET", "/api/admin/posts", { cookie: late.cookie })).status).toBe(403);
     });
 
     it("lets only the listed roles call role endpoints", async () => {
@@ -436,9 +500,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       call("POST", "/auth/login", { body: { email: CAROL.email, password } });
 
     beforeAll(async () => {
-      const r = await call("POST", "/auth/signup", { body: CAROL });
-      carol = r.cookie ?? "";
-      carolId = (r.body as { id: string }).id;
+      ({ cookie: carol, id: carolId } = await join(CAROL, "198.51.100.3"));
     });
 
     it("updates your own profile, but never the email, password or role", async () => {
@@ -491,7 +553,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     });
 
     it("locks out repeated wrong passwords on sensitive changes", async () => {
-      const dave = (await call("POST", "/auth/signup", { body: { email: "dave@example.com", password: "daves long password", name: "Dave" } })).cookie ?? "";
+      const dave = (await join({ email: "dave@example.com", password: "daves long password", name: "Dave" } as never, "198.51.100.4")).cookie;
       const attempt = () => call("POST", "/auth/password", { cookie: dave, body: { currentPassword: "guess guess guess", newPassword: "whatever whatever" } });
       for (let i = 0; i < 5; i++) expect((await attempt()).status).toBe(403);
       expect((await attempt()).status).toBe(429);
@@ -599,6 +661,72 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
   });
 
+  describe("email links", () => {
+    const FRANK = { email: "frank@example.com", password: "franks first password", name: "Frank" };
+    const at = (address: string) => ({ "X-Forwarded-For": address });
+
+    it("sends a new confirmation link on request, and the old one stops working", async () => {
+      const h = at("198.51.100.10");
+      const gina = { email: "gina@example.com", password: "ginas long password", name: "Gina" };
+      expect((await call("POST", "/auth/signup", { body: gina, headers: h })).status).toBe(202);
+      const first = linkToken(gina.email, "/verify-email");
+      const resend = await call("POST", "/auth/verify-email/resend", { body: { email: "GINA@example.com" }, headers: h });
+      const unknown = await call("POST", "/auth/verify-email/resend", { body: { email: "nobody@example.com" }, headers: h });
+      expect(resend).toMatchObject({ status: 202, body: unknown.body });
+      const second = linkToken(gina.email, "/verify-email");
+      expect(second).not.toBe(first);
+      expect((await call("POST", "/auth/verify-email", { body: { token: first }, headers: h })).status).toBe(400);
+      expect((await call("POST", "/auth/verify-email", { body: { token: second }, headers: h })).status).toBe(204);
+      // Confirmed accounts get no more confirmation emails.
+      const sent = mail.length;
+      await call("POST", "/auth/verify-email/resend", { body: { email: gina.email }, headers: h });
+      expect(mail.length).toBe(sent);
+    });
+
+    it("resets a forgotten password with a one-time link, and logs out every session", async () => {
+      const h = at("198.51.100.11");
+      const frank = await join(FRANK, "198.51.100.11");
+      const r = await call("POST", "/auth/password-reset", { body: { email: FRANK.email }, headers: h });
+      const unknown = await call("POST", "/auth/password-reset", { body: { email: "nobody@example.com" }, headers: h });
+      expect(r).toMatchObject({ status: 202, body: unknown.body });
+      expect(mail.at(-1)).toMatchObject({ to: FRANK.email, subject: "Reset your password for blog.example" });
+      const token = linkToken(FRANK.email, "/reset-password");
+      expect(mail.at(-1)?.text).toContain(`https://blog.example/reset-password#token=${token}`);
+
+      // The link can't confirm an email, and a weak password is refused without using up the link.
+      expect((await call("POST", "/auth/verify-email", { body: { token }, headers: h })).status).toBe(400);
+      const weak = await call("POST", "/auth/password-reset/confirm", { body: { token, newPassword: "short" }, headers: h });
+      expect(weak).toMatchObject({ status: 400, body: { error: { field: "newPassword" } } });
+
+      const done = await call("POST", "/auth/password-reset/confirm", { body: { token, newPassword: "franks new password" }, headers: h });
+      expect(done.status).toBe(204);
+      expect((await call("GET", "/auth/me", { cookie: frank.cookie })).status).toBe(401);
+      expect((await call("POST", "/auth/password-reset/confirm", { body: { token, newPassword: "franks third password" }, headers: h })).status).toBe(400);
+      expect((await call("POST", "/auth/login", { body: { email: FRANK.email, password: FRANK.password }, headers: h })).status).toBe(401);
+      expect((await call("POST", "/auth/login", { body: { email: FRANK.email, password: "franks new password" }, headers: h })).status).toBe(200);
+    });
+
+    it("confirms the email of an account whose password is reset", async () => {
+      const h = at("198.51.100.12");
+      const hana = { email: "hana@example.com", password: "hanas long password", name: "Hana" };
+      await call("POST", "/auth/signup", { body: hana, headers: h });
+      await call("POST", "/auth/password-reset", { body: { email: hana.email }, headers: h });
+      const token = linkToken(hana.email, "/reset-password");
+      expect((await call("POST", "/auth/password-reset/confirm", { body: { token, newPassword: "hanas new password" }, headers: h })).status).toBe(204);
+      expect((await call("POST", "/auth/login", { body: { email: hana.email, password: "hanas new password" }, headers: h })).status).toBe(200);
+    });
+
+    it("sends at most 3 emails an hour to one account, and limits requests per address", async () => {
+      const ivan = { email: "ivan@example.com", password: "ivans long password", name: "Ivan" };
+      await call("POST", "/auth/signup", { body: ivan, headers: at("198.51.100.13") });
+      for (let i = 0; i < 4; i++) await call("POST", "/auth/password-reset", { body: { email: ivan.email }, headers: at(`198.51.100.${20 + i}`) });
+      expect(mail.filter((m) => m.to === ivan.email)).toHaveLength(3);
+      const h = at("198.51.100.30");
+      for (let i = 0; i < 10; i++) expect((await call("POST", "/auth/password-reset", { body: { email: `x${i}@example.com` }, headers: h })).status).toBe(202);
+      expect((await call("POST", "/auth/password-reset", { body: { email: "x@example.com" }, headers: h })).status).toBe(429);
+    });
+  });
+
   it("logs out and revokes the session", async () => {
     const old = alice;
     const r = await call("POST", "/auth/logout", { cookie: alice });
@@ -619,7 +747,9 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect(has("login_blocked")).toBe(true);
     expect(has("role_changed", { user_id: aliceId, target_id: bobId, detail: "editor" })).toBe(true);
     expect(has("record_deleted", { user_id: aliceId, detail: "Post" })).toBe(true);
-    for (const action of ["password_changed", "password_check_failed", "account_deleted", "logout_all", "logout"]) {
+    expect(has("login_failed", { user_id: aliceId, detail: "email not confirmed" })).toBe(true);
+    expect(has("email_verified", { user_id: aliceId })).toBe(true);
+    for (const action of ["password_changed", "password_check_failed", "account_deleted", "logout_all", "logout", "password_reset_requested", "password_reset"]) {
       expect(has(action), action).toBe(true);
     }
     expect(rows.every((r) => r.ip === null || /^[0-9a-f.:]+$/i.test(String(r.ip)))).toBe(true);
@@ -655,6 +785,11 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     const everything = [...responses, ...logs].join("\n");
     for (const secret of [ALICE.password, BOB.password, CAROL.password, CAROL_NEW, "daves long password", "scrypt$", "alice@example.com", "Alice@Example.com", BOB.email, "password_hash"]) {
       expect(everything).not.toContain(secret);
+    }
+    // Emailed tokens appear only in the emails, never in responses or logs.
+    for (const email of mail) {
+      const token = /#token=([A-Za-z0-9_-]{43})/.exec(email.text)?.[1];
+      if (token !== undefined) expect(logs.join("\n")).not.toContain(token);
     }
     // Logs name the route pattern, never the concrete URL or body.
     expect(logs.some((l) => l.startsWith("PATCH /api/posts/:id 200"))).toBe(true);

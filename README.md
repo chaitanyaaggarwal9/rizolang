@@ -192,11 +192,12 @@ cd dist
 npm install
 export DATABASE_URL=postgres://user:pass@localhost:5432/app
 node migrate.ts
-node server.ts
+RIZO_PUBLIC_URL=http://localhost:3000 RIZO_EMAIL_DEV=1 node server.ts
 ```
 
 - `npm install` installs `pg`, the only dependency.
 - `node migrate.ts` creates or updates the tables.
+- Apps with accounts send email (to confirm addresses and reset passwords). `RIZO_EMAIL_DEV=1` prints emails in the terminal instead, for local development. In production, set `RIZO_EMAIL_API_KEY` and `RIZO_EMAIL_FROM` for [Resend](https://resend.com) and your real `RIZO_PUBLIC_URL`.
 
 When you change your models, run `rizolang build` again. It writes the change as a new file in `migrations/` (commit that folder), and `node migrate.ts` applies it.
 
@@ -205,18 +206,27 @@ Changes that would delete data are refused unless you add `--allow-data-loss`. T
 ### Try it
 
 ```sh
-# Sign up (this also logs you in; curl keeps the session cookie in ./jar)
-curl -c jar -H 'Content-Type: application/json' \
+# Sign up. The server prints the confirmation email, with a link ending in #token=...
+curl -H 'Content-Type: application/json' \
   -d '{"email":"ann@example.com","password":"correct horse battery","name":"Ann"}' \
   http://127.0.0.1:3000/auth/signup
+
+# Confirm the email with the token from that link (or open the link in a browser)
+curl -H 'Content-Type: application/json' -d '{"token":"PASTE-THE-TOKEN"}' \
+  http://127.0.0.1:3000/auth/verify-email
+
+# Log in (curl keeps the session cookie in ./jar)
+curl -c jar -H 'Content-Type: application/json' \
+  -d '{"email":"ann@example.com","password":"correct horse battery"}' \
+  http://127.0.0.1:3000/auth/login
 
 # Create a post as Ann
 curl -b jar -H 'Content-Type: application/json' \
   -d '{"title":"Hello","body":"First post","published":true}' \
-  http://127.0.0.1:3000/posts
+  http://127.0.0.1:3000/api/posts
 
 # Anyone can list published posts, one page at a time
-curl 'http://127.0.0.1:3000/posts?limit=10'
+curl 'http://127.0.0.1:3000/api/posts?limit=10'
 # → { "items": [...], "next": "<cursor>" }; get the next page with ?limit=10&after=<cursor>
 ```
 
@@ -233,6 +243,9 @@ curl 'http://127.0.0.1:3000/posts?limit=10'
 | `RIZO_DB_POOL_SIZE` | `10` | Maximum number of database connections |
 | `RIZO_ADMIN_EMAILS` | none | Makes these **existing** accounts admins at startup (sign up first) |
 | `RIZO_DEV_INSECURE_COOKIES` | off | `1` to allow cookies over http. For local development only |
+| `RIZO_PUBLIC_URL` | (required with accounts) | The app's address, used in emailed links, e.g. `https://blog.example` |
+| `RIZO_EMAIL_API_KEY` / `RIZO_EMAIL_FROM` | (required with accounts) | Resend API key, and a sender on your verified domain |
+| `RIZO_EMAIL_DEV` | off | `1` to print emails instead of sending them. For local development only |
 
 ---
 
@@ -282,7 +295,9 @@ This one line adds signup, login and logout (`/auth/signup`, `/auth/login`, `/au
 - `GET` and `PATCH /auth/me` to read and edit your profile,
 - `POST /auth/password` to change your password, which logs out your other sessions,
 - `POST /auth/logout-all` to log out everywhere,
-- `DELETE /auth/me` to delete your account.
+- `DELETE /auth/me` to delete your account,
+- email confirmation (required before the first login) and password reset by email,
+- passkeys (fingerprint, face or device PIN), managed on the built-in `/account` page.
 
 Changing the password and deleting the account need the current password.
 
@@ -291,7 +306,8 @@ Add roles with `auth User by email roles admin, editor`, then protect endpoints 
 **Built in:**
 - Secure session cookies, with only a hash of each token stored in the database.
 - Rate limits on login and signup.
-- The same response for a wrong password and an unknown account, so callers can't find out which emails are registered.
+- The same response for a wrong password and an unknown account, and the same for signing up with a new or a taken email, so callers can't find out which emails are registered.
+- One-time emailed links, stored only as hashes and kept out of logs.
 
 ### Pages
 
@@ -361,7 +377,8 @@ The compiler enforces these rules:
 | Slow queries and table scans | The compiler creates the right index for every list's filters and order (about 280× faster on 200,000 rows in our test), and every query is cancelled after 5 seconds. |
 | Bots, scrapers and brute force | Every endpoint is rate-limited (120/min by default, `limit 10 per minute` to tighten), with counters shared across servers in PostgreSQL. Login, signup and password checks have stricter limits, and password hashing is queued so a login flood can't stall the server. |
 | Phishing and stolen passwords | Built-in passkeys (fingerprint, face or device PIN) on every app with a login. A passkey only works on the site that created it, and the server keeps only the public key. |
-| Account enumeration at login | Identical responses and timing for an unknown account and a wrong password. |
+| Account enumeration | Identical responses and timing for an unknown account and a wrong password. Signup and password reset answer the same whether or not the email has an account; the owner gets an email instead. |
+| Fake and throwaway sign-ups | Accounts confirm their email before they can log in. One-time links are hashed, expire, and are kept out of logs. |
 | Accidental data loss | Migrations that would drop data are refused unless you pass `--allow-data-loss`. Each migration runs in a transaction, and edited migrations are detected. |
 | Attacks nobody notices | A security audit log records logins, failed and blocked logins, password and role changes, and deletes, with no secrets. Admins read it at `GET /auth/audit`, and entries are kept for a year. |
 | Leaky logs | Logs contain only the method, route pattern, status, time and request id. |

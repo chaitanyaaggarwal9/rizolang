@@ -146,8 +146,12 @@ It adds these endpoints. Paths under `/auth` are reserved.
 
 | Endpoint            | Body                              | Result                                        |
 |---------------------|-----------------------------------|-----------------------------------------------|
-| `POST /auth/signup` | The model's fields, like `User.input` | 201 with `User.public`, and logs the user in |
-| `POST /auth/login`  | `{ "email": ..., "password": ... }` | 200 with `User.public`, or 401               |
+| `POST /auth/signup` | The model's fields, like `User.input` | 202 `{ "message": ... }`, always the same (see below). Emails a link to confirm the address. Doesn't log in |
+| `POST /auth/verify-email` | `{ "token": ... }` (from the emailed link) | 204: the email is confirmed. 400 if the link is invalid, used or expired |
+| `POST /auth/verify-email/resend` | `{ "email": ... }` | 202, always the same. Emails a new link if the account exists and isn't confirmed |
+| `POST /auth/password-reset` | `{ "email": ... }` | 202, always the same. Emails a reset link if the account exists |
+| `POST /auth/password-reset/confirm` | `{ "token": ..., "newPassword": ... }` | 204: the password is changed, every session is logged out and the email counts as confirmed. 400 if the link is invalid, used or expired |
+| `POST /auth/login`  | `{ "email": ..., "password": ... }` | 200 with `User.public`, or 401. 403 `email_not_verified` (only after a correct password) until the email is confirmed |
 | `POST /auth/logout` | none                              | 204; the session is deleted                   |
 | `GET /auth/me`      | none                              | 200 with `User.public`, or 401                |
 | `PATCH /auth/me`    | Any profile fields                | 200 with `User.public`. Every field is optional. The login email, the password, the role and links to the auth model can't be changed here |
@@ -166,6 +170,13 @@ It adds these endpoints. Paths under `/auth` are reserved.
 - Passwords are hashed with scrypt (N=2^15, r=8, p=3) and a random salt.
 - A wrong password and an unknown email give the same 401 response, in about the same time.
 - After 5 failed logins for an account, or 20 from one address, within 15 minutes, login answers 429. Signups are limited to 10 per hour per address.
+
+**Email.** Accounts must confirm their email address before they can log in.
+- **Signup doesn't reveal who has an account.** It answers the same 202 whether or not the email is taken. A new email gets a confirmation link. If the email already has an account, nothing is created or changed, and the owner gets an email saying someone tried to sign up, with links to log in or reset the password. Other unique fields still answer 409.
+- **Links** are `RIZO_PUBLIC_URL/verify-email#token=…` (works for 24 hours) and `RIZO_PUBLIC_URL/reset-password#token=…` (1 hour). Each works once, and sending a new one cancels the old one. Only SHA-256 hashes of tokens are stored. The token is after `#`, so it never reaches a server log, and link scanners in mail systems can't use it up: the page sends it with a POST. Apps without pages must handle these two paths in their own frontend.
+- **Limits:** at most 3 emails an hour go to one account, and requests that send email are limited to 10 an hour per address.
+- **Emails** are plain text, made of fixed sentences plus the link. Nothing from a request is put in them. They are sent through [Resend](https://resend.com) in the background, so the response never waits for them or depends on them, and failures are logged without the address.
+- Accounts that existed before email confirmation was added count as confirmed.
 
 **Passkeys.** Every app with an `auth` line also supports passkeys (fingerprint, face or device PIN), alongside passwords. A logged-in user adds one on the built-in `/account` page (or through the endpoints above), then logs in with it on `/login`. Nothing in the `.rz` file changes.
 - The server checks each step as WebAuthn requires: a random challenge that is used once and expires after 5 minutes, the site's origin and id, that the user was verified, the signature, and that the signature counter went up (a counter that goes backwards means the key was copied, and login is refused).
@@ -442,7 +453,7 @@ page /posts/:id/delete {
 ```
 
 **Rules:**
-- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. `/login`, `/signup` and `/account` are reserved for the built-in pages.
+- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. `/login`, `/signup`, `/account`, `/verify-email` and `/reset-password` are reserved for the built-in pages.
 - **Parameters:** a page's `:parameters` fill in the parameters of the endpoint it shows, by name. Every page parameter must be used (RZ0323).
 - **Never more open than its data (RZ0335):**
   - A page that uses (shows, or has a form or button for) a `requires login` endpoint must also `requires login`.
@@ -461,7 +472,8 @@ page /posts/:id/delete {
   - When another page shows one record of the same model (for example `page /posts/:id { show GET /api/posts/:id }`), each card links to it.
 
 **Built-in pages.** In an app with an `auth` line and at least one page:
-- `/login` and `/signup` are generated, with forms for `/auth/login` and `/auth/signup`. `/login` also has "Log in with a passkey".
+- `/login` and `/signup` are generated, with forms for `/auth/login` and `/auth/signup`. `/login` also has "Log in with a passkey", and links to reset the password or get a new confirmation link.
+- `/verify-email` and `/reset-password` open from the emailed links: they confirm the email, or ask for a new password. Opened without a link, they ask for an email address and send a new link.
 - `/account` (login required) lists the user's passkeys, and adds and removes them.
 - Every page shows a menu with a link home, plus "Log in" and "Sign up", or "Account" and "Log out".
 - A page that needs a login sends logged-out visitors to `/login?next=<the page>`. After logging in they return there. `next` is followed only if it is a path on this site.
@@ -551,6 +563,12 @@ To start a brand-new database, `psql "$DATABASE_URL" -f schema.sql` works too. T
 | `RIZO_DB_STATEMENT_TIMEOUT_MS` | `5000`   | Longest time one query may run (100–600000). Slower queries are cancelled and answered with 503 |
 | `RIZO_AUDIT_RETENTION_DAYS` | `365`       | How long security audit entries are kept (1–3650 days)     |
 | `RIZO_ADMIN_EMAILS`         | none        | Comma-separated emails of **existing** accounts to make admins at startup (§4.1) |
+| `RIZO_PUBLIC_URL`           | (required with `auth`) | The app's address for links in emails, e.g. `https://blog.example`. https, or http only for localhost. No path |
+| `RIZO_EMAIL_API_KEY`        | (required with `auth`) | Resend API key |
+| `RIZO_EMAIL_FROM`           | (required with `auth`) | Sender on a domain verified with Resend, e.g. `Blog <hello@blog.example>` |
+| `RIZO_EMAIL_DEV`            | off         | `1` to print emails to the console instead of sending them (then the key and sender aren't needed). **Never in production** |
+
+An app with an `auth` line refuses to start when the email settings are missing or invalid, and says which one to fix.
 
 ### HTTP behaviour
 
@@ -583,6 +601,7 @@ These are enforced by the compiler and the runtime, and covered by `tests/securi
 9. When there is any compile error, or a change would delete data without `--allow-data-loss`, no output is written.
 10. Pages contain no HTML or code. All text is inserted as text, links stay on the site, and pages are served with a strict Content-Security-Policy. A page is never more open than the data it shows.
 11. A passkey works only on the site that created it, only once per challenge, and only with the user verified. The server never stores a private key, and a copied passkey (counter going backwards) is refused.
+12. Signup, resending a confirmation link and asking for a password reset answer the same whether or not the email has an account. Emailed links work once, expire, are stored only as hashes and never appear in logs, and accounts can't log in before confirming their email.
 
 ---
 

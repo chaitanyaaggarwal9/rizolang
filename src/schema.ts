@@ -96,6 +96,10 @@ export const LIMITS_TABLE = "_rizo_rate_limits";
 export const PASSKEYS_TABLE = "_rizo_passkeys";
 export const CHALLENGES_TABLE = "_rizo_challenges";
 
+/** Email tables (apps with an auth line): accounts waiting for their email to be confirmed, and one-time email links. */
+export const UNVERIFIED_TABLE = "_rizo_unverified";
+export const EMAIL_TOKENS_TABLE = "_rizo_email_tokens";
+
 /** Name of the security audit log table (apps with a server). */
 export const AUDIT_TABLE = "_rizo_audit";
 
@@ -185,6 +189,35 @@ export function buildSchema(
         col("expires_at", "TIMESTAMPTZ", {}),
       ],
       foreignKeys: [],
+    });
+    // Accounts that haven't confirmed their email yet. Accounts that existed
+    // before email confirmation was added are not listed, so they stay usable.
+    tables.push({
+      name: UNVERIFIED_TABLE,
+      comment: "Accounts whose email is not confirmed yet. They can't log in until it is.",
+      columns: [
+        col("user_id", "UUID", { primaryKey: true, notNull: false }),
+        col("created_at", "TIMESTAMPTZ", { default: "now()" }),
+      ],
+      foreignKeys: [{
+        name: constraintName(UNVERIFIED_TABLE, "user_id", "fkey"), column: "user_id", refTable: auth.model.table,
+        onDelete: "CASCADE", index: constraintName(UNVERIFIED_TABLE, "user_id", "idx"),
+      }],
+    });
+    // Links sent by email (confirm the address, reset the password).
+    tables.push({
+      name: EMAIL_TOKENS_TABLE,
+      comment: "One-time links sent by email. Only hashes are stored; each is deleted when used.",
+      columns: [
+        col("id", "TEXT", { primaryKey: true, notNull: false }),
+        col("user_id", "UUID", {}),
+        col("purpose", "TEXT", {}),
+        col("expires_at", "TIMESTAMPTZ", {}),
+      ],
+      foreignKeys: [{
+        name: constraintName(EMAIL_TOKENS_TABLE, "user_id", "fkey"), column: "user_id", refTable: auth.model.table,
+        onDelete: "CASCADE", index: constraintName(EMAIL_TOKENS_TABLE, "user_id", "idx"),
+      }],
     });
   }
   if (server) {

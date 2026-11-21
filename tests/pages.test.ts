@@ -116,6 +116,8 @@ page /posts/:id {
     ["page /api/posts {\n  public\n}", "RZ0334", "/api"],
     ["page / {\n  public\n}\npage / {\n  public\n}", "RZ0334", "Remove one"],
     ["page /login {\n  public\n}", "RZ0334", "different path"],
+    ["page /verify-email {\n  public\n}", "RZ0334", "reserved for the built-in verify-email page"],
+    ["page /reset-password {\n  public\n}", "RZ0334", "reserved for the built-in reset-password page"],
     ["page /_rizo/x {\n  public\n}", "RZ0322", "not allowed"],
     ["page / {\n  public\n  show GET /api/post\n}", "RZ0335", "/api/posts"],
     ["page / {\n  public\n  show POST /api/posts\n}", "RZ0335", "GET"],

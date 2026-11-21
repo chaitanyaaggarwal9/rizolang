@@ -13,6 +13,7 @@ import { type IncomingMessage, type ServerResponse, createServer } from "node:ht
 import pg from "pg";
 import { BusyError, hashPassword, dummyHash, verifyPassword } from "./password.ts";
 import { Audit, DEFAULT_AUDIT_RETENTION_DAYS } from "./audit.ts";
+import { EMAIL_SQL, type Mailer, MESSAGES, RESET_SECONDS, type TokenPurpose, VERIFY_SECONDS, emailConfig, emailTokenHash, newEmailToken, readEmailToken } from "./email.ts";
 import { Limits, limitKey } from "./limits.ts";
 import { CHALLENGE_SECONDS, MAX_PASSKEYS, PASSKEY_SQL, challengeHash, challengeOf, newChallenge } from "./passkeys.ts";
 import { PasskeyError, SUPPORTED_ALGORITHMS, verifyAssertion, verifyRegistration } from "./webauthn.ts";
@@ -42,6 +43,10 @@ export interface ServerOptions {
   /** Use the first X-Forwarded-For address as the client IP (only behind a trusted proxy). */
   readonly trustProxy?: boolean;
   readonly now?: () => number;
+  /** Sends emails (address confirmation, password reset). Required for apps with an auth line in production. */
+  readonly mailer?: Mailer;
+  /** The app's public address, used in links in emails, e.g. "https://blog.example". */
+  readonly publicUrl?: string;
 }
 
 /** Largest accepted request body. */
@@ -89,7 +94,14 @@ const AUTH_ROUTES: readonly AuthRoute[] = [
   { path: "/auth/password", methods: ["POST"] },
   { path: "/auth/me", methods: ["GET", "PATCH", "DELETE"] },
   { path: "/auth/audit", methods: ["GET"] },
+  { path: "/auth/verify-email", methods: ["POST"] },
+  { path: "/auth/verify-email/resend", methods: ["POST"] },
+  { path: "/auth/password-reset", methods: ["POST"] },
+  { path: "/auth/password-reset/confirm", methods: ["POST"] },
 ];
+
+/** What signup and the email endpoints always answer, whether or not the account exists. */
+const CHECK_EMAIL = { message: "Check your email for a link." };
 
 interface Page {
   readonly limit: number;
@@ -146,6 +158,10 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
 
   const limits = new Limits(db, now);
+  const mailer: Mailer = options.mailer ?? (async () => {
+    throw new Error("email is not configured");
+  });
+  const publicUrl = options.publicUrl ?? "http://localhost";
   const audit = new Audit(db, log);
   const LOGIN_WINDOW = 15 * 60;
 
@@ -162,6 +178,8 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       return { allowed: true, retryAfter: 0 };
     }
   }
+  const notVerified = (): HttpError =>
+    new HttpError(403, "email_not_verified", "Confirm your email address first, with the link we emailed you. You can ask for a new link.");
   const tooMany = (retryAfter: number, message: string): HttpError =>
     new HttpError(429, "too_many_requests", message, undefined, { "Retry-After": String(retryAfter) });
 
@@ -605,6 +623,69 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     await limited(async () => (await limits.clear(key), { allowed: true, retryAfter: 0 }));
   }
 
+  // ---------------------------------------------------------------- email
+
+  /**
+   * Send an email in the background. The response never waits for it or
+   * depends on it, so it can't reveal whether an account exists. Failures
+   * are logged without the address.
+   */
+  function deliver(to: string, message: { subject: string; text: string }): void {
+    mailer({ to, ...message }).catch((e: unknown) => log(`warning email not sent: ${describeError(e)}`));
+  }
+
+  /** At most 3 emails per hour to one account, so nobody can flood someone's inbox. Over the limit, nothing is sent. */
+  async function mayEmail(userId: string): Promise<boolean> {
+    return (await limited(() => limits.consume(limitKey("email-to", userId), 3, 3600))).allowed;
+  }
+
+  /** Email a new one-time link. Earlier links for the same purpose stop working. */
+  async function sendLink(userId: string, to: string, purpose: TokenPurpose): Promise<void> {
+    if (!(await mayEmail(userId))) return;
+    const { token, hash } = newEmailToken();
+    await db.query(EMAIL_SQL.deleteTokens, [userId, purpose]);
+    await db.query(EMAIL_SQL.createToken, [hash, userId, purpose, purpose === "verify" ? VERIFY_SECONDS : RESET_SECONDS]);
+    deliver(to, purpose === "verify" ? MESSAGES.verify(publicUrl, token) : MESSAGES.reset(publicUrl, token));
+  }
+
+  /** Use a one-time link from an email. */
+  async function useLink(value: unknown, purpose: TokenPurpose): Promise<string> {
+    const token = readEmailToken(value);
+    const r = token === undefined ? { rows: [] } : await db.query(EMAIL_SQL.useToken, [emailTokenHash(token), purpose]);
+    const userId = r.rows[0]?.["user_id"];
+    if (typeof userId !== "string") {
+      throw new HttpError(400, "invalid_link", "This link is not valid or has expired. Ask for a new one.", "token");
+    }
+    return userId;
+  }
+
+  async function unverified(userId: string): Promise<boolean> {
+    return (await db.query(EMAIL_SQL.isUnverified, [userId])).rows.length > 0;
+  }
+
+  /** The account with this login email, if there is one. */
+  async function accountFor(email: string): Promise<string | undefined> {
+    const auth = app.auth;
+    if (auth === null) return undefined;
+    const id = (await db.query(auth.loginSql, [email])).rows[0]?.["id"];
+    return typeof id === "string" ? id : undefined;
+  }
+
+  /** Read `{ "<login field>": ... }` from the body. */
+  async function emailFrom(req: IncomingMessage): Promise<string> {
+    const auth = app.auth;
+    if (auth === null) throw new HttpError(404, "not_found", "No endpoint matches this path.");
+    const v = validateBody([{ key: auth.loginKey, kind: "Email", required: true, nullable: false, max: 254 }], await readJson(req));
+    if (!v.ok) throw new HttpError(400, "validation_failed", v.message, v.field || undefined);
+    return String(v.values.get(auth.loginKey));
+  }
+
+  /** Requests that send email: 10 per hour per address, on top of the per-account limit. */
+  async function emailGate(ip: string): Promise<void> {
+    const gate = await limited(() => limits.consume(limitKey("email-ip", ip), 10, 3600));
+    if (!gate.allowed) throw tooMany(gate.retryAfter, "Too many requests. Try again later.");
+  }
+
   // ------------------------------------------------------------- passkeys
 
   /**
@@ -686,6 +767,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         if (e instanceof PasskeyError) return fail(userId);
         throw e;
       }
+      if (await unverified(userId)) throw notVerified();
       await startSession(res, userId);
       await audit.record({ action: "login", userId, ip, detail: "passkey" });
       const me = await db.query(auth.meSql, [userId]);
@@ -816,12 +898,80 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     if (path === "/auth/signup") {
       const gate = await limited(() => limits.consume(limitKey("signup", ip), 10, 3600));
       if (!gate.allowed) throw tooMany(gate.retryAfter, "Too many signups. Try again later.");
+      // The answer is the same whether or not the email already has an account,
+      // so signup can't be used to find out who has one. The owner of an
+      // existing account gets an email instead.
       const bodyValues = await body(req, auth.signup.body);
-      const r = await run(auth.signup.sql, values(auth.signup.values, new Map(), bodyValues, undefined, null), auth.model);
-      const row = r.rows[0] ?? {};
-      await startSession(res, String(row["id"]));
-      await audit.record({ action: "signup", userId: String(row["id"]), ip });
-      return send(res, 201, pick(row, auth.publicKeys));
+      const email = String(bodyValues.get(auth.loginKey));
+      const existing = await accountFor(email);
+      if (existing !== undefined) {
+        if (await mayEmail(existing)) deliver(email, MESSAGES.alreadyRegistered(publicUrl));
+        return send(res, 202, CHECK_EMAIL);
+      }
+      let created: string;
+      try {
+        const r = await run(auth.signup.sql, values(auth.signup.values, new Map(), bodyValues, undefined, null), auth.model);
+        created = String(r.rows[0]?.["id"]);
+      } catch (e) {
+        // Someone signed up with the same email at the same moment.
+        if (e instanceof HttpError && e.code === "already_exists" && e.field === auth.loginKey) return send(res, 202, CHECK_EMAIL);
+        throw e;
+      }
+      await audit.record({ action: "signup", userId: created, ip });
+      await sendLink(created, email, "verify");
+      return send(res, 202, CHECK_EMAIL);
+    }
+
+    if (path === "/auth/verify-email") {
+      const gate = await limited(() => limits.consume(limitKey("email-link", ip), 30, 3600));
+      if (!gate.allowed) throw tooMany(gate.retryAfter, "Too many requests. Try again later.");
+      const raw = await readJson(req) as { token?: unknown } | null;
+      const userId = await useLink(raw?.token, "verify");
+      await db.query(EMAIL_SQL.markVerified, [userId]);
+      await audit.record({ action: "email_verified", userId, ip });
+      res.writeHead(204, SECURITY_HEADERS).end();
+      return 204;
+    }
+
+    if (path === "/auth/verify-email/resend") {
+      await emailGate(ip);
+      const email = await emailFrom(req);
+      const userId = await accountFor(email);
+      if (userId !== undefined && (await unverified(userId))) await sendLink(userId, email, "verify");
+      return send(res, 202, CHECK_EMAIL);
+    }
+
+    if (path === "/auth/password-reset") {
+      await emailGate(ip);
+      const email = await emailFrom(req);
+      const userId = await accountFor(email);
+      if (userId !== undefined) {
+        await audit.record({ action: "password_reset_requested", userId, ip });
+        await sendLink(userId, email, "reset");
+      }
+      return send(res, 202, CHECK_EMAIL);
+    }
+
+    if (path === "/auth/password-reset/confirm") {
+      const gate = await limited(() => limits.consume(limitKey("email-link", ip), 30, 3600));
+      if (!gate.allowed) throw tooMany(gate.retryAfter, "Too many requests. Try again later.");
+      const v = validateBody(
+        [{ key: "token", kind: "Text", required: true, nullable: false, max: 100 }, auth.account.password],
+        await readJson(req),
+      );
+      if (!v.ok) throw new HttpError(400, "validation_failed", v.message, v.field || undefined);
+      const hash = await hashPassword(String(v.values.get("newPassword")));
+      const userId = await useLink(v.values.get("token"), "reset");
+      await db.query(auth.account.setPasswordSql, [userId, hash]);
+      // Whoever knew the old password is logged out everywhere, and the link
+      // proved the email works, so the account counts as confirmed.
+      await db.query(SQL.deleteAll, [userId]);
+      await db.query(EMAIL_SQL.deleteTokens, [userId, "reset"]);
+      await db.query(EMAIL_SQL.markVerified, [userId]);
+      await audit.record({ action: "password_reset", userId, ip });
+      res.setHeader("Set-Cookie", clearedCookie(secure));
+      res.writeHead(204, SECURITY_HEADERS).end();
+      return 204;
     }
 
     if (path === "/auth/login") {
@@ -859,6 +1009,10 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       }
       await limited(async () => (await limits.clear(accountKey), { allowed: true, retryAfter: 0 }));
       const userId = String(row["id"]);
+      if (await unverified(userId)) {
+        await audit.record({ action: "login_failed", userId, ip, detail: "email not confirmed" });
+        throw notVerified();
+      }
       await startSession(res, userId);
       await audit.record({ action: "login", userId, ip });
       const me = await db.query(auth.meSql, [userId]);
@@ -1027,8 +1181,19 @@ export function startServer(app: App): void {
     process.stderr.write(`rizo: ${e instanceof Error ? e.message : String(e)}\n`);
     process.exit(1);
   }
+  let email: ReturnType<typeof emailConfig> | undefined;
+  if (app.auth !== null) {
+    try {
+      email = emailConfig(process.env, (text) => process.stdout.write(text));
+    } catch (e) {
+      process.stderr.write(`rizo: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.exit(1);
+    }
+    if (email.dev) process.stderr.write("rizo: WARNING: RIZO_EMAIL_DEV=1, so emails are printed here instead of sent. Use this only for local development.\n");
+  }
   const pool = new pg.Pool(config);
   const handler = createRequestHandler(app, {
+    ...(email === undefined ? {} : { mailer: email.mailer, publicUrl: email.publicUrl }),
     db: { query: (sql, vals) => pool.query(sql, vals) },
     secureCookies: !insecure,
     trustProxy: process.env["RIZO_TRUST_PROXY"] === "1",
@@ -1046,7 +1211,10 @@ export function startServer(app: App): void {
   // Delete expired rate-limit counters and audit entries older than the retention period.
   const sweep = (): void => {
     void sweeper.sweep().catch(() => undefined);
-    if (app.auth !== null) void pool.query(PASSKEY_SQL.sweepChallenges).catch(() => undefined);
+    if (app.auth !== null) {
+      void pool.query(PASSKEY_SQL.sweepChallenges).catch(() => undefined);
+      void pool.query(EMAIL_SQL.sweepTokens).catch(() => undefined);
+    }
     void auditLog.sweep(retention).catch(() => undefined);
   };
   setInterval(sweep, 10 * 60_000).unref();

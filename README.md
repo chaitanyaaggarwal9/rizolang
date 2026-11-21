@@ -413,6 +413,12 @@ app.rz:20:18 error RZ0326: "Post.author" links to the auth model, so the server 
 Build failed with 2 errors. No files were written.
 ```
 
+For editors and AI agents, `rizolang build app.rz --json` prints the same errors as one line of JSON:
+
+```json
+{"rizolang":"0.4.0","ok":false,"errors":[{"code":"RZ0318","message":"Endpoint \"GET /posts\" does not say who may call it.","fix":"Add `requires login` for logged-in users only, or `public` if anyone may call it.","file":"app.rz","line":14,"column":5,"length":3}]}
+```
+
 The full list of error codes is in the [spec](docs/SPEC.md#8-errors).
 
 ---

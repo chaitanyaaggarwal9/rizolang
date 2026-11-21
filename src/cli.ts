@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { compile } from "./compiler.js";
 import { MIGRATION_FILE, SNAPSHOT_FILE, type MigrationPlan, initialPlan, migrationFile, parseSnapshot, planMigration, snapshotText } from "./migrations.js";
 import { buildSchema } from "./schema.js";
-import { formatDiagnostic } from "./diagnostics.js";
+import { type Diagnostic, formatDiagnostic } from "./diagnostics.js";
 import { VERSION } from "./version.js";
 
 export interface CliIo {
@@ -22,10 +22,12 @@ const DATA_LOSS_CODE = "RZ0904";
 const USAGE = `rizolang ${VERSION}
 
 Usage:
-  rizolang build <file.rz> [--allow-data-loss]
+  rizolang build <file.rz> [--allow-data-loss] [--json]
       Compile to ${OUT_DIR}/ (schema.sql, types.ts and, with auth or api blocks, a Node.js server),
       and write a migration to ${MIGRATIONS_DIR}/ when the models changed. Changes that would
       delete data are refused unless --allow-data-loss is given.
+      --json prints one JSON object (the result, or every error with its code, line, column
+      and fix) instead of text, for editors and AI agents.
   rizolang --version         Print the version
   rizolang --help            Print this help`;
 
@@ -44,14 +46,37 @@ export function runtimeSourceDir(): string {
   throw new Error("rizolang runtime sources not found; the installation is incomplete");
 }
 
-function usageError(io: CliIo, code: string, message: string, fix: string): number {
-  io.stderr(`rizolang: error ${code}: ${message}\n  fix: ${fix}\n`);
-  return 1;
+/** One error as `--json` prints it. Location fields are null for errors that aren't about a line of the file. */
+export interface JsonError {
+  readonly code: string;
+  readonly message: string;
+  readonly fix: string;
+  readonly file: string | null;
+  readonly line: number | null;
+  readonly column: number | null;
+  readonly length: number | null;
+}
+
+function jsonError(d: Diagnostic): JsonError {
+  return { code: d.code, message: d.message, fix: d.fix, file: d.file, line: d.span.line, column: d.span.col, length: d.span.length };
+}
+
+function printJson(io: CliIo, value: unknown): void {
+  io.stdout(`${JSON.stringify({ rizolang: VERSION, ...(value as object) })}\n`);
 }
 
 /** Runs the CLI and returns the process exit code. Never throws for user errors. */
 export function run(argv: readonly string[], io: CliIo): number {
   const [command, ...rest] = argv;
+  const flags = rest.filter((a) => a.startsWith("--"));
+  const files = rest.filter((a) => !a.startsWith("--"));
+  const json = flags.includes("--json");
+  /** Report an error that isn't about a line of the file, and fail. */
+  const usageError = (code: string, message: string, fix: string, file: string | null = null): number => {
+    if (json) printJson(io, { ok: false, errors: [{ code, message, fix, file, line: null, column: null, length: null } satisfies JsonError] });
+    else io.stderr(`rizolang: error ${code}: ${message}\n  fix: ${fix}\n`);
+    return 1;
+  };
 
   if (command === undefined || command === "--help" || command === "-h" || command === "help") {
     io.stdout(`${USAGE}\n`);
@@ -62,23 +87,21 @@ export function run(argv: readonly string[], io: CliIo): number {
     return 0;
   }
   if (command !== "build") {
-    return usageError(io, "RZ0903", `Unknown command "${command}".`,
+    return usageError("RZ0903", `Unknown command "${command}".`,
       "Run `rizolang build <file.rz>`.");
   }
-  const flags = rest.filter((a) => a.startsWith("--"));
-  const files = rest.filter((a) => !a.startsWith("--"));
-  const unknownFlag = flags.find((f) => f !== "--allow-data-loss");
+  const unknownFlag = flags.find((f) => f !== "--allow-data-loss" && f !== "--json");
   if (unknownFlag !== undefined) {
-    return usageError(io, "RZ0903", `Unknown option "${unknownFlag}".`, "The only option is --allow-data-loss.");
+    return usageError("RZ0903", `Unknown option "${unknownFlag}".`, "The options are --allow-data-loss and --json.");
   }
   const allowDataLoss = flags.includes("--allow-data-loss");
   if (files.length !== 1 || files[0] === undefined) {
-    return usageError(io, "RZ0903", "The build command needs exactly one .rz file.",
+    return usageError("RZ0903", "The build command needs exactly one .rz file.",
       "Run `rizolang build <file.rz>`, for example `rizolang build app.rz`.");
   }
   const file = files[0];
   if (!file.endsWith(".rz")) {
-    return usageError(io, "RZ0902", `"${file}" is not a Rizo Lang file.`,
+    return usageError("RZ0902", `"${file}" is not a Rizo Lang file.`,
       "Rizo Lang source files must end in .rz, for example app.rz.");
   }
 
@@ -86,12 +109,16 @@ export function run(argv: readonly string[], io: CliIo): number {
   try {
     source = readFileSync(resolve(io.cwd, file), "utf8");
   } catch {
-    return usageError(io, "RZ0901", `Cannot read file "${file}".`,
+    return usageError("RZ0901", `Cannot read file "${file}".`,
       "Check that the file exists and that the path is correct.");
   }
 
   const result = compile(source, file);
   if (!result.ok) {
+    if (json) {
+      printJson(io, { ok: false, errors: result.diagnostics.map(jsonError) });
+      return 1;
+    }
     const count = result.diagnostics.length;
     io.stderr(result.diagnostics.map((d) => formatDiagnostic(d, source)).join("\n\n"));
     io.stderr(`\n\nBuild failed with ${count} error${count === 1 ? "" : "s"}. No files were written.\n`);
@@ -110,23 +137,36 @@ export function run(argv: readonly string[], io: CliIo): number {
     snapshot = readFileSync(snapshotPath, "utf8");
   } catch (e) {
     if ((e as { code?: unknown }).code !== "ENOENT") {
-      return usageError(io, "RZ0905", `Cannot read ${MIGRATIONS_DIR}/${SNAPSHOT_FILE}.`, "Check the file's permissions.");
+      return usageError("RZ0905", `Cannot read ${MIGRATIONS_DIR}/${SNAPSHOT_FILE}.`, "Check the file's permissions.");
     }
   }
   if (snapshot !== undefined) {
     const parsed = parseSnapshot(snapshot);
     if ("error" in parsed) {
-      return usageError(io, "RZ0905", `${MIGRATIONS_DIR}/${SNAPSHOT_FILE} cannot be used: ${parsed.error}.`,
+      return usageError("RZ0905", `${MIGRATIONS_DIR}/${SNAPSHOT_FILE} cannot be used: ${parsed.error}.`,
         `Restore it from version control. It must match the last migration in ${MIGRATIONS_DIR}/.`);
     }
     plan = planMigration(parsed.schema, schema);
   } else if (existing.length > 0) {
-    return usageError(io, "RZ0905", `${MIGRATIONS_DIR}/ has migration files but no ${SNAPSHOT_FILE}.`,
+    return usageError("RZ0905", `${MIGRATIONS_DIR}/ has migration files but no ${SNAPSHOT_FILE}.`,
       `Restore ${MIGRATIONS_DIR}/${SNAPSHOT_FILE} from version control. Without it, rizolang cannot tell what changed.`);
   } else {
     plan = initialPlan(schema);
   }
   if (plan.dataLoss.length > 0 && !allowDataLoss) {
+    if (json) {
+      printJson(io, {
+        ok: false,
+        errors: [{
+          code: DATA_LOSS_CODE,
+          message: "This change would delete data.",
+          fix: `To keep the data, undo the change in ${file}. If you really want to delete it, back up the database, then build with --allow-data-loss.`,
+          file, line: null, column: null, length: null,
+        } satisfies JsonError],
+        dataLoss: plan.dataLoss,
+      });
+      return 1;
+    }
     io.stderr(
       `${file} error ${DATA_LOSS_CODE}: This change would delete data:\n${plan.dataLoss.map((d) => `  - ${d}`).join("\n")}\n` +
       `  fix: To keep the data, undo that change in ${file}. Renaming is not supported yet: keep the old name.\n` +
@@ -138,6 +178,7 @@ export function run(argv: readonly string[], io: CliIo): number {
 
   // Record the migration and the new snapshot.
   let migrationNote = "";
+  let migration: { file: string; changes: readonly string[] } | null = null;
   if (plan.statements.length > 0) {
     const last = existing[existing.length - 1];
     const number = last === undefined ? 1 : Number(MIGRATION_FILE.exec(last)?.[1] ?? "0") + 1;
@@ -147,12 +188,13 @@ export function run(argv: readonly string[], io: CliIo): number {
       // "wx": never overwrite an existing migration.
       writeFileSync(join(migDir, name), migrationFile(plan, number, file.replace(/[^\x20-\x7e]/g, "?")), { flag: "wx" });
     } catch {
-      return usageError(io, "RZ0905", `${MIGRATIONS_DIR}/${name} already exists.`,
+      return usageError("RZ0905", `${MIGRATIONS_DIR}/${name} already exists.`,
         `Another build may be running, or ${MIGRATIONS_DIR}/ was changed by hand. Restore it from version control and build again.`);
     }
     writeFileSync(snapshotPath, snapshotText(schema));
     existing.push(name);
     migrationNote = `\nNew migration: ${MIGRATIONS_DIR}/${name}\n${plan.summary.map((s) => `  - ${s}`).join("\n")}\n`;
+    migration = { file: `${MIGRATIONS_DIR}/${name}`, changes: plan.summary };
   }
   const outDir = join(io.cwd, OUT_DIR);
   mkdirSync(outDir, { recursive: true });
@@ -195,6 +237,10 @@ export function run(argv: readonly string[], io: CliIo): number {
 
   const n = result.models.length;
   const e = result.apis.length;
+  if (json) {
+    printJson(io, { ok: true, file, models: n, endpoints: e, pages: result.pages.length, auth: result.auth !== undefined, written, migration, dataLoss: plan.dataLoss });
+    return 0;
+  }
   io.stdout(
     `Built ${file}: ${n} model${n === 1 ? "" : "s"}${e > 0 ? `, ${e} endpoint${e === 1 ? "" : "s"}` : ""}${result.auth ? ", auth" : ""} -> ${written.join(", ")}\n${migrationNote}`,
   );

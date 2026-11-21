@@ -12,7 +12,7 @@
  * @typedef {"Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID"} FieldKind
  * @typedef {{ key: string, label: string, type: FieldKind }} FieldView
  * @typedef {{ key: string, kind: FieldKind, label: string, required: boolean, nullable: boolean, min?: number, max?: number, multiline: boolean }} FormField
- * @typedef {{ kind: "form", method: "POST" | "PUT" | "PATCH", endpoint: string, fields: FormField[], submit: string, prefill: string | null, then: string | null }} FormItem
+ * @typedef {{ kind: "form", method: "POST" | "PUT" | "PATCH", endpoint: string, fields: FormField[], submit: string, prefill: string | null, then: string | null, done?: string }} FormItem
  * @typedef {{ kind: "button", label: string, method: "DELETE", endpoint: string, then: string }} ButtonItem
  * @typedef {{ kind: "text", text: string }
  *   | { kind: "link", label: string, path: string }
@@ -20,7 +20,9 @@
  *   | FormItem
  *   | ButtonItem
  *   | { kind: "passkeyLogin" }
- *   | { kind: "passkeys" }} PageItem
+ *   | { kind: "passkeys" }
+ *   | { kind: "verifyEmail" }
+ *   | { kind: "newPassword", field: FormField }} PageItem
  * @typedef {{ title: string, items: PageItem[], params: Record<string, string>, loggedIn: boolean, auth: boolean }} PageData
  */
 
@@ -187,6 +189,8 @@ export function go(path) {
 
 /** The "?next=" the page was opened with, read once by start(). */
 let openedWithNext = /** @type {string | null} */ (null);
+/** The one-time token from an emailed link ("#token=..."), taken out of the address bar in start(). */
+let openedWithToken = /** @type {string | null} */ (null);
 
 /** The "?next=" page to return to after logging in, if it is on this site. */
 export function nextPath() {
@@ -264,8 +268,9 @@ export function readField(field, input, partial) {
 /**
  * @param {FormItem} item
  * @param {Record<string, string>} params
+ * @param {Record<string, string>} [extra] values sent with the form that are not inputs
  */
-function formItem(item, params) {
+function formItem(item, params, extra = {}) {
   const form = el("form", { class: "rizo-form" });
   const status = el("p", { class: "rizo-error", role: "alert" });
   status.hidden = true;
@@ -325,7 +330,7 @@ function formItem(item, params) {
     event.preventDefault();
     status.hidden = true;
     /** @type {Record<string, unknown>} */
-    const body = {};
+    const body = { ...extra };
     const partial = item.method !== "POST" && !prefilled;
     for (const { field, input, error } of inputs.values()) {
       error.textContent = "";
@@ -336,6 +341,10 @@ function formItem(item, params) {
     submit.disabled = true;
     sendJson(item.method, fillPath(item.endpoint, params), body).then(
       (result) => {
+        if (item.done !== undefined) {
+          form.replaceWith(el("p", { class: "rizo-done", role: "status" }, item.done));
+          return;
+        }
         const saved = /** @type {Record<string, unknown> | null} */ (result);
         const id = saved !== null && typeof saved["id"] === "string" ? saved["id"] : undefined;
         go(item.then === null ? nextPath() : fillPath(item.then, id === undefined ? params : { ...params, id }));
@@ -445,6 +454,40 @@ function passkeyLoginItem() {
   return el("div", { class: "rizo-actions" }, button, status);
 }
 
+/**
+ * Confirm the email address, when the page was opened from the emailed link.
+ * @param {string} token
+ */
+function verifyEmailItem(token) {
+  const status = el("p", { role: "status" }, "Confirming your email…");
+  const box = el("div", { class: "rizo-actions", "aria-live": "polite" }, status);
+  sendJson("POST", "/auth/verify-email", { token }).then(
+    () => {
+      status.textContent = "Your email is confirmed. You can log in now.";
+      box.append(el("p", {}, el("a", { href: "/login" }, "Log in")));
+    },
+    (e) => {
+      status.setAttribute("class", "rizo-error");
+      status.textContent = e instanceof Error ? e.message : String(e);
+      box.append(el("p", {}, el("a", { href: "/verify-email" }, "Get a new link")));
+    },
+  );
+  return box;
+}
+
+/**
+ * Choose a new password, when the page was opened from the emailed link.
+ * @param {FormField} field
+ * @param {string} token
+ */
+function newPasswordItem(field, token) {
+  const form = formItem({
+    kind: "form", method: "POST", endpoint: "/auth/password-reset/confirm", fields: [field], submit: "Save new password",
+    prefill: null, then: null, done: "Your password is changed, and you are logged out everywhere. You can log in now.",
+  }, {}, { token });
+  return el("div", {}, form, el("p", {}, el("a", { href: "/login" }, "Log in")), el("p", {}, el("a", { href: "/reset-password" }, "Get a new link")));
+}
+
 /** List, add and remove your passkeys, for the account page. */
 function passkeysItem() {
   const box = el("section", { class: "rizo-show", "aria-live": "polite" }, el("h2", {}, "Passkeys"),
@@ -537,7 +580,7 @@ function menu(data) {
     nav.append(logout);
   } else {
     const here = window.location.pathname;
-    const next = isInternalPath(here) && here !== "/login" && here !== "/signup" ? `?next=${encodeURIComponent(here)}` : "";
+    const next = isInternalPath(here) && !["/login", "/signup", "/verify-email", "/reset-password"].includes(here) ? `?next=${encodeURIComponent(here)}` : "";
     nav.append(el("a", { href: `/login${next}` }, "Log in"), el("a", { href: "/signup" }, "Sign up"));
   }
   return nav;
@@ -548,13 +591,21 @@ export function renderPage(data) {
   const main = el("main", { class: "rizo-page" });
   if (data.auth) main.append(menu(data));
   main.append(el("h1", {}, data.title));
-  for (const item of data.items) {
+  // Opened from an emailed link: show only what the link is for.
+  const linkItem = data.items.find((item) => item.kind === "verifyEmail" || item.kind === "newPassword");
+  const token = openedWithToken;
+  for (const item of linkItem !== undefined && token !== null ? [linkItem] : data.items) {
     if (item.kind === "text") main.append(el("p", {}, item.text));
     else if (item.kind === "link") main.append(el("p", {}, el("a", { href: fillPath(item.path, data.params) }, item.label)));
     else if (item.kind === "form") main.append(formItem(item, data.params));
     else if (item.kind === "button") main.append(buttonItem(item, data.params));
     else if (item.kind === "passkeyLogin") main.append(passkeyLoginItem());
     else if (item.kind === "passkeys") main.append(passkeysItem());
+    else if (item.kind === "verifyEmail") {
+      if (token !== null) main.append(verifyEmailItem(token));
+    } else if (item.kind === "newPassword") {
+      if (token !== null) main.append(newPasswordItem(item.field, token));
+    }
     else main.append(showItem(item, data.params));
   }
   return main;
@@ -570,8 +621,34 @@ export function start() {
   // navigation (which only changes the path) lands on a clean address.
   const next = new URLSearchParams(window.location.search).get("next");
   openedWithNext = next;
+  takeToken();
   if (next !== null) window.history.replaceState(null, "", window.location.pathname);
-  app.replaceWith(renderPage(data));
+  let shown = renderPage(data);
+  app.replaceWith(shown);
+  // An emailed link opened in a tab that already shows this page only changes "#...", which doesn't reload it.
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("hashchange", () => {
+      if (!takeToken()) return;
+      const page = renderPage(data);
+      shown.replaceWith(page);
+      shown = page;
+    });
+  }
+}
+
+/**
+ * Keep the token of an emailed link ("#token=...") in memory and take it out
+ * of the address bar, so it isn't left in the history. Returns true if there was one.
+ */
+function takeToken() {
+  if (window.location.hash === "") {
+    openedWithToken = null;
+    return false;
+  }
+  const token = new URLSearchParams(window.location.hash.slice(1)).get("token");
+  openedWithToken = token !== null && /^[A-Za-z0-9_-]{43}$/.test(token) ? token : null;
+  window.history.replaceState(null, "", window.location.pathname);
+  return openedWithToken !== null;
 }
 
 if (typeof document !== "undefined" && document.getElementById("rizo-page") !== null) start();

@@ -5,10 +5,12 @@
  *   3. Unknown field types are rejected and no output is produced.
  *   4. Names cannot inject SQL.
  *   5. Passkeys work only on their own site and are never copied (SPEC §7.11).
+ *   6. Signup never reveals which emails have accounts, and emailed links are one-time and hashed (SPEC §7.12).
  */
 import { createPublicKey, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PASSKEY_SQL, challengeHash, newChallenge } from "../runtime/passkeys.ts";
+import { EMAIL_SQL, MESSAGES, newEmailToken } from "../runtime/email.ts";
 import { PasskeyError, verifyAssertion, verifyRegistration } from "../runtime/webauthn.ts";
 import { SoftAuthenticator } from "./authenticator.js";
 import { compile } from "../src/compiler.js";
@@ -351,5 +353,30 @@ describe("security: passkeys", () => {
     expect(hash).not.toContain(challenge);
     expect(hash).toBe(challengeHash(challenge));
     expect(PASSKEY_SQL.useChallenge).toMatch(/^DELETE .* RETURNING "id"$/);
+  });
+});
+
+describe("security: email confirmation and reset", () => {
+  const r = compileOk("auth User by email\nmodel User {\n  email: Email unique\n  password: Password\n  name: Text\n}\n");
+  const auth = buildApp(r.apis, r.auth).auth;
+
+  it("creates the account and its unconfirmed mark in one statement, with parameters only", () => {
+    expect(auth?.signup.sql).toBe(
+      'WITH "created" AS (INSERT INTO "users" ("email", "password_hash", "name") VALUES ($1, $2, $3) RETURNING "id", "email", "name"), ' +
+        '"pending" AS (INSERT INTO "_rizo_unverified" ("user_id") SELECT "id" FROM "created") SELECT "id", "email", "name" FROM "created"',
+    );
+  });
+
+  it("uses each emailed link once, only for its purpose, and only before it expires", () => {
+    expect(EMAIL_SQL.useToken).toBe('DELETE FROM "_rizo_email_tokens" WHERE "id" = $1 AND "purpose" = $2 AND "expires_at" > now() RETURNING "user_id"');
+  });
+
+  it("never puts request data into an email: only fixed sentences and the link", () => {
+    const token = newEmailToken().token;
+    for (const m of [MESSAGES.verify("https://a.example", token), MESSAGES.reset("https://a.example", token), MESSAGES.alreadyRegistered("https://a.example")]) {
+      const withoutLink = m.text.replace(/https:\/\/a\.example\/[a-z-]+(#token=[A-Za-z0-9_-]{43})?/g, "");
+      expect(withoutLink).not.toMatch(/[<>]/);
+      expect(m.subject).toMatch(/^[A-Za-z ]+ a\.example$/);
+    }
   });
 });

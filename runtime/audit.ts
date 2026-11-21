@@ -23,6 +23,9 @@ export type AuditAction =
   | "role_changed"
   | "passkey_added"
   | "passkey_removed"
+  | "email_verified"
+  | "password_reset_requested"
+  | "password_reset"
   | "admin_granted"
   | "record_deleted";
 

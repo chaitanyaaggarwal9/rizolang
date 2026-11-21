@@ -152,12 +152,18 @@ export type PageItemSpec =
       readonly prefill: string | null;
       /** Page to open afterwards (:id may come from the saved record), or null for "?next= or home". */
       readonly then: string | null;
+      /** Built-in forms only: show this message after sending, instead of opening a page. */
+      readonly done?: string;
     }
   | { readonly kind: "button"; readonly label: string; readonly method: "DELETE"; readonly endpoint: string; readonly then: string }
   /** "Log in with a passkey" (built-in login page). */
   | { readonly kind: "passkeyLogin" }
   /** List, add and remove your passkeys (built-in account page). */
-  | { readonly kind: "passkeys" };
+  | { readonly kind: "passkeys" }
+  /** Confirms the email when the page was opened from the emailed link (built-in /verify-email). */
+  | { readonly kind: "verifyEmail" }
+  /** Asks for a new password when the page was opened from the emailed link (built-in /reset-password). */
+  | { readonly kind: "newPassword"; readonly field: FormFieldSpec };
 
 export interface PageRoute {
   /** Original path, used in logs. */

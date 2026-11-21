@@ -149,6 +149,19 @@ describe("serving pages", () => {
     }
   });
 
+  it("adds the pages that emailed links open, which handle the token in the browser", async () => {
+    const base = await start();
+    for (const [path, kind, endpoint] of [["/verify-email", "verifyEmail", "/auth/verify-email/resend"], ["/reset-password", "newPassword", "/auth/password-reset"]] as const) {
+      const r = await fetch(`${base}${path}`);
+      expect(r.status).toBe(200);
+      const data = JSON.parse(/id="rizo-page">([^<]*)</.exec(await r.text())?.[1] ?? "{}") as { items: { kind: string; endpoint?: string; done?: string }[] };
+      expect(data.items[0]?.kind).toBe(kind);
+      const form = data.items.find((i) => i.kind === "form");
+      expect(form?.endpoint).toBe(endpoint);
+      expect(form?.done).toBeTruthy();
+    }
+  });
+
   it("still serves the API next to pages, as JSON", async () => {
     const base = await start();
     const r = await fetch(`${base}/api/posts`);

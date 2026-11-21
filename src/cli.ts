@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { audit } from "./audit.js";
 import { compile } from "./compiler.js";
 import { MIGRATION_FILE, SNAPSHOT_FILE, type MigrationPlan, initialPlan, migrationFile, parseSnapshot, planMigration, snapshotText } from "./migrations.js";
 import { buildSchema } from "./schema.js";
@@ -28,6 +29,10 @@ Usage:
       delete data are refused unless --allow-data-loss is given.
       --json prints one JSON object (the result, or every error with its code, line, column
       and fix) instead of text, for editors and AI agents.
+  rizolang audit <file.rz> [--json]
+      Review the file for risky choices (public writes, personal data that isn't private,
+      loose rate limits...) and print each with its location and a fix. Writes nothing.
+      Exits with 1 when there are warnings, so it can run in CI.
   rizolang --version         Print the version
   rizolang --help            Print this help`;
 
@@ -86,10 +91,11 @@ export function run(argv: readonly string[], io: CliIo): number {
     io.stdout(`${VERSION}\n`);
     return 0;
   }
-  if (command !== "build") {
+  if (command !== "build" && command !== "audit") {
     return usageError("RZ0903", `Unknown command "${command}".`,
-      "Run `rizolang build <file.rz>`.");
+      "Run `rizolang build <file.rz>` or `rizolang audit <file.rz>`.");
   }
+  if (command === "audit") return runAudit(io, files, flags, json, usageError);
   const unknownFlag = flags.find((f) => f !== "--allow-data-loss" && f !== "--json");
   if (unknownFlag !== undefined) {
     return usageError("RZ0903", `Unknown option "${unknownFlag}".`, "The options are --allow-data-loss and --json.");
@@ -245,4 +251,45 @@ export function run(argv: readonly string[], io: CliIo): number {
     `Built ${file}: ${n} model${n === 1 ? "" : "s"}${e > 0 ? `, ${e} endpoint${e === 1 ? "" : "s"}` : ""}${result.auth ? ", auth" : ""} -> ${written.join(", ")}\n${migrationNote}`,
   );
   return 0;
+}
+
+/** `rizolang audit <file.rz>`: report risky choices without writing anything. */
+function runAudit(
+  io: CliIo,
+  files: readonly string[],
+  flags: readonly string[],
+  json: boolean,
+  usageError: (code: string, message: string, fix: string) => number,
+): number {
+  const unknownFlag = flags.find((f) => f !== "--json");
+  if (unknownFlag !== undefined) return usageError("RZ0903", `Unknown option "${unknownFlag}".`, "The only option of audit is --json.");
+  const file = files[0];
+  if (files.length !== 1 || file === undefined) {
+    return usageError("RZ0903", "The audit command needs exactly one .rz file.", "Run `rizolang audit <file.rz>`, for example `rizolang audit app.rz`.");
+  }
+  if (!file.endsWith(".rz")) return usageError("RZ0902", `"${file}" is not a Rizo Lang file.`, "Rizo Lang source files must end in .rz, for example app.rz.");
+  let source: string;
+  try {
+    source = readFileSync(resolve(io.cwd, file), "utf8");
+  } catch {
+    return usageError("RZ0901", `Cannot read file "${file}".`, "Check that the file exists and that the path is correct.");
+  }
+  const result = audit(source, file);
+  if (!result.ok) {
+    if (json) printJson(io, { ok: false, errors: result.diagnostics.map(jsonError) });
+    else io.stderr(`${result.diagnostics.map((d) => formatDiagnostic(d, source)).join("\n\n")}\n\nFix these errors first: the audit needs a file that builds.\n`);
+    return 1;
+  }
+  const { findings, summary } = result;
+  if (json) {
+    printJson(io, { ok: summary.warnings === 0, file, findings: findings.map((f) => ({ level: f.level, ...jsonError(f) })), summary });
+    return summary.warnings === 0 ? 0 : 1;
+  }
+  const lines = findings.map((f) => formatDiagnostic(f, source, f.level));
+  const counts = `${summary.endpoints} endpoint${summary.endpoints === 1 ? "" : "s"} (${summary.public} public, ${summary.login} need a login, ${summary.withRoles} with roles)`;
+  const verdict = findings.length === 0
+    ? "No findings."
+    : `${summary.warnings} warning${summary.warnings === 1 ? "" : "s"} and ${summary.notes} note${summary.notes === 1 ? "" : "s"}.`;
+  io.stdout(`${lines.length > 0 ? `${lines.join("\n\n")}\n\n` : ""}Audited ${file}: ${counts}. ${verdict}\n`);
+  return summary.warnings === 0 ? 0 : 1;
 }

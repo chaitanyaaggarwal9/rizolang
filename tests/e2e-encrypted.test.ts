@@ -27,6 +27,7 @@ model User {
   password: Password
   name: Text
   phone: Text optional encrypted max 30
+  displayName: Text optional
 }
 model Note {
   owner: User
@@ -102,7 +103,7 @@ describe.skipIf(DATABASE_URL === undefined)("encrypted fields end to end (Postgr
     app = buildApp(result.apis, result.auth, result.pages);
     base = await start(KEY_1);
 
-    const account = { email: "enc@example.com", password: "a long enough password", name: "Enc", phone: "+1 555 0100" };
+    const account = { email: "enc@example.com", password: "a long enough password", name: "Enc", phone: "+1 555 0100", displayName: "Enc E." };
     expect((await call(base, "POST", "/auth/signup", account)).status).toBe(202);
     const token = /#token=([A-Za-z0-9_-]{43})/.exec(mail.at(-1)?.text ?? "")?.[1];
     expect((await call(base, "POST", "/auth/verify-email", { token })).status).toBe(204);
@@ -132,7 +133,7 @@ describe.skipIf(DATABASE_URL === undefined)("encrypted fields end to end (Postgr
   it("decrypts in find and list, and on the account", async () => {
     expect((await call(base, "GET", `/api/notes/${noteId}`)).body).toMatchObject({ secret: "PIN is 4321", amount: 1500 });
     expect((await call(base, "GET", "/api/notes")).body["items"]).toMatchObject([{ secret: "PIN is 4321" }]);
-    expect((await call(base, "GET", "/auth/me")).body).toMatchObject({ name: "Enc", phone: "+1 555 0100" });
+    expect((await call(base, "GET", "/auth/me")).body).toMatchObject({ name: "Enc", phone: "+1 555 0100", displayName: "Enc E." });
     const phone = (await pool.query('SELECT "phone" FROM "users"')).rows[0].phone;
     expect(phone).toMatch(/^rz1\.k1\./);
   });

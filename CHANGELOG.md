@@ -57,6 +57,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `openapi.json` declares `servers: [{ "url": "/" }]` (the server that serves it), as Redocly's recommended rules require.
 - Milestone 7, part 3: `rizolang build --json`.
   - Prints one line of JSON instead of text: on failure, every error with its code, message, fix, file, line, column and length (location fields are null for command-line problems, and refused data-loss builds list `dataLoss`); on success, what was built, the files written and the new migration. Exit codes are unchanged, and nothing goes to stderr.
+- Milestone 7, part 4: `rizolang audit app.rz`.
+  - Reviews a file that builds for choices that are allowed but often a mistake, and prints each with its location and a fix, as warnings or notes: public endpoints that change data (RA01), fields that look like personal data or secrets but aren't `private` (RA02) or aren't `encrypted` (RA03), public email addresses (RA04), public lists of all accounts (RA05), login-only updates and deletes without an owner or role check (RA06), and loose rate limits on public endpoints (RA07).
+  - Writes nothing, supports `--json`, and exits with 1 on warnings so it can run in CI.
+
+### Fixed
+
+- Signup SQL no longer crashes the compiler when the auth model has a camelCase field, such as `displayName` (introduced earlier in this release cycle).
 
 ## [0.4.0] - 2026-11-21
 

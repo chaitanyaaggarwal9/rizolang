@@ -56,10 +56,14 @@ Rizo Lang is a secure, simple, full-stack web language for the AI era. Source fi
 
 ## Current milestone
 
-Milestone 2 adds `auth`, `api` blocks, links between models and `private` fields, compiled to a Node.js server. Maintainer decisions for this milestone:
+Milestones 1–3 are complete (v0.3.0): models, `auth`, `api` blocks, links, `private` fields, roles, pagination, account management and migrations. Maintainer decisions that still apply:
 - `api` blocks use braces, like `model` blocks.
 - Sessions are server-side, stored as hashed tokens in `_rizo_sessions` and sent in an HttpOnly cookie.
 - Generated apps use `pg` plus the runtime copied into `dist/`.
-- Permissions are `requires login` and `requires owner`. Roles come in Milestone 3.
+- List endpoints return `{ items, next }` with keyset pagination.
+- Changes that would delete data need `--allow-data-loss`.
+- `RIZO_ADMIN_EMAILS` only promotes accounts that already exist.
 
-Do not implement roles, pagination or frontend `page` blocks until the maintainer starts Milestone 3.
+Releases are published to npm by `.github/workflows/publish.yml` (see CONTRIBUTING.md, "Releasing").
+
+Do not implement frontend `page` blocks (Milestone 4) until the maintainer starts it.

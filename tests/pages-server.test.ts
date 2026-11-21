@@ -8,7 +8,9 @@ import { SQL, hashToken } from "../runtime/session.ts";
 import { buildApp } from "../src/emit/routes.js";
 import { compileOk } from "./helpers.js";
 
-const HOSTILE = `</script><script>alert(1)</script><!--`;
+const HOSTILE = `</script><script>alert(1)</script><!--\\x`;
+/** Write text as a Rizo Lang quoted string: escape backslashes first, then quotes. */
+const rzText = (text: string): string => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 const SOURCE = `auth User by email roles admin
 model User {
   email: Email unique
@@ -28,7 +30,7 @@ api GET /api/posts/:id -> Post.public {
 }
 page / {
   public
-  title "${HOSTILE.replace(/"/g, '\\"')}"
+  title ${rzText(HOSTILE)}
   show GET /api/posts
 }
 page /posts/:id {
@@ -92,7 +94,7 @@ describe("serving pages", () => {
     const html = await (await fetch(`${base}/`)).text();
     expect(html.match(/<script/g)).toHaveLength(2); // the data block and our module, nothing else
     expect(html).not.toContain("<script>alert");
-    expect(html).toContain("<title>&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;!--</title>");
+    expect(html).toContain("<title>&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;!--\\x</title>");
     const block = /<script type="application\/json" id="rizo-page">([^<]*)<\/script>/.exec(html)?.[1];
     expect(JSON.parse(block ?? "")).toMatchObject({ title: HOSTILE });
   });

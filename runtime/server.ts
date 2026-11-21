@@ -238,6 +238,15 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     return values;
   }
 
+  /** The role of a user, or null. Read from the database on every request, so changes apply at once. */
+  async function roleOf(userId: string): Promise<string | null> {
+    const auth = app.auth;
+    if (auth === null || auth.roleSql === "") return null;
+    const r = await db.query(auth.roleSql, [userId]);
+    const role = r.rows[0]?.["role"];
+    return typeof role === "string" && auth.roles.includes(role) ? role : null;
+  }
+
   async function currentUser(req: IncomingMessage): Promise<string | undefined> {
     const token = readToken(req.headers.cookie);
     if (token === undefined) return undefined;
@@ -262,7 +271,13 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     return req.socket.remoteAddress ?? "unknown";
   }
 
-  function values(sources: readonly ValueSource[], params: ReadonlyMap<string, unknown>, bodyValues: ReadonlyMap<string, unknown>, me: string | undefined): unknown[] {
+  function values(
+    sources: readonly ValueSource[],
+    params: ReadonlyMap<string, unknown>,
+    bodyValues: ReadonlyMap<string, unknown>,
+    me: string | undefined,
+    role: string | null,
+  ): unknown[] {
     return sources.map((s) => {
       switch (s.from) {
         case "path": return params.get(s.name);
@@ -270,6 +285,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         case "body": return bodyValues.get(s.key) ?? null;
         case "provided": return bodyValues.has(s.key);
         case "const": return s.value;
+        case "hasRole": return role !== null && s.roles.includes(role);
       }
     });
   }
@@ -306,13 +322,18 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       me = await currentUser(req);
       if (me === undefined) throw new HttpError(401, "login_required", "You need to log in.");
     }
+    const needsRole = route.roles.length > 0 || route.values.some((v) => v.from === "hasRole");
+    const role = needsRole && me !== undefined ? await roleOf(me) : null;
+    if (route.roles.length > 0 && (role === null || !route.roles.includes(role))) {
+      throw new HttpError(403, "forbidden", "You do not have permission to do this.");
+    }
     let bodyValues: ReadonlyMap<string, unknown> = new Map();
     if (route.body === null) {
       if (hasBody(req)) throw new HttpError(400, "unexpected_body", "This endpoint does not accept a request body.");
     } else {
       bodyValues = await body(req, route.body);
     }
-    const r = await run(route.sql, values(route.values, params, bodyValues, me), route.model);
+    const r = await run(route.sql, values(route.values, params, bodyValues, me, role), route.model);
     switch (route.result) {
       case "list":
         return send(res, 200, r.rows.map((row) => pick(row, route.publicKeys)));
@@ -332,9 +353,43 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
 
   // ----------------------------------------------------------------- auth
 
+  /** PUT /auth/users/:id/role, admins only. Body: { "role": "<role>" } or { "role": null }. */
+  async function setRole(req: IncomingMessage, res: ServerResponse, method: string, rawId: string): Promise<number> {
+    const auth = app.auth;
+    if (auth === null) throw new HttpError(404, "not_found", "No endpoint matches this path.");
+    if (method !== "PUT") throw new HttpError(405, "method_not_allowed", `This path does not support ${method}.`, undefined, { Allow: "PUT" });
+    checkOrigin(req, method);
+    const me = await currentUser(req);
+    if (me === undefined) throw new HttpError(401, "login_required", "You need to log in.");
+    if ((await roleOf(me)) !== "admin") throw new HttpError(403, "forbidden", "You do not have permission to do this.");
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(rawId);
+    } catch {
+      throw new HttpError(400, "bad_path", "The URL path is not valid.");
+    }
+    const id = validatePathParam({ param: "id", kind: "ID" }, decoded);
+    if ("error" in id) throw new HttpError(400, "invalid_parameter", id.error, "id");
+    if (id.value === me) throw new HttpError(403, "forbidden", "You cannot change your own role.");
+    const raw = await readJson(req);
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw) || Object.keys(raw).join() !== "role") {
+      throw new HttpError(400, "validation_failed", 'Send exactly one field: { "role": "<role>" } or { "role": null }.', "role");
+    }
+    const role = (raw as { role: unknown }).role;
+    if (role !== null && (typeof role !== "string" || !auth.roles.includes(role))) {
+      throw new HttpError(400, "validation_failed", `role must be one of: ${auth.roles.join(", ")}, or null.`, "role");
+    }
+    const r = await db.query(auth.setRoleSql, [id.value, role]);
+    const row = r.rows[0];
+    if (row === undefined) throw new HttpError(404, "not_found", `${auth.model} not found.`);
+    return send(res, 200, { id: row["id"], role: row["role"] });
+  }
+
   async function handleAuth(req: IncomingMessage, res: ServerResponse, path: string, method: string): Promise<number> {
     const auth = app.auth;
     if (auth === null) throw new HttpError(404, "not_found", "No endpoint matches this path.");
+    const roleRoute = /^\/auth\/users\/([^/]+)\/role$/.exec(path);
+    if (roleRoute !== null && auth.roles.length > 0) return setRole(req, res, method, roleRoute[1] ?? "");
     const known = AUTH_ROUTES.find((r) => r.path === path);
     if (known === undefined) throw new HttpError(404, "not_found", "No endpoint matches this path.");
     if (known.method !== method) {
@@ -348,7 +403,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       if (wait > 0) throw new HttpError(429, "too_many_requests", "Too many signups. Try again later.", undefined, { "Retry-After": String(wait) });
       signupByIp.hit(ip);
       const bodyValues = await body(req, auth.signup.body);
-      const r = await run(auth.signup.sql, values(auth.signup.values, new Map(), bodyValues, undefined), auth.model);
+      const r = await run(auth.signup.sql, values(auth.signup.values, new Map(), bodyValues, undefined, null), auth.model);
       const row = r.rows[0] ?? {};
       await startSession(res, String(row["id"]));
       return send(res, 201, pick(row, auth.publicKeys));
@@ -417,6 +472,20 @@ function send(res: ServerResponse, status: number, payload: unknown, headers: Re
   return status;
 }
 
+/**
+ * Give the admin role to existing accounts with these login emails. Accounts
+ * created later are not affected, so nobody can claim admin by signing up
+ * with a listed email. Returns the number of accounts changed.
+ */
+export async function grantAdmins(app: App, db: Db, emails: readonly string[]): Promise<number> {
+  const auth = app.auth;
+  if (auth === null || !auth.roles.includes("admin") || auth.grantAdminSql === "") return 0;
+  const list = emails.map((e) => e.trim().toLowerCase()).filter(Boolean);
+  if (list.length === 0) return 0;
+  const r = await db.query(auth.grantAdminSql, [list]);
+  return r.rowCount ?? 0;
+}
+
 /** Start the server. Configuration comes from environment variables. */
 export function startServer(app: App): void {
   const url = process.env["DATABASE_URL"];
@@ -440,6 +509,17 @@ export function startServer(app: App): void {
   server.headersTimeout = 10_000;
   const port = Number(process.env["PORT"] ?? "3000");
   const host = process.env["HOST"] ?? "127.0.0.1";
+  const adminEmails = (process.env["RIZO_ADMIN_EMAILS"] ?? "").split(",");
+  if (adminEmails.some((e) => e.trim() !== "")) {
+    if (app.auth === null || !app.auth.roles.includes("admin")) {
+      process.stderr.write("rizo: RIZO_ADMIN_EMAILS is set, but this app declares no roles. Ignoring it.\n");
+    } else {
+      grantAdmins(app, { query: (sql, vals) => pool.query(sql, vals) }, adminEmails).then(
+        (n) => process.stdout.write(`rizo: RIZO_ADMIN_EMAILS granted admin to ${n} existing account(s)\n`),
+        (e: unknown) => process.stderr.write(`rizo: could not apply RIZO_ADMIN_EMAILS: ${describeError(e)}\n`),
+      );
+    }
+  }
   server.listen(port, host, () => process.stdout.write(`rizo: listening on http://${host}:${port}\n`));
   const stop = (): void => {
     server.close(() => void pool.end());

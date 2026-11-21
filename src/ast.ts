@@ -31,13 +31,20 @@ export type ModifierKind = Modifier["kind"];
 
 export const MODIFIER_NAMES: readonly ModifierKind[] = ["unique", "optional", "private", "min", "max"];
 
-/** `auth User by email` */
+/** A role name as written, e.g. `admin`. */
+export interface RoleRef {
+  readonly name: string;
+  readonly span: Span;
+}
+
+/** `auth User by email` or `auth User by email roles admin, editor` */
 export interface AuthDecl {
   readonly span: Span;
   readonly model: string;
   readonly modelSpan: Span;
   readonly field: string;
   readonly fieldSpan: Span;
+  readonly roles: readonly RoleRef[];
 }
 
 export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
@@ -70,7 +77,10 @@ export interface ReturnType {
 export type Statement =
   | { readonly kind: "public"; readonly span: Span }
   | { readonly kind: "requiresLogin"; readonly span: Span }
-  | { readonly kind: "requiresOwner"; readonly span: Span; readonly field: string; readonly fieldSpan: Span }
+  /** `requires owner author` or `requires owner author or role admin` */
+  | { readonly kind: "requiresOwner"; readonly span: Span; readonly field: string; readonly fieldSpan: Span; readonly orRoles: readonly RoleRef[] }
+  /** `requires role admin` or `requires role admin, editor` (any of) */
+  | { readonly kind: "requiresRole"; readonly span: Span; readonly roles: readonly RoleRef[] }
   | { readonly kind: "return"; readonly span: Span; readonly query: Query };
 
 export const QUERY_ACTIONS = ["find", "list", "create", "update", "delete"] as const;

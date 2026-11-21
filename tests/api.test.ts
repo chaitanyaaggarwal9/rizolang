@@ -284,3 +284,68 @@ describe("links and private fields", () => {
     expect(firstError("model A {\n  b: B\n  bId: ID\n}\nmodel B {\n  x: Text\n}").code).toBe("RZ0312");
   });
 });
+
+describe("roles", () => {
+  const ROLES = MODELS.replace("auth User by email", "auth User by email roles admin, editor");
+
+  it("parses roles and role requirements", () => {
+    const { auth, apis } = compileOk(withApi(`api GET /drafts -> list Post.public {
+  requires login
+  requires role admin, editor
+  return db.Post.list(published = false)
+}
+api DELETE /posts/:id {
+  requires login
+  requires owner author or role admin
+  return db.Post.delete(id)
+}`, ROLES));
+    expect(auth?.roles).toEqual(["admin", "editor"]);
+    expect(apis[0]).toMatchObject({ roles: ["admin", "editor"], ownerBypassRoles: [] });
+    expect(apis[1]).toMatchObject({ roles: [], ownerBypassRoles: ["admin"], owner: { name: "author" } });
+  });
+
+  it("adds a hidden role column that only accepts declared roles", () => {
+    const { output } = compileOk(ROLES);
+    expect(output.sql).toContain(`"role" TEXT CHECK ("role" IN ('admin', 'editor'))`);
+    expect(output.typescript).toContain('readonly role: "admin" | "editor" | null;');
+    expect(output.typescript.split("export interface UserPublic")[1]?.split("}")[0]).not.toContain("role");
+    expect(output.typescript.split("export interface UserInput")[1]?.split("}")[0]).not.toContain("role");
+  });
+
+  it("lets admins delete owned records without requires owner", () => {
+    compileOk(withApi("api DELETE /posts/:id {\n  requires login\n  requires role admin\n  return db.Post.delete(id)\n}", ROLES));
+  });
+
+  it.each([
+    ["auth User by email roles editor", "must include admin"],
+    ["auth User by email roles admin, admin", "twice"],
+    ["auth User by email roles admin, Editor", "camelCase"],
+  ])("rejects invalid role declarations: %s", (line, hint) => {
+    const d = firstError(MODELS.replace("auth User by email", line));
+    expect(d.code).toBe("RZ0317");
+    expect(`${d.message} ${d.fix}`).toContain(hint);
+  });
+
+  it("rejects a role list with a missing name", () => {
+    expect(firstError(MODELS.replace("auth User by email", "auth User by email roles admin,")).code).toBe("RZ0219");
+  });
+
+  it("rejects a field named role when roles are declared", () => {
+    const src = ROLES.replace("  name: Text\n}", "  name: Text\n  role: Text\n}");
+    expect(firstError(src).code).toBe("RZ0317");
+  });
+
+  it.each([
+    ["api GET /drafts -> list Post.public {\n  requires login\n  requires role editr\n  return db.Post.list()\n}", ROLES, '"editor"'],
+    ["api GET /drafts -> list Post.public {\n  requires login\n  requires role admin\n  return db.Post.list()\n}", MODELS, "roles admin"],
+  ])("rejects unknown or undeclared roles (%#)", (api, models, fix) => {
+    const d = firstError(withApi(api, models));
+    expect(d.code).toBe("RZ0332");
+    expect(d.fix).toContain(fix);
+  });
+
+  it("requires login with requires role, and rejects public", () => {
+    expect(firstError(withApi("api GET /drafts -> list Post.public {\n  requires role admin\n  return db.Post.list()\n}", ROLES)).fix).toContain("requires login");
+    expect(firstError(withApi("api GET /drafts -> list Post.public {\n  public\n  requires role admin\n  return db.Post.list()\n}", ROLES)).code).toBe("RZ0318");
+  });
+});

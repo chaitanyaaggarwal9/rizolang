@@ -11,7 +11,8 @@ import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createRequestHandler } from "../runtime/server.ts";
+import { createRequestHandler, grantAdmins } from "../runtime/server.ts";
+import type { App } from "../runtime/types.ts";
 import { compile } from "../src/compiler.js";
 import { buildApp } from "../src/emit/routes.js";
 
@@ -19,6 +20,7 @@ const DATABASE_URL = process.env["RIZO_TEST_DATABASE_URL"];
 const schema = `rizo_e2e_${randomBytes(6).toString("hex")}`;
 
 let pool: pg.Pool;
+let app: App;
 let server: Server;
 let base: string;
 const logs: string[] = [];
@@ -69,7 +71,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     await admin.end();
     pool = new pg.Pool({ connectionString: DATABASE_URL, options: `-c search_path="${schema}",public` });
     await pool.query(result.output.sql);
-    const app = buildApp(result.apis, result.auth);
+    app = buildApp(result.apis, result.auth);
     const handler = createRequestHandler(app, {
       db: { query: (sql, values) => pool.query(sql, values) },
       log: (line) => logs.push(line),
@@ -196,6 +198,56 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
 
   it("never returns private or secret fields", async () => {
     expect((await call("GET", `/users/${aliceId}`)).body).toEqual({ id: aliceId, name: "Alice", bio: "hi" });
+  });
+
+  describe("roles", () => {
+    const db = () => ({ query: (sql: string, values: unknown[]) => pool.query(sql, values) });
+    let bobId: string;
+    let bobPost: string;
+
+    it("never accepts a role at signup and never returns one", async () => {
+      const r = await call("POST", "/auth/signup", { body: { email: "eve@example.com", password: "long enough password", name: "Eve", role: "admin" } });
+      expect(r).toMatchObject({ status: 400, body: { error: { field: "role" } } });
+      expect(Object.keys((await call("GET", "/auth/me", { cookie: bob })).body as object)).not.toContain("role");
+    });
+
+    it("grants admin from RIZO_ADMIN_EMAILS only to accounts that already exist", async () => {
+      expect(await grantAdmins(app, db(), [" ALICE@example.com ", "late@example.com"])).toBe(1);
+      const late = await call("POST", "/auth/signup", { body: { email: "late@example.com", password: "long enough password", name: "Late" } });
+      expect(late.status).toBe(201);
+      expect((await call("GET", "/admin/posts", { cookie: late.cookie ?? "" })).status).toBe(403);
+    });
+
+    it("lets only the listed roles call role endpoints", async () => {
+      expect((await call("GET", "/admin/posts", { cookie: bob })).status).toBe(403);
+      expect((await call("GET", "/admin/posts")).status).toBe(401);
+      const all = await call("GET", "/admin/posts", { cookie: alice });
+      expect(all.status).toBe(200);
+      expect((all.body as { published: boolean }[]).some((p) => !p.published)).toBe(true);
+    });
+
+    it("lets an admin delete posts they do not own, but not other users", async () => {
+      bobId = ((await call("GET", "/auth/me", { cookie: bob })).body as { id: string }).id;
+      bobPost = ((await call("POST", "/posts", { cookie: bob, body: { title: "Bob's", body: "b", published: true } })).body as { id: string }).id;
+      const alicePost = ((await call("POST", "/posts", { cookie: alice, body: { title: "Alice's", body: "a", published: true } })).body as { id: string }).id;
+      expect((await call("DELETE", `/posts/${alicePost}`, { cookie: bob })).status).toBe(404);
+      expect((await call("DELETE", `/posts/${bobPost}`, { cookie: alice })).status).toBe(204);
+    });
+
+    it("lets only admins assign roles, never to themselves", async () => {
+      const path = `/auth/users/${bobId}/role`;
+      expect((await call("PUT", path, { cookie: bob, body: { role: "editor" } })).status).toBe(403);
+      expect((await call("PUT", `/auth/users/${aliceId}/role`, { cookie: alice, body: { role: null } })).status).toBe(403);
+      expect((await call("PUT", path, { cookie: alice, body: { role: "superuser" } })).status).toBe(400);
+      expect((await call("PUT", path, { cookie: alice, body: { role: "editor", extra: 1 } })).status).toBe(400);
+      expect((await call("PUT", "/auth/users/00000000-0000-0000-0000-000000000000/role", { cookie: alice, body: { role: "editor" } })).status).toBe(404);
+      const ok = await call("PUT", path, { cookie: alice, body: { role: "editor" } });
+      expect(ok).toMatchObject({ status: 200, body: { id: bobId, role: "editor" } });
+      // The new role applies to Bob's existing session immediately.
+      expect((await call("GET", "/admin/posts", { cookie: bob })).status).toBe(200);
+      expect((await call("PUT", path, { cookie: alice, body: { role: null } })).body).toMatchObject({ role: null });
+      expect((await call("GET", "/admin/posts", { cookie: bob })).status).toBe(403);
+    });
   });
 
   it("rejects cross-site writes, wrong content types, oversized and unexpected bodies", async () => {

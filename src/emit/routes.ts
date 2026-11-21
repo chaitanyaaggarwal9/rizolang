@@ -3,7 +3,7 @@ import { type ResolvedField, type ResolvedModel, isHidden } from "../checker.js"
 import { FIELD_TYPES } from "../types.js";
 import { VERSION } from "../version.js";
 import type { App, AuthSpec, FieldSpec, PathPart, Route, ValueSource } from "../../runtime/types.ts";
-import { q } from "./sql.js";
+import { q, roleLiteral } from "./sql.js";
 
 /**
  * Emits `routes.ts`: every endpoint as plain data, with its SQL fixed at
@@ -165,7 +165,12 @@ function route(api: ResolvedApi): Route {
 
   const byId = (idParam: string): string => {
     let where = `${q("id")} = ${p.add({ from: "path", name: idParam })}`;
-    if (api.owner !== undefined) where += ` AND ${q(api.owner.column)} = ${p.add({ from: "me" })}`;
+    if (api.owner !== undefined) {
+      const owner = `${q(api.owner.column)} = ${p.add({ from: "me" })}`;
+      where += api.ownerBypassRoles.length > 0
+        ? ` AND (${owner} OR ${p.add({ from: "hasRole", roles: api.ownerBypassRoles })})`
+        : ` AND ${owner}`;
+    }
     return where;
   };
 
@@ -224,6 +229,7 @@ function route(api: ResolvedApi): Route {
     pattern: api.path,
     path,
     access: api.access,
+    roles: api.roles,
     body,
     sql,
     values: p.values,
@@ -254,5 +260,11 @@ function authSpec(auth: ResolvedAuth): AuthSpec {
     loginSql: `SELECT ${q("id")}, ${q(auth.passwordField.column)} AS "hash" FROM ${table} WHERE ${q(auth.loginField.column)} = $1`,
     meSql: `SELECT ${select.sql} FROM ${table} WHERE ${q("id")} = $1`,
     publicKeys: select.keys,
+    roles: auth.roles,
+    roleSql: auth.roles.length > 0 ? `SELECT ${q("role")} FROM ${table} WHERE ${q("id")} = $1` : "",
+    setRoleSql: auth.roles.length > 0 ? `UPDATE ${table} SET ${q("role")} = $2 WHERE ${q("id")} = $1 RETURNING ${q("id")}, ${q("role")}` : "",
+    grantAdminSql: auth.roles.length > 0
+      ? `UPDATE ${table} SET ${q("role")} = ${roleLiteral("admin")} WHERE ${q(auth.loginField.column)} = ANY($1) AND ${q("role")} IS DISTINCT FROM ${roleLiteral("admin")}`
+      : "",
   };
 }

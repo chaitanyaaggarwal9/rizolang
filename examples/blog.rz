@@ -1,6 +1,6 @@
 // A small blog: people sign up, write posts and comment.
 
-auth User by email
+auth User by email roles admin, editor
 
 model User {
   email: Email unique private
@@ -51,10 +51,18 @@ api PATCH /posts/:id -> Post.public {
   return db.Post.update(id, body)
 }
 
+// Authors delete their own posts; admins can delete any post.
 api DELETE /posts/:id {
   requires login
-  requires owner author
+  requires owner author or role admin
   return db.Post.delete(id)
+}
+
+// Admins and editors see every post, including unpublished ones.
+api GET /admin/posts -> list Post.public {
+  requires login
+  requires role admin, editor
+  return db.Post.list(order title)
 }
 
 // Comments on a post.

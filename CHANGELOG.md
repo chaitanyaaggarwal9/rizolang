@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-21
+
+The first npm release of Milestone 3. v0.3.0 was released on GitHub only; 0.3.1 has the same language and compiler.
+
+### Security
+
+- Releases are now **staged** on npm. A new version goes live only after the maintainer approves it with two-factor authentication.
+
 ## [0.3.0] - 2026-11-21
 
 Milestone 3: roles, pagination, account management and migrations.
@@ -74,7 +82,8 @@ Milestone 3: roles, pagination, account management and migrations.
 - Language spec (`docs/SPEC.md`) and compact spec for AI system prompts (`docs/SPEC-COMPACT.md`).
 - CI on Node 22, 24 and 26, plus a PostgreSQL schema check.
 
-[Unreleased]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.1.0

@@ -14,7 +14,8 @@ import pg from "pg";
 import { hashPassword, dummyHash, verifyPassword } from "./password.ts";
 import { RateLimiter } from "./ratelimit.ts";
 import { SESSION_SECONDS, SQL, clearedCookie, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
-import type { App, FieldKind, FieldSpec, Route, ValueSource } from "./types.ts";
+import { PAGE_HEADERS, asset, renderMessage, renderPage } from "./pages.ts";
+import type { App, FieldKind, FieldSpec, PageRoute, PathPart, Route, ValueSource } from "./types.ts";
 import { validateBody, validatePathParam, validateValue } from "./validate.ts";
 
 export interface QueryResult {
@@ -156,6 +157,14 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       if (auth !== null && url.pathname.startsWith("/auth/")) {
         pattern = url.pathname;
         status = await handleAuth(req, res, url.pathname, method);
+      } else if (method === "GET" && url.pathname.startsWith("/_rizo/")) {
+        pattern = url.pathname;
+        status = serveAsset(res, url.pathname);
+      } else if (method === "GET" && pageFor(url.pathname) !== undefined) {
+        const found = pageFor(url.pathname);
+        if (found === undefined) throw new Error("unreachable");
+        pattern = found.page.pattern;
+        status = await servePage(req, res, found.page, found.parts);
       } else {
         const { route, params } = match(method, url.pathname);
         pattern = route.pattern;
@@ -181,13 +190,92 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
 
   // -------------------------------------------------------------- routing
 
-  function match(method: string, pathname: string): Matched {
-    let parts: string[];
+  /** Split a URL path into decoded segments. */
+  function splitPath(pathname: string): string[] {
     try {
-      parts = pathname === "/" ? [] : pathname.slice(1).split("/").map(decodeURIComponent);
+      return pathname === "/" ? [] : pathname.slice(1).split("/").map(decodeURIComponent);
     } catch {
       throw new HttpError(400, "bad_path", "The URL path is not valid.");
     }
+  }
+
+  /** How well a route path matches: the number of static segments, or undefined. */
+  function score(path: readonly PathPart[], parts: readonly string[]): number | undefined {
+    if (path.length !== parts.length) return undefined;
+    let n = 0;
+    for (let i = 0; i < path.length; i++) {
+      const p = path[i];
+      const value = parts[i] ?? "";
+      if (p === undefined) return undefined;
+      if ("static" in p) {
+        if (p.static !== value) return undefined;
+        n++;
+      } else if (value === "") {
+        return undefined;
+      }
+    }
+    return n;
+  }
+
+  /** The page for a GET request, unless a GET endpoint matches at least as well. */
+  function pageFor(pathname: string): { page: PageRoute; parts: string[] } | undefined {
+    if (app.pages.length === 0) return undefined;
+    const parts = splitPath(pathname);
+    let best: { page: PageRoute; score: number } | undefined;
+    for (const page of app.pages) {
+      const s = score(page.path, parts);
+      if (s !== undefined && (best === undefined || s > best.score)) best = { page, score: s };
+    }
+    if (best === undefined) return undefined;
+    for (const route of app.routes) {
+      const s = route.method === "GET" ? score(route.path, parts) : undefined;
+      if (s !== undefined && s >= best.score) return undefined;
+    }
+    return { page: best.page, parts };
+  }
+
+  function serveAsset(res: ServerResponse, pathname: string): number {
+    const a = asset(pathname);
+    if (a === undefined) throw new HttpError(404, "not_found", "No file matches this path.");
+    res.writeHead(200, {
+      "Content-Type": a.type,
+      "Cache-Control": "public, max-age=3600",
+      "X-Content-Type-Options": "nosniff",
+      "Cross-Origin-Resource-Policy": "same-origin",
+    });
+    res.end(a.body);
+    return 200;
+  }
+
+  async function servePage(req: IncomingMessage, res: ServerResponse, page: PageRoute, parts: readonly string[]): Promise<number> {
+    const html = (status: number, body: string): number => {
+      res.writeHead(status, PAGE_HEADERS);
+      res.end(body);
+      return status;
+    };
+    const params: Record<string, string> = {};
+    for (let i = 0; i < page.path.length; i++) {
+      const p = page.path[i];
+      if (p === undefined || !("param" in p)) continue;
+      const r = validatePathParam(p, parts[i] ?? "");
+      if ("error" in r) return html(404, renderMessage("Page not found", "There is no page at this address."));
+      params[p.param] = String(r.value);
+    }
+    const me = await currentUser(req);
+    if (page.access === "login" && me === undefined) {
+      return html(401, renderMessage("Please log in", "You need to log in to see this page."));
+    }
+    if (page.roles.length > 0) {
+      const role = me === undefined ? null : await roleOf(me);
+      if (role === null || !page.roles.includes(role)) {
+        return html(403, renderMessage("Not allowed", "You don't have permission to see this page."));
+      }
+    }
+    return html(200, renderPage(page, params, me !== undefined));
+  }
+
+  function match(method: string, pathname: string): Matched {
+    const parts = splitPath(pathname);
     let best: { route: Route; score: number } | undefined;
     const allow = new Set<string>();
     for (const route of app.routes) {

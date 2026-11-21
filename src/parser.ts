@@ -6,6 +6,9 @@ import {
   type FieldDecl,
   type HttpMethod,
   type ModelDecl,
+  type PageDecl,
+  type PageStatement,
+  type TextRef,
   type Modifier,
   type Program,
   type Query,
@@ -24,7 +27,9 @@ export type ParseResult =
   | { readonly ok: false; readonly diagnostic: Diagnostic };
 
 /** Block keywords planned for later milestones. */
-export const FUTURE_BLOCKS: readonly string[] = ["page", "component", "enum", "import", "type", "test"];
+export const FUTURE_BLOCKS: readonly string[] = ["component", "enum", "import", "type", "test"];
+
+const PAGE_WORDS: readonly string[] = ["public", "requires", "title", "text", "link", "show"];
 
 /** Words from other languages that people write instead of `model`. */
 const MODEL_LOOKALIKES: readonly string[] = ["Model", "MODEL", "class", "struct", "table", "interface", "entity", "schema"];
@@ -36,6 +41,7 @@ const STATEMENT_WORDS: readonly string[] = ["public", "requires", "return"];
 /** Advice for a stray token after a field type, keyed by token kind. */
 const FIELD_TOKEN_FIXES: Partial<Record<TokenKind, string>> = {
   comma: "Rizo Lang does not use commas between fields. Put each field on its own line.",
+  string: "Quoted text is only allowed in page blocks.",
   lparen: "Write limits as modifiers, not arguments: `name: Text max 100`.",
   equals: "Default values are not supported. Remove the `=` and the value after it.",
 };
@@ -53,6 +59,7 @@ function describe(t: Token): string {
     case "eof": return "the end of the file";
     case "int": return `the number ${t.text}`;
     case "path": return `the path ${t.text}`;
+    case "string": return `the text "${t.text.length > 30 ? `${t.text.slice(0, 30)}…` : t.text}"`;
     default: return `"${t.text}"`;
   }
 }
@@ -81,6 +88,7 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
     const models: ModelDecl[] = [];
     const auths: AuthDecl[] = [];
     const apis: ApiDecl[] = [];
+    const pages: PageDecl[] = [];
     while (peek().kind !== "eof") {
       const t = peek();
       if (isWord(t, "model")) {
@@ -89,6 +97,8 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
         auths.push(parseAuth());
       } else if (isWord(t, "api")) {
         apis.push(parseApi());
+      } else if (isWord(t, "page")) {
+        pages.push(parsePage());
       } else if (t.kind === "ident" && FUTURE_BLOCKS.includes(t.text)) {
         fail("RZ0211", t.span, `"${t.text}" blocks are not available yet.`,
           "This version of Rizo Lang supports model, auth and api blocks. Remove this block for now.");
@@ -99,11 +109,11 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
         fail("RZ0201", t.span, `Expected "api" but found "${t.text}".`,
           "Start each endpoint with the lowercase keyword api: `api GET /posts -> list Post.public { ... }`.");
       } else {
-        fail("RZ0201", t.span, `Expected "model", "auth" or "api" but found ${describe(t)}.`,
-          "Every top-level block starts with model, auth or api.");
+        fail("RZ0201", t.span, `Expected "model", "auth", "api" or "page" but found ${describe(t)}.`,
+          t.kind === "string" ? "Quoted text belongs inside a page block, for example `title \"Posts\"`." : "Every top-level block starts with model, auth, api or page.");
       }
     }
-    return { models, auths, apis };
+    return { models, auths, apis, pages };
   }
 
   // ---------------------------------------------------------------- models
@@ -151,6 +161,7 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
       fail("RZ0210", openSpan, `${what} is missing its closing "}".`, `Add } on its own line after ${after}.`);
     }
     const startsBlock = (isWord(t, "model") && peek(1).kind === "ident") ||
+      (isWord(t, "page") && peek(1).kind === "path") ||
       (isWord(t, "api") && peek(1).kind === "ident" && peek(2).kind === "path") ||
       (isWord(t, "auth") && peek(1).kind === "ident" && isWord(peek(2), "by"));
     if (startsBlock) {
@@ -252,6 +263,107 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
       next();
     }
     return roles;
+  }
+
+  // ------------------------------------------------------------------ page
+
+  function parsePage(): PageDecl {
+    const kw = next(); // `page`
+    const pathTok = peek();
+    if (pathTok.kind !== "path") {
+      fail("RZ0214", pathTok.span, `Expected a path starting with "/" after "page" but found ${describe(pathTok)}.`,
+        "Write the page's path, for example `page /posts {`.");
+    }
+    next();
+    const brace = peek();
+    if (brace.kind !== "lbrace") {
+      fail("RZ0203", brace.span, `Expected "{" after the page path but found ${describe(brace)}.`,
+        `Open the page body with a brace: \`page ${pathTok.text} {\`.`);
+    }
+    next();
+    const statements: PageStatement[] = [];
+    let lastLine = -1;
+    for (;;) {
+      const t = peek();
+      if (t.kind === "rbrace") break;
+      checkUnclosed(t, brace.span, `Page "${pathTok.text}"`, "its last line");
+      if (t.span.line === lastLine) {
+        fail("RZ0209", t.span, `${describe(t)} must start on a new line.`, "Put each statement on its own line.");
+      }
+      statements.push(parsePageStatement());
+      lastLine = peek(-1).span.line;
+      const after = peek();
+      if (after.kind !== "rbrace" && after.kind !== "eof" && after.span.line === lastLine) {
+        fail("RZ0212", after.span, `Unexpected ${describe(after)} at the end of the line.`, "Put each statement on its own line.");
+      }
+    }
+    const end = next();
+    return { span: kw.span, path: pathTok.text, pathSpan: pathTok.span, statements, endSpan: end.span };
+  }
+
+  function parseText(after: Token, example: string): TextRef {
+    const t = peek();
+    if (t.kind !== "string" || t.span.line !== after.span.line) {
+      fail("RZ0221", t.span.line === after.span.line ? t.span : after.span,
+        `Expected quoted text after "${after.text}".`, `Write the text in double quotes: \`${example}\`.`);
+    }
+    next();
+    return { text: t.text, span: t.span };
+  }
+
+  function parsePageStatement(): PageStatement {
+    const t = peek();
+    if (t.kind !== "ident" || !PAGE_WORDS.includes(t.text)) {
+      const guess = t.kind === "ident" ? didYouMean(t.text, PAGE_WORDS) : undefined;
+      fail("RZ0220", t.span, `Unexpected ${describe(t)} in a page block.`,
+        guess !== undefined
+          ? `Did you mean "${guess}"? A page contains: public or requires login, title, text, link and show lines.`
+          : "A page contains: public or requires login, title \"...\", text \"...\", link \"...\" /path, and show GET /api/path.");
+    }
+    next();
+    switch (t.text) {
+      case "public":
+        return { kind: "public", span: t.span };
+      case "requires": {
+        const what = peek();
+        if (isWord(what, "login") && what.span.line === t.span.line) {
+          next();
+          return { kind: "requiresLogin", span: t.span };
+        }
+        if (isWord(what, "role") && what.span.line === t.span.line) {
+          next();
+          return { kind: "requiresRole", span: t.span, roles: parseRoleList(what, "requires role admin") };
+        }
+        return fail("RZ0220", what.span.line === t.span.line ? what.span : t.span,
+          `Expected "login" or "role <name>" after "requires".`, "Write `requires login` or `requires role admin`. Pages have no `requires owner`; the data's endpoint decides that.");
+      }
+      case "title":
+        return { kind: "title", span: t.span, text: parseText(t, 'title "Latest posts"') };
+      case "text":
+        return { kind: "text", span: t.span, text: parseText(t, 'text "Welcome to my blog."') };
+      case "link": {
+        const label = parseText(t, 'link "Write a post" /posts/new');
+        const p = peek();
+        if (p.kind !== "path" || p.span.line !== t.span.line) {
+          fail("RZ0214", p.span.line === t.span.line ? p.span : t.span, "Expected a page path after the link text.",
+            `Write the page to link to: \`link "${label.text}" /posts\`.`);
+        }
+        next();
+        return { kind: "link", span: t.span, label, path: p.text, pathSpan: p.span };
+      }
+      default: {
+        // show
+        const m = peek();
+        const p = peek(1);
+        if (m.kind !== "ident" || m.span.line !== t.span.line || p.kind !== "path" || p.span.line !== t.span.line) {
+          fail("RZ0220", m.span.line === t.span.line ? m.span : t.span, `Expected "GET /api/path" after "show".`,
+            "Name the endpoint whose data the page shows, for example `show GET /api/posts`.");
+        }
+        next();
+        next();
+        return { kind: "show", span: t.span, method: m.text, methodSpan: m.span, path: p.text, pathSpan: p.span };
+      }
+    }
   }
 
   // ------------------------------------------------------------------- api

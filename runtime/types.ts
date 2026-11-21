@@ -105,7 +105,41 @@ export interface AuthSpec {
   };
 }
 
+/** One field of a shown record, as the browser displays it. */
+export interface FieldViewSpec {
+  readonly key: string;
+  readonly label: string;
+  readonly type: FieldKind;
+}
+
+/** What a page shows, in order. Plain data: pages never contain markup or code. */
+export type PageItemSpec =
+  | { readonly kind: "text"; readonly text: string }
+  /** `path` may contain :params of the page, filled in by the browser. */
+  | { readonly kind: "link"; readonly label: string; readonly path: string }
+  | {
+      readonly kind: "show";
+      /** Endpoint path pattern, e.g. "/api/posts/:id"; :params come from the page's own parameters. */
+      readonly endpoint: string;
+      readonly mode: "list" | "one";
+      readonly model: string;
+      readonly fields: readonly FieldViewSpec[];
+      /** For lists: link each record to this page, filling `param` with the record's id. */
+      readonly detail: { readonly path: string; readonly param: string } | null;
+    };
+
+export interface PageRoute {
+  /** Original path, used in logs. */
+  readonly pattern: string;
+  readonly path: readonly PathPart[];
+  readonly access: "public" | "login";
+  readonly roles: readonly string[];
+  readonly title: string;
+  readonly items: readonly PageItemSpec[];
+}
+
 export interface App {
   readonly routes: readonly Route[];
   readonly auth: AuthSpec | null;
+  readonly pages: readonly PageRoute[];
 }

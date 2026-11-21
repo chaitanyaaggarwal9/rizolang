@@ -31,6 +31,7 @@ Rizo Lang is a secure, simple, full-stack web language for the AI era. Source fi
 
 - `src/lexer.ts` → `src/parser.ts` (builds an AST, see `src/ast.ts`) → `src/checker.ts` (models) and `src/check-api.ts` (auth and api) → `src/emit/{sql,typescript,routes}.ts`, orchestrated by `src/compiler.ts`.
 - `src/schema.ts` describes the database schema. `src/emit/sql.ts` renders it, and `src/migrations.ts` compares it with `migrations/rizo-schema.json` to plan migrations. Anything that would drop data must be listed in `dataLoss`, so that the CLI refuses it without `--allow-data-loss`.
+- `src/check-page.ts` checks `page` blocks. `runtime/pages.ts` serves them, and `runtime/client/rizo-client.js` renders them in the browser. That file is plain JavaScript with JSDoc types, checked by `tsconfig.client.json`. It must never use innerHTML, outerHTML, insertAdjacentHTML, document.write or eval: elements are created only through `el()`, and `tests/client.test.ts` enforces this.
 - `runtime/` is copied verbatim into every generated app (`dist/runtime/`). It must stay small, readable, free of dependencies other than `pg`, and use erasable TypeScript only (Node runs it with type stripping). The runtime never builds SQL: all SQL comes from `routes.ts`, generated at compile time.
 - `src/types.ts` is the single source of truth for field types, their SQL/TS mappings and allowed modifiers.
 - `src/diagnostics.ts` holds the error format. Every diagnostic has a code, a span, a message and a fix.
@@ -66,4 +67,9 @@ Milestones 1–3 are complete (v0.3.0): models, `auth`, `api` blocks, links, `pr
 
 Releases are published to npm by `.github/workflows/publish.yml` (see CONTRIBUTING.md, "Releasing").
 
-Do not implement frontend `page` blocks (Milestone 4) until the maintainer starts it.
+Milestone 4 (pages) is in progress. Maintainer decisions:
+- Pages are generated from endpoints (`show GET /api/...`); there are no HTML templates.
+- Quoted text is allowed only in pages.
+- The compiler emits browser JavaScript with JSDoc types (no build step, no new dependencies).
+- Pages are served by the same Node server as the API.
+- Part 1 (read-only pages) is done. Part 2 adds forms, delete buttons, and built-in login and signup pages.

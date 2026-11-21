@@ -24,59 +24,82 @@ model Comment {
 }
 
 // Anyone can read published posts.
-api GET /posts -> list Post.public {
+api GET /api/posts -> list Post.public {
   public
   return db.Post.list(published = true, order title, limit 20)
 }
 
-api GET /posts/:id -> Post.public {
+api GET /api/posts/:id -> Post.public {
   public
   return db.Post.find(id)
 }
 
 // Logged-in users manage their own posts.
-api GET /my/posts -> list Post.public {
+api GET /api/my/posts -> list Post.public {
   requires login
   return db.Post.list(author = me)
 }
 
-api POST /posts -> Post.public {
+api POST /api/posts -> Post.public {
   requires login
   return db.Post.create(body, author = me)
 }
 
-api PATCH /posts/:id -> Post.public {
+api PATCH /api/posts/:id -> Post.public {
   requires login
   requires owner author
   return db.Post.update(id, body)
 }
 
 // Authors delete their own posts; admins can delete any post.
-api DELETE /posts/:id {
+api DELETE /api/posts/:id {
   requires login
   requires owner author or role admin
   return db.Post.delete(id)
 }
 
 // Admins and editors see every post, including unpublished ones.
-api GET /admin/posts -> list Post.public {
+api GET /api/admin/posts -> list Post.public {
   requires login
   requires role admin, editor
   return db.Post.list(order title)
 }
 
 // Comments on a post.
-api GET /posts/:postId/comments -> list Comment.public {
+api GET /api/posts/:postId/comments -> list Comment.public {
   public
   return db.Comment.list(post = postId, limit 100)
 }
 
-api POST /comments -> Comment.public {
+api POST /api/comments -> Comment.public {
   requires login
   return db.Comment.create(body, author = me)
 }
 
-api GET /users/:id -> User.public {
+api GET /api/users/:id -> User.public {
   public
   return db.User.find(id)
+}
+
+// Pages: generated from the endpoints above. No HTML to write, no way to inject any.
+page / {
+  public
+  title "Rizo Blog"
+  text "Stories from our writers."
+  show GET /api/posts
+}
+
+page /posts/:id {
+  public
+  title "Post"
+  show GET /api/posts/:id
+  link "Back to all posts" /
+}
+
+page /admin {
+  requires login
+  requires role admin, editor
+  title "All posts"
+  text "Every post, including drafts."
+  show GET /api/admin/posts
 }

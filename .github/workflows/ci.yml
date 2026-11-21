@@ -124,9 +124,14 @@ jobs:
         run: |
           cd examples/dist
           node server.ts > server.log 2>&1 &
-          for i in $(seq 1 30); do curl -sf http://127.0.0.1:3999/posts > /dev/null && break; sleep 0.5; done
-          test "$(curl -s http://127.0.0.1:3999/posts)" = '{"items":[],"next":null}'
-          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:3999/posts?limit=0')" = "400"
-          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3999/posts -H 'Content-Type: application/json' -d '{}')" = "401"
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:3999/api/posts > /dev/null && break; sleep 0.5; done
+          test "$(curl -s http://127.0.0.1:3999/api/posts)" = '{"items":[],"next":null}'
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:3999/api/posts?limit=0')" = "400"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3999/api/posts -H 'Content-Type: application/json' -d '{}')" = "401"
+          curl -sD headers.txt http://127.0.0.1:3999/ -o page.html
+          grep -qi "content-security-policy: default-src 'none'; script-src 'self'" headers.txt
+          grep -q '<script type="module" src="/_rizo/client.js">' page.html
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3999/_rizo/client.js)" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3999/admin)" = "401"
           kill %1
           cat server.log

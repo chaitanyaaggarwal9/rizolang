@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Milestone 4, part 1: `page` blocks.
+  - Pages have `public` or `requires login` (with optional `requires role`), `title "..."`, `text "..."`, `link "..." /path` and `show GET /api/...`.
+  - Lists have "Load more", single records are shown as fields, and lists link automatically to the page that shows one record.
+  - The generated server serves pages with a strict Content-Security-Policy. The browser runtime (`/_rizo/client.js`) never uses `innerHTML`.
+- Quoted text, allowed only in pages.
+- New errors RZ0103, RZ0220, RZ0221 and RZ0333–RZ0337.
+
+### Changed
+
+- The example app's endpoints moved under `/api`, the convention when a file has pages.
+
 ## [0.3.1] - 2026-11-21
 
 The first npm release of Milestone 3. v0.3.0 was released on GitHub only; 0.3.1 has the same language and compiler.

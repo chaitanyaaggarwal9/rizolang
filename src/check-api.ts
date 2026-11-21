@@ -653,39 +653,57 @@ export function checkApis(
   }
 
   function checkPath(api: ApiDecl): PathSegment[] | undefined {
-    const bad = (message: string, fix: string): undefined => {
-      err("RZ0322", api.pathSpan, message, fix);
-      return undefined;
-    };
-    const p = api.path;
-    if (p === "/") return [];
-    if (p.endsWith("/")) return bad(`Path "${p}" ends with "/".`, `Remove the trailing slash: \`${p.replace(/\/+$/, "")}\`.`);
-    const segments: PathSegment[] = [];
-    const seen = new Set<string>();
-    for (const raw of p.slice(1).split("/")) {
-      if (raw === "") return bad(`Path "${p}" contains an empty segment ("//").`, "Remove the extra slash.");
-      if (raw.startsWith(":")) {
-        const pname = raw.slice(1);
-        if (!/^[a-z][A-Za-z0-9]*$/.test(pname)) {
-          return bad(`Path parameter "${raw}" must be a camelCase name.`, "Write parameters like `:id` or `:userId`.");
-        }
-        if (RESERVED_PARAM_NAMES.includes(pname)) {
-          return bad(`"${pname}" is reserved and cannot be a path parameter.`, "Choose another name, such as `:userId`.");
-        }
-        if (seen.has(pname)) return bad(`Path parameter ":${pname}" appears twice in "${p}".`, "Give each parameter a different name.");
-        seen.add(pname);
-        segments.push({ kind: "param", name: pname });
-      } else {
-        if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(raw)) {
-          return bad(`Path segment "${raw}" is not allowed.`,
-            `Use lowercase letters, digits and single hyphens, for example \`${raw.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "posts"}\`.`);
-        }
-        segments.push({ kind: "static", value: raw });
-      }
-    }
-    if (segments[0]?.kind === "static" && segments[0].value === "auth") {
-      return bad(`Paths under /auth are reserved for login and signup.`, "Choose a different first path segment.");
-    }
-    return segments;
+    return parseRoutePath(api.path, api.pathSpan, err);
   }
+
+}
+
+/** Reserved first path segments: login endpoints and the page runtime's files. */
+const RESERVED_SEGMENTS: readonly string[] = ["auth", "_rizo"];
+
+/**
+ * Validate a route path (for endpoints and pages) and split it into segments.
+ * Reports RZ0322 and returns undefined when the path is not allowed.
+ */
+export function parseRoutePath(p: string, span: Span, err: Err): PathSegment[] | undefined {
+  const bad = (message: string, fix: string): undefined => {
+    err("RZ0322", span, message, fix);
+    return undefined;
+  };
+  if (p === "/") return [];
+  if (p.endsWith("/")) return bad(`Path "${p}" ends with "/".`, `Remove the trailing slash: \`${p.replace(/\/+$/, "")}\`.`);
+  const segments: PathSegment[] = [];
+  const seen = new Set<string>();
+  for (const raw of p.slice(1).split("/")) {
+    if (raw === "") return bad(`Path "${p}" contains an empty segment ("//").`, "Remove the extra slash.");
+    if (raw.startsWith(":")) {
+      const pname = raw.slice(1);
+      if (!/^[a-z][A-Za-z0-9]*$/.test(pname)) {
+        return bad(`Path parameter "${raw}" must be a camelCase name.`, "Write parameters like `:id` or `:userId`.");
+      }
+      if (RESERVED_PARAM_NAMES.includes(pname)) {
+        return bad(`"${pname}" is reserved and cannot be a path parameter.`, "Choose another name, such as `:userId`.");
+      }
+      if (seen.has(pname)) return bad(`Path parameter ":${pname}" appears twice in "${p}".`, "Give each parameter a different name.");
+      seen.add(pname);
+      segments.push({ kind: "param", name: pname });
+    } else {
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(raw)) {
+        return bad(`Path segment "${raw}" is not allowed.`,
+          `Use lowercase letters, digits and single hyphens, for example \`${raw.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "posts"}\`.`);
+      }
+      segments.push({ kind: "static", value: raw });
+    }
+  }
+  const first = segments[0];
+  if (first?.kind === "static" && RESERVED_SEGMENTS.includes(first.value)) {
+    return bad(`Paths under /${first.value} are reserved${first.value === "auth" ? " for login and signup" : " for the page runtime"}.`,
+      "Choose a different first path segment.");
+  }
+  return segments;
+}
+
+/** The shape of a path for comparisons: parameters become ":". */
+export function pathShape(segments: readonly PathSegment[]): string {
+  return `/${segments.map((s) => (s.kind === "param" ? ":" : s.value)).join("/")}`;
 }

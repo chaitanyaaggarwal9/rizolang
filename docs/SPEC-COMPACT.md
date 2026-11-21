@@ -1,6 +1,6 @@
-# Rizo Lang (compact spec, v0.3)
+# Rizo Lang (compact spec, v0.4)
 
-You are writing Rizo Lang (`.rz` files). Follow these rules exactly. A file contains only `model` blocks, at most one `auth` line, and `api` blocks. Never write SQL, TypeScript or `page` blocks in `.rz` files.
+You are writing Rizo Lang (`.rz` files). Follow these rules exactly. A file contains `model` blocks, at most one `auth` line, `api` blocks and `page` blocks. Never write SQL, HTML or JavaScript in `.rz` files.
 
 ## Example
 
@@ -111,6 +111,24 @@ api METHOD /path/:param -> Model.public {
 - A link to the auth model must be set with `= me` in create, and is never taken from body.
 - You cannot create, update or delete the auth model through `api`.
 
+## page
+
+```rizo
+page /posts/:id {
+  public                       // or: requires login (then optional: requires role admin)
+  title "A post"
+  text "Any paragraph."
+  link "Log in" /login
+  show GET /api/posts/:id
+}
+```
+
+- Pages are generated from endpoints. Never write HTML. Quoted text is only allowed in pages: one line, at most 200 characters.
+- Put endpoints under `/api`. A page can't share a path with an endpoint. `/login` and `/signup` are reserved.
+- `show` takes one GET endpoint from the file. Page `:params` fill the endpoint's params by name, and every page param must be used.
+- A page must be at least as strict as what it shows: use `requires login` if the endpoint does.
+- Lists link to a page that shows one record of the same model.
+
 ## Migrations
 
 `rizolang build` writes `migrations/NNNN_*.sql` when models change. Removing a model or field, changing a field's type, or removing a role is refused (RZ0904). Never rename a field; add a new one instead. Apply migrations with `node migrate.ts`.
@@ -150,7 +168,7 @@ In api blocks:
 
 ## Checklist before answering
 
-1. Only `model`, `auth` and `api` blocks, with one item per line.
+1. Only `model`, `auth`, `api` and `page` blocks, with one item per line.
 2. Every type is Text, Number, Bool, Email, Password, Date, ID or a model name.
 3. Model names are PascalCase, field names are camelCase, and no field is named `id`.
 4. Every endpoint has `public` or `requires login`, a matching method and one `return` line.

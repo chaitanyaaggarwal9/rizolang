@@ -13,13 +13,14 @@ import { type IncomingMessage, type ServerResponse, createServer } from "node:ht
 import pg from "pg";
 import { BusyError, hashPassword, dummyHash, verifyPassword } from "./password.ts";
 import { Audit, DEFAULT_AUDIT_RETENTION_DAYS } from "./audit.ts";
+import { type Keys, decryptValue, encryptValue, parseKeys } from "./encryption.ts";
 import { EMAIL_SQL, type Mailer, MESSAGES, RESET_SECONDS, type TokenPurpose, VERIFY_SECONDS, emailConfig, emailTokenHash, newEmailToken, readEmailToken } from "./email.ts";
 import { Limits, limitKey } from "./limits.ts";
 import { CHALLENGE_SECONDS, MAX_PASSKEYS, PASSKEY_SQL, challengeHash, challengeOf, newChallenge } from "./passkeys.ts";
 import { PasskeyError, SUPPORTED_ALGORITHMS, verifyAssertion, verifyRegistration } from "./webauthn.ts";
 import { SESSION_SECONDS, SQL, clearedCookie, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
 import { PAGE_HEADERS, asset, renderMessage, renderPage } from "./pages.ts";
-import type { App, FieldKind, FieldSpec, PageRoute, PathPart, Route, ValueSource } from "./types.ts";
+import type { App, EncryptedField, FieldKind, FieldSpec, PageRoute, PathPart, Route, ValueSource } from "./types.ts";
 import { validateBody, validatePathParam, validateValue } from "./validate.ts";
 
 export interface QueryResult {
@@ -47,6 +48,8 @@ export interface ServerOptions {
   readonly mailer?: Mailer;
   /** The app's public address, used in links in emails, e.g. "https://blog.example". */
   readonly publicUrl?: string;
+  /** Keys for encrypted fields (from RIZO_ENCRYPTION_KEYS). Required when the app has any. */
+  readonly encryptionKeys?: Keys;
 }
 
 /** Largest accepted request body. */
@@ -162,6 +165,32 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     throw new Error("email is not configured");
   });
   const publicUrl = options.publicUrl ?? "http://localhost";
+
+  function encryptionKeys(): Keys {
+    if (options.encryptionKeys === undefined) throw new Error("this app has encrypted fields, but no encryption keys were given");
+    return options.encryptionKeys;
+  }
+
+  /** Encrypt the encrypted fields of validated body values, just before they become SQL parameters. */
+  function seal(values: ReadonlyMap<string, unknown>, fields: readonly EncryptedField[] | undefined): ReadonlyMap<string, unknown> {
+    if (fields === undefined || fields.length === 0) return values;
+    const out = new Map(values);
+    for (const f of fields) {
+      const v = out.get(f.key);
+      if (v !== undefined && v !== null) out.set(f.key, encryptValue(encryptionKeys(), f.aad, v));
+    }
+    return out;
+  }
+
+  /** Copy only public keys from a row, decrypting encrypted fields. */
+  function reveal(row: Record<string, unknown>, keys: readonly string[], fields: readonly EncryptedField[] | undefined): Record<string, unknown> {
+    const out = pick(row, keys);
+    for (const f of fields ?? []) {
+      const v = out[f.key];
+      if (v !== undefined && v !== null) out[f.key] = decryptValue(encryptionKeys(), f.aad, v);
+    }
+    return out;
+  }
   const audit = new Audit(db, log);
   const LOGIN_WINDOW = 15 * 60;
 
@@ -563,7 +592,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     if (route.body === null) {
       if (hasBody(req)) throw new HttpError(400, "unexpected_body", "This endpoint does not accept a request body.");
     } else {
-      bodyValues = await body(req, route.body);
+      bodyValues = seal(await body(req, route.body), route.encrypted);
     }
     const r = await run(route.sql, values(route.values, params, bodyValues, me, role, page), route.model);
     switch (route.result) {
@@ -574,14 +603,14 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         const next = r.rows.length > limit && last !== undefined
           ? encodeCursor(route.page?.order ? [String(last["_cursor"]), String(last["id"])] : [String(last["id"])])
           : null;
-        return send(res, 200, { items: rows.map((row) => pick(row, route.publicKeys)), next });
+        return send(res, 200, { items: rows.map((row) => reveal(row, route.publicKeys, route.encrypted)), next });
       }
       case "created":
-        return send(res, 201, pick(r.rows[0] ?? {}, route.publicKeys));
+        return send(res, 201, reveal(r.rows[0] ?? {}, route.publicKeys, route.encrypted));
       case "one": {
         const row = r.rows[0];
         if (row === undefined) throw new HttpError(404, "not_found", `${route.model} not found.`);
-        return send(res, 200, pick(row, route.publicKeys));
+        return send(res, 200, reveal(row, route.publicKeys, route.encrypted));
       }
       case "none": {
         if ((r.rowCount ?? 0) === 0) throw new HttpError(404, "not_found", `${route.model} not found.`);
@@ -771,7 +800,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       await startSession(res, userId);
       await audit.record({ action: "login", userId, ip, detail: "passkey" });
       const me = await db.query(auth.meSql, [userId]);
-      return send(res, 200, pick(me.rows[0] ?? {}, auth.publicKeys));
+      return send(res, 200, reveal(me.rows[0] ?? {}, auth.publicKeys, auth.encrypted));
     }
 
     // Everything else is for managing your own passkeys.
@@ -910,7 +939,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       }
       let created: string;
       try {
-        const r = await run(auth.signup.sql, values(auth.signup.values, new Map(), bodyValues, undefined, null), auth.model);
+        const r = await run(auth.signup.sql, values(auth.signup.values, new Map(), seal(bodyValues, auth.encrypted), undefined, null), auth.model);
         created = String(r.rows[0]?.["id"]);
       } catch (e) {
         // Someone signed up with the same email at the same moment.
@@ -1016,7 +1045,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       await startSession(res, userId);
       await audit.record({ action: "login", userId, ip });
       const me = await db.query(auth.meSql, [userId]);
-      return send(res, 200, pick(me.rows[0] ?? {}, auth.publicKeys));
+      return send(res, 200, reveal(me.rows[0] ?? {}, auth.publicKeys, auth.encrypted));
     }
 
     if (path === "/auth/password") {
@@ -1047,11 +1076,11 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     if (path === "/auth/me" && method === "PATCH" && auth.account.profile !== null) {
       const me = await requireUser(req);
       const profile = auth.account.profile;
-      const bodyValues = await body(req, profile.body);
+      const bodyValues = seal(await body(req, profile.body), auth.encrypted);
       const r = await run(profile.sql, values(profile.values, new Map(), bodyValues, me, null), auth.model);
       const row = r.rows[0];
       if (row === undefined) throw new HttpError(401, "login_required", "You need to log in.");
-      return send(res, 200, pick(row, auth.publicKeys));
+      return send(res, 200, reveal(row, auth.publicKeys, auth.encrypted));
     }
 
     if (path === "/auth/me" && method === "DELETE") {
@@ -1109,7 +1138,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     const r = await db.query(auth.meSql, [userId]);
     const row = r.rows[0];
     if (row === undefined) throw new HttpError(401, "login_required", "You need to log in.");
-    return send(res, 200, pick(row, auth.publicKeys));
+    return send(res, 200, reveal(row, auth.publicKeys, auth.encrypted));
   }
 }
 
@@ -1191,8 +1220,18 @@ export function startServer(app: App): void {
     }
     if (email.dev) process.stderr.write("rizo: WARNING: RIZO_EMAIL_DEV=1, so emails are printed here instead of sent. Use this only for local development.\n");
   }
+  let encryptionKeys: Keys | undefined;
+  if ((app.encrypted ?? []).length > 0) {
+    try {
+      encryptionKeys = parseKeys(process.env["RIZO_ENCRYPTION_KEYS"]);
+    } catch (e) {
+      process.stderr.write(`rizo: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.exit(1);
+    }
+  }
   const pool = new pg.Pool(config);
   const handler = createRequestHandler(app, {
+    ...(encryptionKeys === undefined ? {} : { encryptionKeys }),
     ...(email === undefined ? {} : { mailer: email.mailer, publicUrl: email.publicUrl }),
     db: { query: (sql, vals) => pool.query(sql, vals) },
     secureCookies: !insecure,

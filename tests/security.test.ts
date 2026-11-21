@@ -5,12 +5,14 @@
  *   3. Unknown field types are rejected and no output is produced.
  *   4. Names cannot inject SQL.
  *   5. Passkeys work only on their own site and are never copied (SPEC §7.11).
+ *   7. Encrypted fields reach the database only as ciphertext bound to their column (SPEC §7.13).
  *   6. Signup never reveals which emails have accounts, and emailed links are one-time and hashed (SPEC §7.12).
  */
 import { createPublicKey, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PASSKEY_SQL, challengeHash, newChallenge } from "../runtime/passkeys.ts";
 import { EMAIL_SQL, MESSAGES, newEmailToken } from "../runtime/email.ts";
+import { EncryptionError, decryptValue, encryptValue, parseKeys } from "../runtime/encryption.ts";
 import { PasskeyError, verifyAssertion, verifyRegistration } from "../runtime/webauthn.ts";
 import { SoftAuthenticator } from "./authenticator.js";
 import { compile } from "../src/compiler.js";
@@ -378,5 +380,40 @@ describe("security: email confirmation and reset", () => {
       expect(withoutLink).not.toMatch(/[<>]/);
       expect(m.subject).toMatch(/^[A-Za-z ]+ a\.example$/);
     }
+  });
+});
+
+describe("security: encrypted fields", () => {
+  const source = `model Note {
+  title: Text
+  secret: Text encrypted
+}
+api POST /api/notes -> Note.public {
+  public
+  return db.Note.create(body)
+}
+api PATCH /api/notes/:id -> Note.public {
+  public
+  return db.Note.update(id, body)
+}
+`;
+  const app = buildApp(compileOk(source).apis, undefined);
+
+  it("marks every endpoint that writes or returns the field, so the runtime encrypts and decrypts it", () => {
+    for (const route of app.routes) expect(route.encrypted).toEqual([{ key: "secret", aad: "notes.secret" }]);
+  });
+
+  it("only ever passes the value to SQL as a parameter, in a column without database checks", () => {
+    for (const route of app.routes) expect(route.sql).not.toMatch(/secret"\s*(=|LIKE|<|>)\s*'/);
+    const r = compileOk(source);
+    expect(r.output.sql).not.toMatch(/"secret"[^\n]*CHECK/);
+  });
+
+  it("ties each value to its column, so it can't be moved to another one", () => {
+    const keys = parseKeys(`k1:${Buffer.alloc(32, 7).toString("base64")}`);
+    const value = encryptValue(keys, "notes.secret", "hidden");
+    expect(value).not.toContain("hidden");
+    expect(decryptValue(keys, "notes.secret", value)).toBe("hidden");
+    expect(() => decryptValue(keys, "users.phone", value)).toThrow(EncryptionError);
   });
 });

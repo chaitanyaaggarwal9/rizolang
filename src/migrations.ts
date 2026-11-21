@@ -146,6 +146,14 @@ function columnChanges(pt: Table, nt: Table, statements: string[], summary: stri
       summary.push(`add column ${nt.name}.${c.name}`);
       continue;
     }
+    if ((old.encrypted ?? false) !== (c.encrypted ?? false)) {
+      // Existing values can't be encrypted (or decrypted) in SQL: replace the column.
+      statements.push(`ALTER TABLE ${t} DROP COLUMN ${q(c.name)};`, `ALTER TABLE ${t} ADD COLUMN ${columnDefinition(c)};`);
+      const change = c.encrypted ? "becomes encrypted" : "stops being encrypted";
+      summary.push(`${nt.name}.${c.name} ${change}`);
+      dataLoss.push(`column "${nt.name}.${c.name}" ${change}; its values would be deleted. To keep them, add a new field instead and copy the values over through your API`);
+      continue;
+    }
     if (old.type !== c.type || old.primaryKey !== c.primaryKey) {
       // A type change cannot keep the values safely: replace the column.
       statements.push(`ALTER TABLE ${t} DROP COLUMN ${q(c.name)};`, `ALTER TABLE ${t} ADD COLUMN ${columnDefinition(c)};`);
@@ -225,6 +233,7 @@ export function parseSnapshot(text: string): { schema: Schema } | { error: strin
     const roleOk = (v: unknown): boolean => typeof v === "string" && /^[a-z][A-Za-z0-9]*$/.test(v);
     for (const c of t.columns) {
       if (typeof c?.name !== "string" || typeof c.type !== "string" || !/^[A-Z]+$/.test(c.type)) return { error: `a column of "${t.name}" is malformed` };
+      if (c.encrypted !== undefined && c.encrypted !== true) return { error: `a column of "${t.name}" is malformed` };
       names.push(c.name, ...(c.unique !== null ? [c.unique] : []), ...(c.check !== null ? [c.check?.name] : []));
       if (c.values !== null && (!Array.isArray(c.values) || !c.values.every(roleOk))) return { error: `the role list of "${t.name}" is malformed` };
     }

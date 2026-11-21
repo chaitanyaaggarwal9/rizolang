@@ -245,6 +245,7 @@ curl 'http://127.0.0.1:3000/api/posts?limit=10'
 | `RIZO_DEV_INSECURE_COOKIES` | off | `1` to allow cookies over http. For local development only |
 | `RIZO_PUBLIC_URL` | (required with accounts) | The app's address, used in emailed links, e.g. `https://blog.example` |
 | `RIZO_EMAIL_API_KEY` / `RIZO_EMAIL_FROM` | (required with accounts) | Resend API key, and a sender on your verified domain |
+| `RIZO_ENCRYPTION_KEYS` | (required with `encrypted` fields) | `id:key` pairs, e.g. `k1:` plus the output of `openssl rand -base64 32`. The first key encrypts; all of them decrypt |
 | `RIZO_EMAIL_DEV` | off | `1` to print emails instead of sending them. For local development only |
 
 ---
@@ -283,6 +284,7 @@ Every model gets an `id` automatically.
 - `unique`: no two records share the value.
 - `optional`: the value may be missing.
 - `private`: stored, but never returned.
+- `encrypted`: encrypted by the server before it reaches the database (Text, Email, Number, Date). It can't be unique, filtered or sorted, and needs `RIZO_ENCRYPTION_KEYS`.
 - `min N` / `max N`: the length for text, the value for numbers.
 
 ### Login
@@ -377,6 +379,7 @@ The compiler enforces these rules:
 | Slow queries and table scans | The compiler creates the right index for every list's filters and order (about 280× faster on 200,000 rows in our test), and every query is cancelled after 5 seconds. |
 | Bots, scrapers and brute force | Every endpoint is rate-limited (120/min by default, `limit 10 per minute` to tighten), with counters shared across servers in PostgreSQL. Login, signup and password checks have stricter limits, and password hashing is queued so a login flood can't stall the server. |
 | Phishing and stolen passwords | Built-in passkeys (fingerprint, face or device PIN) on every app with a login. A passkey only works on the site that created it, and the server keeps only the public key. |
+| Stolen databases and backups | Mark sensitive fields `encrypted`: the server encrypts them with AES-256-GCM before they reach the database, and keys can be rotated with `node reencrypt.ts`. |
 | Account enumeration | Identical responses and timing for an unknown account and a wrong password. Signup and password reset answer the same whether or not the email has an account; the owner gets an email instead. |
 | Fake and throwaway sign-ups | Accounts confirm their email before they can log in. One-time links are hashed, expire, and are kept out of logs. |
 | Accidental data loss | Migrations that would drop data are refused unless you pass `--allow-data-loss`. Each migration runs in a transaction, and edited migrations are detected. |

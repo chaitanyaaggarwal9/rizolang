@@ -573,6 +573,12 @@ export function checkApis(
                 "Ordering by a private or Password field would reveal its values. Order by a public field.");
               continue;
             }
+            if (f.encrypted) {
+              good = false;
+              err("RZ0340", a.fieldSpan, `Cannot order by encrypted field "${model.name}.${f.name}".`,
+                "The database only sees encrypted values, so it can't sort by them. Order by a field that isn't encrypted.");
+              continue;
+            }
             if (f.optional) {
               good = false;
               err("RZ0325", a.fieldSpan, `Cannot order by optional field "${model.name}.${f.name}".`,
@@ -587,6 +593,12 @@ export function checkApis(
               good = false;
               err("RZ0325", a.fieldSpan, `Cannot filter by hidden field "${model.name}.${f.name}".`,
                 "Filtering by a private or Password field would reveal its values. Filter by a public field.");
+              continue;
+            }
+            if (f.encrypted) {
+              good = false;
+              err("RZ0340", a.fieldSpan, `Cannot filter by encrypted field "${model.name}.${f.name}".`,
+                "The database only sees encrypted values, so it can't compare them. Filter by a field that isn't encrypted.");
               continue;
             }
             if (filters.some((x) => x.field === f)) {

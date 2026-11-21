@@ -107,7 +107,7 @@ jobs:
       - name: End-to-end tests against PostgreSQL
         env:
           RIZO_TEST_DATABASE_URL: postgres://rizo:rizo@localhost:5432/rizo
-        run: npx vitest run tests/e2e.test.ts
+        run: npx vitest run tests/e2e.test.ts tests/e2e-encrypted.test.ts
       - name: Apply migrations to a new database
         env:
           DATABASE_URL: postgres://rizo:rizo@localhost:5432/migrated

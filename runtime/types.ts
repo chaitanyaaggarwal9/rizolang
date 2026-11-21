@@ -181,6 +181,8 @@ export type PageItemSpec =
   | { readonly kind: "passkeys" }
   /** The devices you are logged in on, each with "Log out" (built-in account page). */
   | { readonly kind: "sessions" }
+  /** Create, list and revoke API tokens (built-in account page). */
+  | { readonly kind: "tokens" }
   /** Confirms the email when the page was opened from the emailed link (built-in /verify-email). */
   | { readonly kind: "verifyEmail" }
   /** Asks for a new password when the page was opened from the emailed link (built-in /reset-password). */

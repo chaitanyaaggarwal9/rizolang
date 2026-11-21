@@ -17,6 +17,7 @@ import { type Keys, decryptValue, encryptValue, parseKeys } from "./encryption.t
 import { EMAIL_SQL, type Mailer, MESSAGES, RESET_SECONDS, type TokenPurpose, VERIFY_SECONDS, emailConfig, emailTokenHash, newEmailToken, readEmailToken } from "./email.ts";
 import { Limits, limitKey } from "./limits.ts";
 import { CHALLENGE_SECONDS, MAX_PASSKEYS, PASSKEY_SQL, challengeHash, challengeOf, newChallenge } from "./passkeys.ts";
+import { MAX_TOKENS, MAX_TOKEN_DAYS, TOKEN_SQL, agentTokenHash, newAgentToken, parseEndpoints, readBearer } from "./tokens.ts";
 import { PasskeyError, SUPPORTED_ALGORITHMS, verifyAssertion, verifyRegistration } from "./webauthn.ts";
 import { IDLE_SECONDS, MAX_SECONDS, SQL, clearedCookie, deviceLabel, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
 import { PAGE_HEADERS, asset, renderMessage, renderPage } from "./pages.ts";
@@ -98,6 +99,7 @@ const AUTH_ROUTES: readonly AuthRoute[] = [
   { path: "/auth/me", methods: ["GET", "PATCH", "DELETE"] },
   { path: "/auth/audit", methods: ["GET"] },
   { path: "/auth/sessions", methods: ["GET"] },
+  { path: "/auth/tokens", methods: ["GET", "POST"] },
   { path: "/auth/verify-email", methods: ["POST"] },
   { path: "/auth/verify-email/resend", methods: ["POST"] },
   { path: "/auth/password-reset", methods: ["POST"] },
@@ -166,6 +168,8 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     throw new Error("email is not configured");
   });
   const publicUrl = options.publicUrl ?? "http://localhost";
+  /** Endpoints an API token may be made for: every endpoint that needs a login. */
+  const tokenEndpoints = app.routes.filter((r) => r.access === "login").map((r) => `${r.method} ${r.pattern}`);
 
   function encryptionKeys(): Keys {
     if (options.encryptionKeys === undefined) throw new Error("this app has encrypted fields, but no encryption keys were given");
@@ -580,7 +584,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     const page = readPage(route, search);
     let me: string | undefined;
     if (route.access === "login") {
-      me = await currentUser(req);
+      me = await caller(req, route);
       if (me === undefined) throw new HttpError(401, "login_required", "You need to log in.");
     }
     // Rate limit: per account when logged in, per IP address otherwise.
@@ -626,6 +630,72 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         return 204;
       }
     }
+  }
+
+  /**
+   * Who is calling an endpoint that needs a login: the API token in the
+   * Authorization header if there is one (only for the endpoints it was
+   * made for), otherwise the session cookie.
+   */
+  async function caller(req: IncomingMessage, route: Route): Promise<string | undefined> {
+    const bearer = readBearer(req.headers.authorization);
+    if (bearer === undefined) return currentUser(req);
+    const invalid = new HttpError(401, "invalid_token", "This API token is not valid or has expired. Create a new one on your account page.");
+    if (bearer === null) throw invalid;
+    const row = (await db.query(TOKEN_SQL.lookup, [agentTokenHash(bearer)])).rows[0];
+    if (row === undefined) throw invalid;
+    const userId = String(row["user_id"]);
+    const endpoint = `${route.method} ${route.pattern}`;
+    if (!parseEndpoints(row["endpoints"]).includes(endpoint)) {
+      throw new HttpError(403, "token_not_allowed", `This API token can't call ${endpoint}. Create a token that includes it.`);
+    }
+    if (row["stale"] === true) await db.query(TOKEN_SQL.touch, [row["id"]]);
+    await audit.record({ action: "token_used", userId, ip: clientIp(req), detail: endpoint });
+    return userId;
+  }
+
+  async function tokens(req: IncomingMessage, res: ServerResponse, method: string): Promise<number> {
+    const me = await requireUser(req);
+    if (method === "GET") {
+      const r = await db.query(TOKEN_SQL.list, [me]);
+      const items = r.rows.map((row) => ({ ...pick(row, ["id", "name", "createdAt", "expiresAt", "lastUsedAt"]), endpoints: parseEndpoints(row["endpoints"]) }));
+      return send(res, 200, { items, endpoints: tokenEndpoints });
+    }
+    const raw = await readJson(req) as Record<string, unknown> | null;
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new HttpError(400, "validation_failed", "Send a JSON object with name and endpoints.");
+    for (const key of Object.keys(raw)) {
+      if (!["name", "endpoints", "days"].includes(key)) throw new HttpError(400, "validation_failed", `Unknown field "${key.slice(0, 50)}". Allowed: name, endpoints, days.`, key.slice(0, 50));
+    }
+    const name = typeof raw["name"] === "string" ? raw["name"].trim() : "";
+    if (name.length < 1 || name.length > 60) throw new HttpError(400, "validation_failed", "name must be 1 to 60 characters.", "name");
+    const list = raw["endpoints"];
+    if (!Array.isArray(list) || list.length === 0 || list.length > tokenEndpoints.length || !list.every((e) => typeof e === "string" && tokenEndpoints.includes(e))) {
+      throw new HttpError(400, "validation_failed", `endpoints must be a list of endpoints that need a login, such as ${JSON.stringify(tokenEndpoints[0] ?? "GET /api/...")}.`, "endpoints");
+    }
+    const days = raw["days"] ?? MAX_TOKEN_DAYS;
+    if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > MAX_TOKEN_DAYS) {
+      throw new HttpError(400, "validation_failed", `days must be a whole number from 1 to ${MAX_TOKEN_DAYS}.`, "days");
+    }
+    const count = Number((await db.query(TOKEN_SQL.count, [me])).rows[0]?.["n"] ?? 0);
+    if (count >= MAX_TOKENS) throw new HttpError(409, "too_many_tokens", `You can have at most ${MAX_TOKENS} API tokens. Revoke one first.`);
+    const { token, hash } = newAgentToken();
+    const r = await db.query(TOKEN_SQL.create, [hash, me, name, JSON.stringify([...new Set(list as string[])]), days]);
+    const row = r.rows[0] ?? {};
+    await audit.record({ action: "token_created", userId: me, ip: clientIp(req) });
+    // The token is shown this once; only its hash is kept.
+    return send(res, 201, { ...pick(row, ["id", "name", "createdAt", "expiresAt"]), endpoints: parseEndpoints(row["endpoints"]), token });
+  }
+
+  /** DELETE /auth/tokens/:id: revoke one of your own tokens. */
+  async function revokeToken(req: IncomingMessage, res: ServerResponse, method: string, rawId: string): Promise<number> {
+    if (method !== "DELETE") throw new HttpError(405, "method_not_allowed", `This path does not support ${method}.`, undefined, { Allow: "DELETE" });
+    checkOrigin(req, method);
+    const me = await requireUser(req);
+    const r = UUID_RE.test(rawId) ? await db.query(TOKEN_SQL.remove, [rawId.toLowerCase(), me]) : { rows: [] };
+    if (r.rows.length === 0) throw new HttpError(404, "not_found", "Token not found.");
+    await audit.record({ action: "token_revoked", userId: me, ip: clientIp(req) });
+    res.writeHead(204, SECURITY_HEADERS).end();
+    return 204;
   }
 
   // ----------------------------------------------------------------- auth
@@ -933,6 +1003,8 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     const auth = app.auth;
     if (auth === null) throw new HttpError(404, "not_found", "No endpoint matches this path.");
     if (path === "/auth/passkeys" || path.startsWith("/auth/passkeys/")) return passkeys(req, res, path, method);
+    const tokenRoute = /^\/auth\/tokens\/([^/]+)$/.exec(path);
+    if (tokenRoute !== null) return revokeToken(req, res, method, tokenRoute[1] ?? "");
     const sessionRoute = /^\/auth\/sessions\/([^/]+)$/.exec(path);
     if (sessionRoute !== null) return logOutDevice(req, res, method, sessionRoute[1] ?? "");
     const roleRoute = /^\/auth\/users\/([^/]+)\/role$/.exec(path);
@@ -1017,6 +1089,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       // Whoever knew the old password is logged out everywhere, and the link
       // proved the email works, so the account counts as confirmed.
       await db.query(SQL.deleteAll, [userId]);
+      await db.query(TOKEN_SQL.removeAll, [userId]);
       await db.query(EMAIL_SQL.deleteTokens, [userId, "reset"]);
       await db.query(EMAIL_SQL.markVerified, [userId]);
       await audit.record({ action: "password_reset", userId, ip });
@@ -1123,6 +1196,8 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       res.writeHead(204, SECURITY_HEADERS).end();
       return 204;
     }
+
+    if (path === "/auth/tokens") return tokens(req, res, method);
 
     if (path === "/auth/sessions") {
       const me = await requireUser(req);
@@ -1282,6 +1357,7 @@ export function startServer(app: App): void {
       void pool.query(PASSKEY_SQL.sweepChallenges).catch(() => undefined);
       void pool.query(EMAIL_SQL.sweepTokens).catch(() => undefined);
       void pool.query(SQL.sweep).catch(() => undefined);
+      void pool.query(TOKEN_SQL.sweep).catch(() => undefined);
     }
     void auditLog.sweep(retention).catch(() => undefined);
   };

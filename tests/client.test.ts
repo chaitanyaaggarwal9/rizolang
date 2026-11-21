@@ -495,6 +495,31 @@ describe("the devices list", () => {
   });
 });
 
+describe("API tokens", () => {
+  it("creates a token for the chosen endpoints and shows it once, read-only", async () => {
+    const sent: { method: string; url: string; body: unknown }[] = [];
+    const token = `rzt_${"B".repeat(43)}`;
+    (globalThis as { fetch?: unknown }).fetch = async (url: string, init?: { method?: string; body?: string }) => {
+      sent.push({ method: init?.method ?? "GET", url, body: init?.body === undefined ? undefined : JSON.parse(init.body) });
+      const body = init?.method === "POST" ? { id: "t1", token } : { items: [], endpoints: ["POST /api/posts", HOSTILE] };
+      return { ok: true, status: init?.method === "POST" ? 201 : 200, json: async () => body };
+    };
+    const page = client.renderPage({ title: "Your account", params: {}, loggedIn: true, auth: false, items: [{ kind: "tokens" }] }) as unknown as FakeElement;
+    await flush();
+    const labels = all(page).filter((e) => e.tagName === "label").map((e) => e.textContent);
+    expect(labels).toContain(HOSTILE);
+    const boxes = all(page).filter((e) => e.attributes.get("type") === "checkbox");
+    expect(boxes).toHaveLength(2);
+    (boxes[0] as FakeElement).checked = true;
+    all(page).find((e) => e.tagName === "button" && e.textContent === "Create token")?.onclick?.();
+    await flush();
+    expect(sent.find((x) => x.method === "POST")).toEqual({ method: "POST", url: "/auth/tokens", body: { name: "My agent", endpoints: ["POST /api/posts"], days: 90 } });
+    const shown = all(page).find((e) => e.attributes.get("id") === "rizo-token-value") as (FakeElement & { readOnly?: boolean }) | undefined;
+    expect(shown?.value).toBe(token);
+    expect(shown?.readOnly).toBe(true);
+  });
+});
+
 describe("buttons and the menu", () => {
   const buttonPage = () => client.renderPage({
     title: "Post", params: { id: "7" }, loggedIn: true, auth: false,

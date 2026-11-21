@@ -337,7 +337,7 @@ Rizo Lang is designed to be written by AI models as well as people:
 Rizo Lang is in **early development**, so expect the language to change before 1.0.
 
 - [x] **Milestone 1:** models, compiled to a PostgreSQL schema and TypeScript types ([v0.1.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.1.0))
-- [x] **Milestone 2:** `auth`, `api` endpoints, links, `private` fields and a generated Node.js server
+- [x] **Milestone 2:** `auth`, `api` endpoints, links, `private` fields and a generated Node.js server ([v0.2.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.2.0))
 - [ ] **Milestone 3:** roles (`requires role admin`), pagination, account management, migrations
 - [ ] **Milestone 4:** frontend `page` blocks compiled to HTML and TypeScript
 - [ ] Publish the compiler to npm, and a VS Code extension with syntax highlighting

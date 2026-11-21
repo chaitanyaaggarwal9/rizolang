@@ -1,6 +1,6 @@
 {
   "name": "rizolang",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Rizo Lang: a secure, simple, full-stack web language for the AI era. Compiles to PostgreSQL and TypeScript.",
   "license": "Apache-2.0",

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-20
+
 ### Added
 
 - Milestone 2:
@@ -16,7 +18,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - A generated Node.js server (`routes.ts`, `server.ts`, `runtime/`). All SQL is written at compile time, and only `$n` parameters come from requests.
   - New errors RZ0213–RZ0218 and RZ0316–RZ0331. RZ0331 rejects `update` or `delete` of user-owned records without `requires owner`.
 - End-to-end tests against PostgreSQL, run in CI, plus a type-check and smoke run of the generated server.
-
 - Contributor guide, Code of Conduct, issue and pull request templates, and CODEOWNERS.
 - CodeQL and dependency review workflows, and Dependabot updates for npm and GitHub Actions.
 
@@ -39,3 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `rizolang build file.rz` CLI.
 - Language spec (`docs/SPEC.md`) and compact spec for AI system prompts (`docs/SPEC-COMPACT.md`).
 - CI on Node 22, 24 and 26, plus a PostgreSQL schema check.
+
+[Unreleased]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.1.0

@@ -1,8 +1,8 @@
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { dummyHash, hashPassword, verifyPassword } from "../runtime/password.ts";
-import { RateLimiter } from "../runtime/ratelimit.ts";
+import { BusyError, dummyHash, hashPassword, verifyPassword } from "../runtime/password.ts";
+import { LIMIT_SQL, Limits, limitKey } from "../runtime/limits.ts";
 import { type Db, createRequestHandler } from "../runtime/server.ts";
 import { SESSIONS_TABLE, clearedCookie, hashToken, newToken, readToken, sessionCookie } from "../runtime/session.ts";
 import type { App, FieldSpec } from "../runtime/types.ts";
@@ -115,21 +115,70 @@ describe("sessions", () => {
   });
 });
 
-describe("rate limiting", () => {
-  it("blocks after the limit until the window passes", () => {
-    let now = 0;
-    const rl = new RateLimiter(2, 1000, () => now);
-    rl.hit("k");
-    expect(rl.retryAfter("k")).toBe(0);
-    rl.hit("k");
-    expect(rl.retryAfter("k")).toBe(1);
-    expect(rl.retryAfter("other")).toBe(0);
-    now = 1000;
-    expect(rl.retryAfter("k")).toBe(0);
-    rl.hit("k");
-    rl.reset("k");
-    expect(rl.retryAfter("k")).toBe(0);
+/** A fake database that understands the rate-limit SQL, like PostgreSQL would. */
+function limitDb() {
+  const rows = new Map<string, number>();
+  return {
+    rows,
+    query: async (sql: string, values: unknown[]) => {
+      const key = String(values[0]);
+      if (sql === LIMIT_SQL.consume) {
+        rows.set(key, (rows.get(key) ?? 0) + 1);
+        return { rows: [{ count: rows.get(key) }], rowCount: 1 };
+      }
+      if (sql === LIMIT_SQL.peek) return { rows: rows.has(key) ? [{ count: rows.get(key) }] : [], rowCount: 1 };
+      if (sql === LIMIT_SQL.clear) {
+        for (const k of [...rows.keys()]) if (k.startsWith(key.replace(/%$/, ""))) rows.delete(k);
+        return { rows: [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  };
+}
+
+describe("rate limits", () => {
+  it("allow up to the limit in each window, then say when to retry", async () => {
+    let now = 120_000; // 2 minutes after the epoch: the start of a minute window
+    const db = limitDb();
+    const limits = new Limits(db, () => now);
+    const key = limitKey("GET /api/posts", "ip:1.2.3.4");
+    expect((await limits.consume(key, 2, 60)).allowed).toBe(true);
+    expect((await limits.consume(key, 2, 60)).allowed).toBe(true);
+    now += 15_000;
+    expect(await limits.consume(key, 2, 60)).toEqual({ allowed: false, retryAfter: 45 });
+    now += 45_000; // next window
+    expect((await limits.consume(key, 2, 60)).allowed).toBe(true);
   });
+
+  it("can check and clear without counting", async () => {
+    const db = limitDb();
+    const limits = new Limits(db, () => 0);
+    const key = limitKey("login-account", "a@b.co");
+    for (let i = 0; i < 5; i++) await limits.consume(key, 5, 900);
+    expect((await limits.blocked(key, 5, 900)).allowed).toBe(false);
+    await limits.clear(key);
+    expect((await limits.blocked(key, 5, 900)).allowed).toBe(true);
+  });
+
+  it("never stores the identity itself", () => {
+    const key = limitKey("login-ip", "203.0.113.7");
+    expect(key).not.toContain("203.0.113.7");
+    expect(key).toMatch(/^[0-9a-f]{16}:[0-9a-f]{32}$/);
+    expect(limitKey("login-ip", "203.0.113.8")).not.toBe(key);
+    expect(limitKey("signup", "203.0.113.7")).not.toBe(key);
+  });
+});
+
+describe("password hashing queue", () => {
+  it("answers BusyError instead of piling up work", async () => {
+    const attempts = Array.from({ length: 60 }, () => hashPassword("long enough password").then(() => "ok", (e) => e));
+    const results = await Promise.all(attempts);
+    const busy = results.filter((r) => r instanceof BusyError).length;
+    expect(busy).toBeGreaterThan(0);
+    expect(results.filter((r) => r === "ok").length).toBe(60 - busy);
+    // The queue drains: hashing works again afterwards.
+    expect(await hashPassword("long enough password")).toMatch(/^scrypt\$/);
+  }, 60_000);
 });
 
 describe("request handling without a database", () => {
@@ -145,15 +194,15 @@ describe("request handling without a database", () => {
       {
         method: "GET", pattern: "/things/:id", path: [{ static: "things" }, { param: "id", kind: "ID" }],
         access: "public", roles: [], body: null, sql: "SELECT 1", values: [{ from: "path", name: "id" }],
-        result: "one", page: null, publicKeys: ["id", "name"], model: "Thing",
+        result: "one", page: null, rateLimit: { max: 120, windowSeconds: 60 }, publicKeys: ["id", "name"], model: "Thing",
       },
       {
         method: "GET", pattern: "/things/new", path: [{ static: "things" }, { static: "new" }],
-        access: "public", roles: [], body: null, sql: "SELECT 2", values: [], result: "one", page: null, publicKeys: ["id"], model: "Thing",
+        access: "public", roles: [], body: null, sql: "SELECT 2", values: [], result: "one", page: null, rateLimit: { max: 120, windowSeconds: 60 }, publicKeys: ["id"], model: "Thing",
       },
       {
         method: "GET", pattern: "/mine", path: [{ static: "mine" }],
-        access: "login", roles: [], body: null, sql: "SELECT 3", values: [{ from: "me" }], result: "list", page: { max: 50, order: null }, publicKeys: ["id"], model: "Thing",
+        access: "login", roles: [], body: null, sql: "SELECT 3", values: [{ from: "me" }], result: "list", page: { max: 50, order: null }, rateLimit: { max: 120, windowSeconds: 60 }, publicKeys: ["id"], model: "Thing",
       },
     ],
   };
@@ -175,7 +224,7 @@ describe("request handling without a database", () => {
     const seen: string[] = [];
     const base = await start({ query: async (sql) => (seen.push(sql), { rows: [{ id: "1" }], rowCount: 1 }) });
     await fetch(`${base}/things/new`);
-    expect(seen).toEqual(["SELECT 2"]);
+    expect(seen.filter((sql) => !sql.includes("_rizo_rate_limits"))).toEqual(["SELECT 2"]);
   });
 
   it("requires a session before running login-only queries", async () => {
@@ -184,6 +233,32 @@ describe("request handling without a database", () => {
     const r = await fetch(`${base}/mine`);
     expect(r.status).toBe(401);
     expect(seen).toEqual([]);
+  });
+
+  it("limits each endpoint per IP address", async () => {
+    const db = limitDb();
+    const limited: App = { ...app, routes: app.routes.map((r) => ({ ...r, rateLimit: { max: 2, windowSeconds: 60 } })) };
+    const handler = createRequestHandler(limited, { db: { query: async (sql, values) => (sql.startsWith("INSERT INTO \"_rizo_rate") || sql.startsWith("SELECT \"count\"") ? db.query(sql, values) : { rows: [{ id: "1" }], rowCount: 1 }) }, log: () => undefined });
+    server = createServer((req, res) => void handler(req, res));
+    await new Promise<void>((r) => server?.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(server?.address() as AddressInfo).port}`;
+    expect((await fetch(`${base}/things/new`)).status).toBe(200);
+    expect((await fetch(`${base}/things/new`)).status).toBe(200);
+    const third = await fetch(`${base}/things/new`);
+    expect(third.status).toBe(429);
+    expect(Number(third.headers.get("retry-after"))).toBeGreaterThan(0);
+  });
+
+  it("refuses writes that a browser marks as coming from another site", async () => {
+    const post: App = { ...app, routes: [{ ...app.routes[1]!, method: "POST" }] };
+    const handler = createRequestHandler(post, { db: { query: async () => ({ rows: [{ id: "1" }], rowCount: 1 }) }, log: () => undefined });
+    server = createServer((req, res) => void handler(req, res));
+    await new Promise<void>((r) => server?.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(server?.address() as AddressInfo).port}`;
+    for (const site of ["cross-site", "same-site"]) {
+      expect((await fetch(`${base}/things/new`, { method: "POST", headers: { "Sec-Fetch-Site": site } })).status, site).toBe(403);
+    }
+    expect((await fetch(`${base}/things/new`, { method: "POST", headers: { "Sec-Fetch-Site": "same-origin" } })).status).toBe(200);
   });
 
   it("hides internal errors from clients and logs them without request data", async () => {

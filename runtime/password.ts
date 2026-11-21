@@ -13,7 +13,39 @@ const P = 3;
 const KEY_LENGTH = 64;
 const SALT_BYTES = 16;
 
+/**
+ * scrypt runs on Node's small worker pool (4 threads by default). Limiting
+ * how many run at once keeps a login flood from stalling everything else;
+ * when too many are waiting, BusyError tells the server to answer 503.
+ */
+const MAX_ACTIVE = 2;
+const MAX_WAITING = 50;
+let active = 0;
+const waiting: (() => void)[] = [];
+
+export class BusyError extends Error {}
+
+async function inSlot<T>(work: () => Promise<T>): Promise<T> {
+  if (active < MAX_ACTIVE) {
+    active++;
+  } else {
+    if (waiting.length >= MAX_WAITING) throw new BusyError("password hashing queue is full");
+    await new Promise<void>((resolve) => waiting.push(resolve)); // the slot is handed over directly
+  }
+  try {
+    return await work();
+  } finally {
+    const next = waiting.shift();
+    if (next !== undefined) next();
+    else active--;
+  }
+}
+
 function derive(password: string, salt: Buffer, logN: number, r: number, p: number): Promise<Buffer> {
+  return inSlot(() => deriveNow(password, salt, logN, r, p));
+}
+
+function deriveNow(password: string, salt: Buffer, logN: number, r: number, p: number): Promise<Buffer> {
   const N = 2 ** logN;
   return new Promise((resolve, reject) => {
     // maxmem must exceed 128 * N * r bytes.

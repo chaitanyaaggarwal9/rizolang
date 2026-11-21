@@ -73,6 +73,7 @@ api GET /api/posts/:postId/comments -> list Comment.public {
 
 api POST /api/comments -> Comment.public {
   requires login
+  limit 10 per minute
   return db.Comment.create(body, author = me)
 }
 

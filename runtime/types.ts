@@ -62,6 +62,8 @@ export interface Route {
   readonly values: readonly ValueSource[];
   /** one: 200 with an object (404 if no row); list: 200 with an array; created: 201; none: 204 (404 if no row). */
   readonly result: "one" | "list" | "created" | "none";
+  /** Requests allowed per window, per account (logged in) or IP address (logged out). */
+  readonly rateLimit: { readonly max: number; readonly windowSeconds: number };
   /** For list endpoints: the largest page size, and the type of the sort column (null when sorted by id). */
   readonly page: { readonly max: number; readonly order: FieldKind | null } | null;
   /** The only keys ever copied into a response. */

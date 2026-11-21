@@ -36,7 +36,7 @@ const MODEL_LOOKALIKES: readonly string[] = ["Model", "MODEL", "class", "struct"
 /** Words people write instead of `api`. */
 const API_LOOKALIKES: readonly string[] = ["API", "Api", "route", "endpoint", "get", "post", "put", "patch", "delete", "GET", "POST", "PUT", "PATCH", "DELETE"];
 
-const STATEMENT_WORDS: readonly string[] = ["public", "requires", "return"];
+const STATEMENT_WORDS: readonly string[] = ["public", "requires", "limit", "return"];
 
 /** Advice for a stray token after a field type, keyed by token kind. */
 const FIELD_TOKEN_FIXES: Partial<Record<TokenKind, string>> = {
@@ -480,6 +480,19 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
     let stmt: Statement;
     if (t.text === "public") {
       stmt = { kind: "public", span: t.span };
+    } else if (t.text === "limit") {
+      const n = peek();
+      const per = peek(1);
+      const unit = peek(2);
+      const sameLine = (x: Token) => x.span.line === t.span.line;
+      if (n.kind !== "int" || !sameLine(n) || !isWord(per, "per") || !sameLine(per) || unit.kind !== "ident" || !sameLine(unit)) {
+        fail("RZ0222", sameLine(n) ? n.span : t.span, `Expected "<number> per <minute|hour|...>" after "limit".`,
+          "Write the endpoint's rate limit as `limit 20 per minute`. Units: second, minute, hour, day.");
+      }
+      next();
+      next();
+      next();
+      stmt = { kind: "limit", span: t.span, count: n.value, countSpan: n.span, unit: unit.text, unitSpan: unit.span };
     } else if (t.text === "requires") {
       const what = peek();
       if (isWord(what, "login") && what.span.line === t.span.line) {

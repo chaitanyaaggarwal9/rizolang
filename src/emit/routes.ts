@@ -340,6 +340,7 @@ function route(api: ResolvedApi): Route {
     path,
     access: api.access,
     roles: api.roles,
+    rateLimit: api.rateLimit,
     body,
     sql,
     values: p.values,

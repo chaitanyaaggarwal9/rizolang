@@ -1,6 +1,6 @@
 # Rizo Lang Specification
 
-Version 0.3 (draft) · Milestone 3: roles, pagination and accounts
+Version 0.3 (draft) · Milestone 3: roles, pagination, accounts and migrations
 
 Rizo Lang is a secure, simple, full-stack web language. Source files end in `.rz`. The compiler, `rizolang`, turns Rizo Lang into existing technology: a PostgreSQL schema, TypeScript types and a Node.js server. HTML and TypeScript frontends come later.
 
@@ -354,6 +354,7 @@ api DELETE /posts/:id {
 | `schema.sql`         | PostgreSQL 13+ tables, constraints, foreign keys and the sessions table, inside one transaction |
 | `types.ts`           | `Model`, `ModelPublic` and `ModelInput` types for every model                |
 | `routes.ts`          | Every endpoint as data, with its SQL written out in full                      |
+| `migrate.ts`, `migrations/` | Applies the migrations from your project's `migrations/` folder (§6, Migrations) |
 | `server.ts`          | The entry point                                                              |
 | `runtime/`           | The Rizo runtime: validation, sessions, password hashing and the HTTP server |
 | `package.json`, `tsconfig.json` | To install `pg` and type-check the app                            |
@@ -365,15 +366,45 @@ The three types:
 - `UserPublic` (`User.public`) leaves out Password and `private` fields.
 - `UserInput` (`User.input`) is what a client sends. Passwords are plain text here, and links to the auth model are left out.
 
+### Migrations
+
+Every build compares your models with the last build and records the difference in `migrations/`, next to your `.rz` file. Commit this folder to version control.
+
+| File | Contents |
+|------|----------|
+| `migrations/0001_initial.sql` | The first schema |
+| `migrations/0002_add_column_posts_views.sql`, … | One file per build that changed the schema |
+| `migrations/rizo-schema.json` | A snapshot of the schema after the last migration. Don't edit it |
+
+**Refused changes.** These changes would delete data, so the build stops (RZ0904) and writes no files, unless you run `rizolang build app.rz --allow-data-loss`:
+- removing a model or field,
+- changing a field's type,
+- removing a role.
+
+Renaming looks like removing and adding, so it is refused too. Keep the old name.
+
+**Other changes** are generated automatically: adding models, fields and links, and changing limits, `unique`, `optional` and roles.
+- Making a field required, adding a required field, or tightening limits can fail if existing rows don't fit.
+- In that case the migration is rolled back and nothing changes.
+
+**Applying migrations.** `node migrate.ts` (in `dist/`) applies pending migrations in order.
+- Each migration runs in one transaction and is recorded in the `_rizo_migrations` table.
+- A lock stops two deploys from migrating at the same time.
+- If an applied migration file was edited or deleted, nothing runs.
+
+**Existing databases.** If a database was created from `schema.sql` before you used migrations, run `node migrate.ts --baseline` once. It records `0001_initial.sql` as already applied.
+
 ### Running the server
 
 Needs Node.js 22.18 or newer.
 
 ```sh
 cd dist && npm install
-psql "$DATABASE_URL" -f schema.sql
+DATABASE_URL=postgres://user:pass@localhost:5432/app node migrate.ts
 DATABASE_URL=postgres://user:pass@localhost:5432/app node server.ts
 ```
+
+To start a brand-new database, `psql "$DATABASE_URL" -f schema.sql` works too. Then run `node migrate.ts --baseline` so later migrations apply on top of it.
 
 | Variable                    | Default     | Meaning                                                    |
 |-----------------------------|-------------|------------------------------------------------------------|
@@ -411,7 +442,7 @@ These are enforced by the compiler and the runtime, and covered by `tests/securi
 5. A record's owner is always the logged-in user, and a user's role is only ever set by an admin. Neither is taken from the request body.
 6. All input is validated against the model before it reaches the database, and unknown fields are rejected.
 7. `GET` endpoints never change data. Cross-site writes are rejected.
-8. When there is any compile error, no output is written.
+8. When there is any compile error, or a change would delete data without `--allow-data-loss`, no output is written.
 
 ---
 
@@ -486,6 +517,8 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0901 | Cannot read the input file                                              |
 | RZ0902 | Input file does not end in `.rz`                                        |
 | RZ0903 | Wrong command-line usage                                                |
+| RZ0904 | The change would delete data (needs `--allow-data-loss`)                |
+| RZ0905 | `migrations/rizo-schema.json` is missing or damaged                     |
 
 ---
 

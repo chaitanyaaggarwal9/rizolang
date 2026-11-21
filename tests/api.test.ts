@@ -312,7 +312,7 @@ api DELETE /posts/:id {
 
   it("adds a hidden role column that only accepts declared roles", () => {
     const { output } = compileOk(ROLES);
-    expect(output.sql).toContain(`"role" TEXT CHECK ("role" IN ('admin', 'editor'))`);
+    expect(output.sql).toContain(`"role" TEXT CONSTRAINT "users_role_check" CHECK ("role" IN ('admin', 'editor'))`);
     expect(output.typescript).toContain('readonly role: "admin" | "editor" | null;');
     expect(output.typescript.split("export interface UserPublic")[1]?.split("}")[0]).not.toContain("role");
     expect(output.typescript.split("export interface UserInput")[1]?.split("}")[0]).not.toContain("role");

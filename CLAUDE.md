@@ -30,6 +30,7 @@ Rizo Lang is a secure, simple, full-stack web language for the AI era. Source fi
 ## Project layout
 
 - `src/lexer.ts` → `src/parser.ts` (builds an AST, see `src/ast.ts`) → `src/checker.ts` (models) and `src/check-api.ts` (auth and api) → `src/emit/{sql,typescript,routes}.ts`, orchestrated by `src/compiler.ts`.
+- `src/schema.ts` describes the database schema. `src/emit/sql.ts` renders it, and `src/migrations.ts` compares it with `migrations/rizo-schema.json` to plan migrations. Anything that would drop data must be listed in `dataLoss`, so that the CLI refuses it without `--allow-data-loss`.
 - `runtime/` is copied verbatim into every generated app (`dist/runtime/`). It must stay small, readable, free of dependencies other than `pg`, and use erasable TypeScript only (Node runs it with type stripping). The runtime never builds SQL: all SQL comes from `routes.ts`, generated at compile time.
 - `src/types.ts` is the single source of truth for field types, their SQL/TS mappings and allowed modifiers.
 - `src/diagnostics.ts` holds the error format. Every diagnostic has a code, a span, a message and a fix.

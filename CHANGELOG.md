@@ -22,11 +22,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `DELETE /auth/me` deletes your account with your password.
   - Wrong passwords count toward the login lockout.
 
+- Migrations:
+  - `rizolang build` writes numbered migrations and a schema snapshot to `migrations/`.
+  - Changes that would delete data are refused unless `--allow-data-loss` is given (RZ0904).
+  - The generated `migrate.ts` applies migrations, each in its own transaction, under a lock, with checksums. `--baseline` adopts databases created from `schema.sql`.
+  - New errors RZ0904 and RZ0905.
+
 ### Changed
 
 - **Breaking:** `list` endpoints now return `{ "items": [...], "next": "<cursor>" | null }` instead of a bare array. `limit N` is now the largest page size, and also the default.
 - **Breaking:** ordering by an `optional` field is a compile error (RZ0325).
 - Every endpoint now rejects unknown or repeated query parameters with 400.
+- Schema constraints and indexes now have explicit names, which follow PostgreSQL's default pattern.
 
 ## [0.2.0] - 2026-11-20
 

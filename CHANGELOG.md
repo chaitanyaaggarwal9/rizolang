@@ -51,6 +51,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Users create tokens on the `/account` page or with `POST /auth/tokens`, choosing a name, the endpoints the token may call (any endpoint that needs a login) and an expiry of 1–90 days (90 by default). The token (`rzt_...`) is shown once; only its hash is stored.
   - Agents send `Authorization: Bearer rzt_...`. A token acts as its account only on its endpoints (others answer 403), never on `/auth/*`, and stops working when it expires or is revoked (`DELETE /auth/tokens/:id`). A password reset revokes every token of the account.
   - Creating, using (with the endpoint) and revoking tokens are recorded in the audit log. The `_rizo_tokens` table is added by migration.
+- Milestone 7, part 2: OpenAPI.
+  - Every build writes `dist/openapi.json` (OpenAPI 3.1), generated from the same route data the server runs on, and the server serves it at `/_rizo/openapi.json`.
+  - It describes each endpoint's parameters, exact request body (with limits, no extra fields), public response fields and errors, how to log in (session cookie or API token), and Rizo's rules as `x-rizo-access`, `x-rizo-roles`, `x-rizo-owner` and `x-rizo-rate-limit`.
 
 ## [0.4.0] - 2026-11-21
 

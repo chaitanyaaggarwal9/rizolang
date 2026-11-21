@@ -134,6 +134,7 @@ jobs:
           grep -qi "content-security-policy: default-src 'none'; script-src 'self'" headers.txt
           grep -q '<script type="module" src="/_rizo/client.js">' page.html
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3999/_rizo/client.js)" = "200"
+          curl -s http://127.0.0.1:3999/_rizo/openapi.json | node -e 'const d = JSON.parse(require("fs").readFileSync(0, "utf8")); if (d.openapi !== "3.1.0" || !d.paths["/api/posts/{id}"]) process.exit(1)'
           test "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://127.0.0.1:3999/admin)" = "302 http://127.0.0.1:3999/login?next=%2Fadmin"
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3999/auth/signup -H 'Content-Type: application/json' -d '{"email":"ci@example.com","password":"a long ci password","name":"CI"}')" = "202"
           grep -q "localhost:3999/verify-email#token=" server.log

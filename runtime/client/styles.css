@@ -113,3 +113,117 @@ a.rizo-card:hover {
   background: var(--error-bg);
   color: var(--error-fg);
 }
+
+/* Menu */
+.rizo-nav {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: flex-end;
+  margin-bottom: 1.5rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.rizo-nav a:first-child {
+  margin-right: auto;
+}
+
+.rizo-link {
+  font: inherit;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Forms */
+.rizo-form {
+  display: grid;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.rizo-field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.rizo-field label {
+  font-weight: 600;
+}
+
+.rizo-check {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.rizo-check label {
+  order: 2;
+  font-weight: 400;
+}
+
+.rizo-check .rizo-field-error {
+  grid-column: 1 / -1;
+}
+
+.rizo-form input:not([type="checkbox"]),
+.rizo-form textarea {
+  font: inherit;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--bg);
+  color: inherit;
+}
+
+.rizo-form input[aria-invalid="true"],
+.rizo-form textarea[aria-invalid="true"] {
+  border-color: var(--error-fg);
+}
+
+.rizo-field-error {
+  margin: 0;
+  color: var(--error-fg);
+  font-size: 0.9rem;
+}
+
+.rizo-field-error:empty {
+  display: none;
+}
+
+.rizo-submit,
+.rizo-danger {
+  justify-self: start;
+  font: inherit;
+  font-weight: 600;
+  padding: 0.6rem 1.2rem;
+  border: 0;
+  border-radius: 0.5rem;
+  color: #fff;
+  cursor: pointer;
+}
+
+.rizo-submit {
+  background: var(--accent);
+}
+
+.rizo-danger {
+  background: #c5221f;
+}
+
+.rizo-submit:disabled,
+.rizo-danger:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.rizo-actions {
+  margin: 1.5rem 0;
+}
+
+[hidden] {
+  display: none !important;
+}

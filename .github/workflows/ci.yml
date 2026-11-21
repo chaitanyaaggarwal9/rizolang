@@ -132,6 +132,6 @@ jobs:
           grep -qi "content-security-policy: default-src 'none'; script-src 'self'" headers.txt
           grep -q '<script type="module" src="/_rizo/client.js">' page.html
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3999/_rizo/client.js)" = "200"
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3999/admin)" = "401"
+          test "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://127.0.0.1:3999/admin)" = "302 http://127.0.0.1:3999/login?next=%2Fadmin"
           kill %1
           cat server.log

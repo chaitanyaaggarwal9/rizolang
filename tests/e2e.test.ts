@@ -259,7 +259,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
 
   describe("pages", () => {
     const page = async (path: string, cookie?: string) => {
-      const r = await fetch(base + path, cookie ? { headers: { Cookie: cookie } } : {});
+      const r = await fetch(base + path, { redirect: "manual", ...(cookie ? { headers: { Cookie: cookie } } : {}) });
       return { status: r.status, csp: r.headers.get("content-security-policy"), html: await r.text() };
     };
 
@@ -274,8 +274,19 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       expect((await page("/posts/not-an-id")).status).toBe(404);
     });
 
+    it("serves the forms and the built-in login and signup pages", async () => {
+      const r = await fetch(`${base}/posts/new`, { redirect: "manual" });
+      expect(r.status).toBe(302);
+      expect(r.headers.get("location")).toBe("/login?next=%2Fposts%2Fnew");
+      const form = await page("/posts/new", alice);
+      expect(form.status).toBe(200);
+      expect(form.html).toContain('"kind":"form","method":"POST","endpoint":"/api/posts"');
+      expect((await page(`/posts/${postId}/edit`, alice)).html).toContain('"prefill":"/api/posts/:id"');
+      for (const path of ["/login", "/signup"]) expect((await page(path)).status).toBe(200);
+    });
+
     it("applies login and roles to pages", async () => {
-      expect((await page("/admin")).status).toBe(401);
+      expect((await page("/admin")).status).toBe(302);
       expect((await page("/admin", bob)).status).toBe(403);
       expect((await page("/admin", alice)).status).toBe(200);
     });

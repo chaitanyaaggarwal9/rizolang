@@ -43,7 +43,11 @@ export type PageItem =
       readonly fields: readonly FieldView[];
       /** For lists: the page that shows one record, e.g. "/posts/:id", with its parameter name. */
       readonly detail: { readonly path: string; readonly param: string } | undefined;
-    };
+    }
+  /** A form that creates or updates a record; edit forms are prefilled from a GET on the same path. */
+  | { readonly kind: "form"; readonly api: ResolvedApi; readonly prefill: ResolvedApi | undefined }
+  /** A button that deletes a record. */
+  | { readonly kind: "button"; readonly api: ResolvedApi; readonly label: string };
 
 export interface ResolvedPage {
   readonly path: string;
@@ -53,6 +57,8 @@ export interface ResolvedPage {
   readonly roles: readonly string[];
   readonly title: string;
   readonly items: readonly PageItem[];
+  /** Where to go after the page's form or button succeeds. */
+  readonly then: string | undefined;
 }
 
 /** Page paths the built-in login and signup pages will use (part 2). */
@@ -151,6 +157,47 @@ export function checkPages(
     const paramTypes = new Map<string, ParamType>();
     const items: PageItem[] = [];
 
+    /** Find and check the endpoint a show, form or button uses. */
+    const endpoint = (use: "show" | "form" | "button", method: string, methodSpan: Span, path: string, pathSpan: Span, span: Span): ResolvedApi | undefined => {
+      const allowed: readonly string[] = use === "show" ? ["GET"] : use === "form" ? ["POST", "PUT", "PATCH"] : ["DELETE"];
+      if (!allowed.includes(method)) {
+        err("RZ0335", methodSpan, `A ${use} can't use ${method}.`,
+          use === "show" ? `Write \`show GET ${path}\`. Changing data needs a form or button.`
+          : use === "form" ? `Forms create or change records: use POST, PUT or PATCH, for example \`form POST ${path}\`.`
+          : `Buttons delete records: use DELETE, for example \`button "Delete" DELETE ${path}\`.`);
+        return undefined;
+      }
+      const api = apis.find((a) => a.method === method && a.path === path);
+      if (api === undefined) {
+        const same = apis.filter((a) => allowed.includes(a.method)).map((a) => `${a.method} ${a.path}`);
+        const guess = didYouMean(`${method} ${path}`, same);
+        err("RZ0335", pathSpan, `There is no endpoint "${method} ${path}" to ${use === "show" ? "show" : "use"}.`,
+          guess !== undefined ? `Did you mean "${guess}"?` : same.length > 0 ? `Use one of: ${same.join(", ")}.` : `Declare it first: \`api ${method} ${path} ... { ... }\`.`);
+        return undefined;
+      }
+      let good = true;
+      for (const p of api.params) {
+        if (!pageParams.has(p.name)) {
+          good = false;
+          err("RZ0335", pathSpan, `"${method} ${api.path}" needs :${p.name}, but ${name} has no :${p.name}.`,
+            `Give the page the same parameter, for example \`page ${decl.path === "/" ? "" : decl.path}/:${p.name}\`.`);
+        } else {
+          paramTypes.set(p.name, p.type);
+        }
+      }
+      if (api.access === "login" && access === "public") {
+        good = false;
+        err("RZ0335", span, `${name} is public, but "${method} ${api.path}" requires login, so visitors would only see an error.`,
+          "Replace `public` with `requires login`, or make the endpoint public.");
+      }
+      if (api.roles.length > 0 && (roles.length === 0 || roles.some((r) => !api.roles.includes(r)))) {
+        good = false;
+        err("RZ0335", span, `"${method} ${api.path}" requires role ${api.roles.join(" or ")}, but ${name} lets in users without it.`,
+          `Add \`requires role ${api.roles.join(", ")}\` to the page.`);
+      }
+      return good ? api : undefined;
+    };
+
     for (const s of st) {
       if (s.kind === "text") items.push({ kind: "text", text: s.text.text });
       if (s.kind === "link") {
@@ -174,49 +221,65 @@ export function checkPages(
         }
         items.push({ kind: "link", label: s.label.text, path: s.path });
       }
-      if (s.kind === "show") {
-        const api = apis.find((a) => a.method === s.method && a.path === s.path);
-        if (s.method !== "GET") {
+      if (s.kind === "show" || s.kind === "form" || s.kind === "button") {
+        const api = endpoint(s.kind, s.method, s.methodSpan, s.path, s.pathSpan, s.span);
+        if (api === undefined) { ok = false; continue; }
+        if (s.kind === "show") {
+          items.push({ kind: "show", api, mode: api.returns === "list" ? "list" : "one", fields: fieldsOf(api.query.model), detail: undefined });
+        } else if (s.kind === "form") {
+          // Edit forms start from the current record when a GET endpoint on the same path exists.
+          const prefill = api.query.action === "update"
+            ? apis.find((a) => a.method === "GET" && a.path === api.path && a.returns === "one")
+            : undefined;
+          items.push({ kind: "form", api, prefill });
+        } else {
+          items.push({ kind: "button", api, label: s.label.text });
+        }
+      }
+    }
+
+    // Forms and buttons: at most one per page, followed by `then go`.
+    const actions = st.flatMap((s) => (s.kind === "form" || s.kind === "button" ? [s] : []));
+    const thens = st.flatMap((s) => (s.kind === "thenGo" ? [s] : []));
+    for (const extra of actions.slice(1)) {
+      ok = false;
+      err("RZ0337", extra.span, `${name} has more than one form or button.`, "A page has at most one form or button. Make a separate page for the other one.");
+    }
+    for (const extra of thens.slice(1)) {
+      ok = false;
+      err("RZ0337", extra.span, `\`then go\` appears more than once in ${name}.`, "Remove the duplicate line.");
+    }
+    const action = actions[0];
+    const thenGo = thens[0];
+    if (action !== undefined && thenGo === undefined) {
+      ok = false;
+      err("RZ0338", action.span, `${name} does not say where to go after the ${action.kind} succeeds.`,
+        `Add a line such as \`then go ${action.kind === "button" ? "/" : "/posts/:id"}\` below the ${action.kind}.`);
+    }
+    if (thenGo !== undefined && action === undefined) {
+      ok = false;
+      err("RZ0338", thenGo.span, `\`then go\` in ${name} has no form or button to follow.`, "Remove it, or add a form or button.");
+    }
+    if (thenGo !== undefined && action !== undefined) {
+      const target = parseRoutePath(thenGo.path, thenGo.pathSpan, err);
+      if (target === undefined) {
+        ok = false;
+      } else if (!parsed.some((p) => pathShape(p.segments) === pathShape(target))) {
+        ok = false;
+        const guess = didYouMean(thenGo.path, parsed.map((p) => p.decl.path));
+        err("RZ0338", thenGo.pathSpan, `There is no page "${thenGo.path}" to go to.`,
+          guess !== undefined ? `Did you mean "${guess}"?` : `Add \`page ${thenGo.path} { ... }\`, or choose an existing page.`);
+      } else {
+        // Forms return the saved record, so :id can come from it; everything else comes from this page.
+        const fromResult = action.kind === "form" ? ["id"] : [];
+        const missing = target.flatMap((t) => (t.kind === "param" && !pageParams.has(t.name) && !fromResult.includes(t.name) ? [t.name] : []));
+        if (missing.length > 0) {
           ok = false;
-          err("RZ0335", s.methodSpan, `A page can only show data from a GET endpoint, not ${s.method}.`,
-            `Write \`show GET ${s.path}\`. Changing data needs a form (coming in the next part of Milestone 4).`);
-          continue;
+          err("RZ0338", thenGo.pathSpan, `\`then go ${thenGo.path}\` needs :${missing.join(", :")}, which ${name} does not have.`,
+            action.kind === "form"
+              ? "Use this page's parameters, or :id for the record the form saved."
+              : "Use this page's parameters, or go to a page without parameters, such as `/`.");
         }
-        if (api === undefined) {
-          ok = false;
-          const gets = apis.filter((a) => a.method === "GET").map((a) => a.path);
-          const guess = didYouMean(s.path, gets);
-          err("RZ0335", s.pathSpan, `There is no endpoint "GET ${s.path}" to show.`,
-            guess !== undefined ? `Did you mean "${guess}"?` : gets.length > 0 ? `Use one of: ${gets.join(", ")}.` : `Declare it first: \`api GET ${s.path} -> ... { ... }\`.`);
-          continue;
-        }
-        for (const p of api.params) {
-          if (!pageParams.has(p.name)) {
-            ok = false;
-            err("RZ0335", s.pathSpan, `"GET ${api.path}" needs :${p.name}, but ${name} has no :${p.name}.`,
-              `Give the page the same parameter, for example \`page ${decl.path === "/" ? "" : decl.path}/:${p.name}\`.`);
-          } else {
-            paramTypes.set(p.name, p.type);
-          }
-        }
-        if (api.access === "login" && access === "public") {
-          ok = false;
-          err("RZ0335", s.span, `${name} is public, but "GET ${api.path}" requires login, so visitors would only see an error.`,
-            "Replace `public` with `requires login`, or make the endpoint public.");
-        }
-        const missingRoles = api.roles.length > 0 && (roles.length === 0 || roles.some((r) => !api.roles.includes(r)));
-        if (missingRoles) {
-          ok = false;
-          err("RZ0335", s.span, `"GET ${api.path}" requires role ${api.roles.join(" or ")}, but ${name} lets in users without it.`,
-            `Add \`requires role ${api.roles.join(", ")}\` to the page.`);
-        }
-        items.push({
-          kind: "show",
-          api,
-          mode: api.returns === "list" ? "list" : "one",
-          fields: fieldsOf(api.query.model),
-          detail: undefined,
-        });
       }
     }
 
@@ -237,6 +300,7 @@ export function checkPages(
       roles,
       title: titles[0]?.text.text ?? titleFor(segments),
       items,
+      then: thens[0]?.path,
     };
   }
 

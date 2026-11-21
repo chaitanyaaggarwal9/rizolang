@@ -112,6 +112,13 @@ export interface FieldViewSpec {
   readonly type: FieldKind;
 }
 
+/** One input of a form: a body field plus how to show it. */
+export interface FormFieldSpec extends FieldSpec {
+  readonly label: string;
+  /** Long text gets a multi-line box. */
+  readonly multiline: boolean;
+}
+
 /** What a page shows, in order. Plain data: pages never contain markup or code. */
 export type PageItemSpec =
   | { readonly kind: "text"; readonly text: string }
@@ -126,7 +133,20 @@ export type PageItemSpec =
       readonly fields: readonly FieldViewSpec[];
       /** For lists: link each record to this page, filling `param` with the record's id. */
       readonly detail: { readonly path: string; readonly param: string } | null;
-    };
+    }
+  | {
+      readonly kind: "form";
+      readonly method: "POST" | "PUT" | "PATCH";
+      /** Endpoint path pattern; :params come from the page. */
+      readonly endpoint: string;
+      readonly fields: readonly FormFieldSpec[];
+      readonly submit: string;
+      /** GET endpoint to prefill an edit form from, or null. */
+      readonly prefill: string | null;
+      /** Page to open afterwards (:id may come from the saved record), or null for "?next= or home". */
+      readonly then: string | null;
+    }
+  | { readonly kind: "button"; readonly label: string; readonly method: "DELETE"; readonly endpoint: string; readonly then: string };
 
 export interface PageRoute {
   /** Original path, used in logs. */

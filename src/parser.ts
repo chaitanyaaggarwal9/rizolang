@@ -29,7 +29,7 @@ export type ParseResult =
 /** Block keywords planned for later milestones. */
 export const FUTURE_BLOCKS: readonly string[] = ["component", "enum", "import", "type", "test"];
 
-const PAGE_WORDS: readonly string[] = ["public", "requires", "title", "text", "link", "show"];
+const PAGE_WORDS: readonly string[] = ["public", "requires", "title", "text", "link", "show", "form", "button", "then"];
 
 /** Words from other languages that people write instead of `model`. */
 const MODEL_LOOKALIKES: readonly string[] = ["Model", "MODEL", "class", "struct", "table", "interface", "entity", "schema"];
@@ -317,8 +317,8 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
       const guess = t.kind === "ident" ? didYouMean(t.text, PAGE_WORDS) : undefined;
       fail("RZ0220", t.span, `Unexpected ${describe(t)} in a page block.`,
         guess !== undefined
-          ? `Did you mean "${guess}"? A page contains: public or requires login, title, text, link and show lines.`
-          : "A page contains: public or requires login, title \"...\", text \"...\", link \"...\" /path, and show GET /api/path.");
+          ? `Did you mean "${guess}"? A page contains: public or requires login, title, text, link, show, form, button and then go lines.`
+          : "A page contains: public or requires login, title \"...\", text \"...\", link \"...\" /path, show GET /api/path, form POST /api/path, button \"...\" DELETE /api/path, and then go /path.");
     }
     next();
     switch (t.text) {
@@ -351,17 +351,33 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
         next();
         return { kind: "link", span: t.span, label, path: p.text, pathSpan: p.span };
       }
-      default: {
-        // show
-        const m = peek();
+      case "then": {
+        const go = peek();
         const p = peek(1);
-        if (m.kind !== "ident" || m.span.line !== t.span.line || p.kind !== "path" || p.span.line !== t.span.line) {
-          fail("RZ0220", m.span.line === t.span.line ? m.span : t.span, `Expected "GET /api/path" after "show".`,
-            "Name the endpoint whose data the page shows, for example `show GET /api/posts`.");
+        if (!isWord(go, "go") || go.span.line !== t.span.line || p.kind !== "path" || p.span.line !== t.span.line) {
+          fail("RZ0220", go.span.line === t.span.line ? go.span : t.span, `Expected "go /path" after "then".`,
+            "Say which page to open after the form or button succeeds, for example `then go /posts/:id`.");
         }
         next();
         next();
-        return { kind: "show", span: t.span, method: m.text, methodSpan: m.span, path: p.text, pathSpan: p.span };
+        return { kind: "thenGo", span: t.span, path: p.text, pathSpan: p.span };
+      }
+      default: {
+        // show, form and button: [button "label"] METHOD /path
+        const label = t.text === "button" ? parseText(t, 'button "Delete" DELETE /api/posts/:id') : undefined;
+        const m = peek();
+        const p = peek(1);
+        if (m.kind !== "ident" || m.span.line !== t.span.line || p.kind !== "path" || p.span.line !== t.span.line) {
+          const example = t.text === "show" ? "show GET /api/posts" : t.text === "form" ? "form POST /api/posts" : 'button "Delete" DELETE /api/posts/:id';
+          fail("RZ0220", m.span.line === t.span.line ? m.span : t.span, `Expected an HTTP method and an endpoint path after "${t.text}".`,
+            `Name the endpoint, for example \`${example}\`.`);
+        }
+        next();
+        next();
+        const base = { span: t.span, method: m.text, methodSpan: m.span, path: p.text, pathSpan: p.span };
+        if (t.text === "form") return { kind: "form", ...base };
+        if (label !== undefined) return { kind: "button", label, ...base };
+        return { kind: "show", ...base };
       }
     }
   }

@@ -2,8 +2,8 @@ import type { FieldValue, ResolvedApi, ResolvedAuth, ResolvedValue } from "../ch
 import { type ResolvedField, type ResolvedModel, isHidden } from "../checker.js";
 import { FIELD_TYPES, type FieldTypeName } from "../types.js";
 import { VERSION } from "../version.js";
-import type { App, AuthSpec, FieldSpec, PageItemSpec, PageRoute, PathPart, Route, ValueSource } from "../../runtime/types.ts";
-import type { ResolvedPage } from "../check-page.js";
+import type { App, AuthSpec, FieldSpec, FormFieldSpec, PageItemSpec, PageRoute, PathPart, Route, ValueSource } from "../../runtime/types.ts";
+import { type ResolvedPage, labelFor } from "../check-page.js";
 import { q, roleLiteral } from "./sql.js";
 
 /**
@@ -25,7 +25,37 @@ export function emitRoutes(apis: readonly ResolvedApi[], auth: ResolvedAuth | un
 
 /** The route table as data (what `routes.ts` contains). */
 export function buildApp(apis: readonly ResolvedApi[], auth: ResolvedAuth | undefined, pages: readonly ResolvedPage[] = []): App {
-  return { auth: auth === undefined ? null : authSpec(auth), routes: apis.map(route), pages: pages.map(pageRoute) };
+  const authSpecs = auth === undefined ? null : authSpec(auth);
+  const builtIn = authSpecs === null || pages.length === 0 ? [] : authPages(authSpecs);
+  return { auth: authSpecs, routes: apis.map(route), pages: [...pages.map(pageRoute), ...builtIn] };
+}
+
+/** A form input from a body field. */
+function formField(spec: FieldSpec): FormFieldSpec {
+  return { ...spec, label: labelFor(spec.key), multiline: spec.kind === "Text" && (spec.max === undefined || spec.max > 200) };
+}
+
+/** The built-in /login and /signup pages, added when a file has both an auth line and pages. */
+function authPages(auth: AuthSpec): PageRoute[] {
+  const page = (path: string, title: string, items: PageItemSpec[]): PageRoute => ({
+    pattern: path, path: [{ static: path.slice(1) }], access: "public", roles: [], title, items,
+  });
+  return [
+    page("/login", "Log in", [
+      {
+        kind: "form", method: "POST", endpoint: "/auth/login", submit: "Log in", prefill: null, then: null,
+        fields: [
+          { key: auth.loginKey, kind: "Email", required: true, nullable: false, max: 254, label: labelFor(auth.loginKey), multiline: false },
+          { key: auth.passwordKey, kind: "Password", required: true, nullable: false, max: 128, label: labelFor(auth.passwordKey), multiline: false },
+        ],
+      },
+      { kind: "link", label: "No account yet? Sign up", path: "/signup" },
+    ]),
+    page("/signup", "Create an account", [
+      { kind: "form", method: "POST", endpoint: "/auth/signup", submit: "Create account", prefill: null, then: null, fields: auth.signup.body.map(formField) },
+      { kind: "link", label: "Already have an account? Log in", path: "/login" },
+    ]),
+  ];
 }
 
 function pageRoute(page: ResolvedPage): PageRoute {
@@ -40,7 +70,25 @@ function pageRoute(page: ResolvedPage): PageRoute {
     roles: page.roles,
     title: page.title,
     items: page.items.map((item): PageItemSpec => {
-      if (item.kind !== "show") return item;
+      if (item.kind === "text" || item.kind === "link") return item;
+      if (item.kind === "form") {
+        const r = route(item.api);
+        const method = item.api.method;
+        if (method !== "POST" && method !== "PUT" && method !== "PATCH") throw new Error(`form with ${method}`);
+        return {
+          kind: "form",
+          method,
+          endpoint: item.api.path,
+          fields: (r.body ?? []).map(formField),
+          submit: item.api.query.action === "create" ? "Save" : "Save changes",
+          prefill: item.prefill?.path ?? null,
+          then: page.then ?? null,
+        };
+      }
+      if (item.kind === "button") {
+        if (page.then === undefined) throw new Error("button without then go");
+        return { kind: "button", label: item.label, method: "DELETE", endpoint: item.api.path, then: page.then };
+      }
       return {
         kind: "show",
         endpoint: item.api.path,

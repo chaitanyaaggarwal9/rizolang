@@ -125,14 +125,28 @@ describe("serving pages", () => {
     expect(await bad.text()).not.toContain("not-a-uuid");
   });
 
-  it("asks for login and checks roles", async () => {
+  it("sends visitors to the login page and back, and checks roles", async () => {
     const base = await start(null);
-    expect((await fetch(`${base}/mine`)).status).toBe(401);
+    const r = await fetch(`${base}/mine`, { redirect: "manual" });
+    expect(r.status).toBe(302);
+    expect(r.headers.get("location")).toBe("/login?next=%2Fmine");
     expect((await fetch(`${base}/mine`, loggedIn)).status).toBe(200);
     expect((await fetch(`${base}/admin`, loggedIn)).status).toBe(403);
     server?.close();
     const adminBase = await start("admin");
     expect((await fetch(`${adminBase}/admin`, loggedIn)).status).toBe(200);
+  });
+
+  it("adds the built-in login and signup pages, with their forms", async () => {
+    const base = await start();
+    for (const [path, endpoint] of [["/login", "/auth/login"], ["/signup", "/auth/signup"]] as const) {
+      const html = await (await fetch(`${base}${path}`)).text();
+      const data = JSON.parse(/id="rizo-page">([^<]*)</.exec(html)?.[1] ?? "{}") as { auth: boolean; items: { kind: string; endpoint?: string; fields?: { key: string; kind: string }[] }[] };
+      expect(data.auth).toBe(true);
+      const form = data.items.find((i) => i.kind === "form");
+      expect(form?.endpoint).toBe(endpoint);
+      expect(form?.fields?.map((f) => f.kind)).toContain("Password");
+    }
   });
 
   it("still serves the API next to pages, as JSON", async () => {

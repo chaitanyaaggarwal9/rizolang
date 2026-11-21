@@ -6,7 +6,7 @@ Rizo Lang is a secure, simple, full-stack web language. Source files end in `.rz
 
 This document is the complete language reference. It is written for people and for AI models alike. If something is not described here, it is not part of the language.
 
-> **Status:** `model`, `auth`, `api` and `page` blocks are available. Forms in pages come next. Other blocks are not available, and using them is a compile error (RZ0211).
+> **Status:** `model`, `auth`, `api` and `page` blocks are available, including forms. Other blocks are not available, and using them is a compile error (RZ0211).
 
 ---
 
@@ -371,28 +371,69 @@ page /posts/:id {
 | `text "..."` | A paragraph |
 | `link "..." /path` | A link to another page in the file (or `/login` and `/signup` when there is an auth line) |
 | `show GET /api/...` | The data to show, from a GET endpoint in the file. At most one per page |
+| `form POST /api/...` | A form that creates a record (POST), or changes one (PUT or PATCH) |
+| `button "..." DELETE /api/...` | A button that deletes a record, after asking "are you sure?" |
+| `then go /path` | The page to open after the form or button succeeds. Required with a form or button |
+
+```rizo
+page /posts/:id {
+  public
+  show GET /api/posts/:id
+}
+
+page /posts/new {
+  requires login
+  title "Write a post"
+  form POST /api/posts
+  then go /posts/:id
+}
+
+page /posts/:id/edit {
+  requires login
+  form PATCH /api/posts/:id
+  then go /posts/:id
+}
+
+page /posts/:id/delete {
+  requires login
+  button "Delete post" DELETE /api/posts/:id
+  then go /posts/new
+}
+```
 
 **Rules:**
 - **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. `/login` and `/signup` are reserved for the built-in pages.
 - **Parameters:** a page's `:parameters` fill in the parameters of the endpoint it shows, by name. Every page parameter must be used (RZ0323).
 - **Never more open than its data (RZ0335):**
-  - A page that shows a `requires login` endpoint must also `requires login`.
-  - A page that shows an endpoint with `requires role` must require one of those roles.
+  - A page that uses (shows, or has a form or button for) a `requires login` endpoint must also `requires login`.
+  - A page that uses an endpoint with `requires role` must require one of those roles.
+- **Forms and buttons:**
+  - A page has at most one `form` or `button` (RZ0337), followed by `then go` (RZ0338).
+  - A form uses a POST, PUT or PATCH endpoint, and its inputs come from that endpoint's body: labels from field names, and limits (`required`, length, range) checked in the browser and again by the server. Links to the auth model are never inputs, because the server sets them.
+  - An edit form (PUT or PATCH) starts with the current values when a GET endpoint exists on the same path.
+  - A button uses a DELETE endpoint.
+  - `then go` must name a page in the file. Its parameters come from the current page, and after a form `:id` can also be the id of the saved record.
+- **Errors:** if the server rejects a form, its message appears next to the field it names, or above the button.
 - **What a page shows:**
   - A `list` endpoint is shown as cards, with a "Load more" button for the next page.
   - A `find` endpoint is shown as a list of fields.
   - Only public fields appear, labelled from their names (`publishedAt` → "Published at").
   - When another page shows one record of the same model (for example `page /posts/:id { show GET /api/posts/:id }`), each card links to it.
 
+**Built-in pages.** In an app with an `auth` line and at least one page:
+- `/login` and `/signup` are generated, with forms for `/auth/login` and `/auth/signup`.
+- Every page shows a menu with a link home, plus "Log in" and "Sign up", or "Log out".
+- A page that needs a login sends logged-out visitors to `/login?next=<the page>`. After logging in they return there. `next` is followed only if it is a path on this site.
+
 **How pages are served:**
 - The generated server answers `GET` for every page with a small HTML document.
 - The browser runtime (`/_rizo/client.js`) builds the page from data in an inert JSON block, and fetches the data from the API with the same login cookie.
-- If the page needs a login the visitor doesn't have, the server answers 401 instead of the page, or 403 for a missing role. An invalid parameter gets 404.
+- If the page needs a login the visitor doesn't have, the server redirects to the login page, or answers 401 when the app has no login page. A missing role gets 403, and an invalid parameter gets 404.
 
 **Safety:**
 - Pages contain no HTML and no code.
 - All text, both written in the file and coming from the database, is inserted as text and never interpreted as HTML. The runtime never uses `innerHTML`.
-- Links can only point to this site.
+- Links, redirects after a form, and `?next=` can only point to this site.
 - Pages are sent with a strict Content-Security-Policy that allows only the site's own script and stylesheet, and no inline scripts.
 
 ## 6. What the compiler generates
@@ -571,9 +612,10 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0332 | Unknown role, or roles used without declaring them                      |
 | RZ0333 | Page access missing, repeated or contradictory                          |
 | RZ0334 | Page path already used by another page, an endpoint or a built-in page  |
-| RZ0335 | `show` names a missing or non-GET endpoint, or the page is more open than it |
+| RZ0335 | `show`, `form` or `button` names a missing or unsuitable endpoint, or the page is more open than it |
 | RZ0336 | `link` to a page that doesn't exist, or that needs missing parameters   |
-| RZ0337 | `title` or `show` repeated in a page                                    |
+| RZ0337 | `title`, `show`, `then go`, or the page's form or button repeated        |
+| RZ0338 | Missing, misplaced or invalid `then go`                                  |
 | RZ0901 | Cannot read the input file                                              |
 | RZ0902 | Input file does not end in `.rz`                                        |
 | RZ0903 | Wrong command-line usage                                                |
@@ -748,7 +790,8 @@ NAME       = LETTER { LETTER | DIGIT } ;
 INT        = [ "-" ] DIGIT { DIGIT } ;
 page       = "page" PATH "{" { pageline NEWLINE } "}" ;
 pageline   = "public" | "requires" "login" | "requires" "role" NAME { "," NAME }
-           | "title" TEXT | "text" TEXT | "link" TEXT PATH | "show" METHOD PATH ;
+           | "title" TEXT | "text" TEXT | "link" TEXT PATH | "show" METHOD PATH
+           | "form" METHOD PATH | "button" TEXT METHOD PATH | "then" "go" PATH ;
 TEXT       = '"' { any character except '"', '\\', newline, control; or '\\"' or '\\\\' } '"' ;
 comment    = "//" { any character except newline } ;
 ```
@@ -761,4 +804,5 @@ These are **not** part of the language yet. Using them is an error.
 
 - Pagination, and filters other than `=`.
 - Changing the login email, and password reset by email (these need email verification).
-- Forms in pages (create and edit records), delete buttons, and built-in login and signup pages.
+- Custom page layouts and styling.
+- Changing your account from a page (the API endpoints exist already).

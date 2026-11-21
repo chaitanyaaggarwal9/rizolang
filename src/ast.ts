@@ -138,4 +138,10 @@ export type PageStatement =
   /** `link "Write a post" /posts/new` */
   | { readonly kind: "link"; readonly span: Span; readonly label: TextRef; readonly path: string; readonly pathSpan: Span }
   /** `show GET /api/posts` */
-  | { readonly kind: "show"; readonly span: Span; readonly method: string; readonly methodSpan: Span; readonly path: string; readonly pathSpan: Span };
+  | { readonly kind: "show"; readonly span: Span; readonly method: string; readonly methodSpan: Span; readonly path: string; readonly pathSpan: Span }
+  /** `form POST /api/posts` */
+  | { readonly kind: "form"; readonly span: Span; readonly method: string; readonly methodSpan: Span; readonly path: string; readonly pathSpan: Span }
+  /** `button "Delete" DELETE /api/posts/:id` */
+  | { readonly kind: "button"; readonly span: Span; readonly label: TextRef; readonly method: string; readonly methodSpan: Span; readonly path: string; readonly pathSpan: Span }
+  /** `then go /posts/:id` */
+  | { readonly kind: "thenGo"; readonly span: Span; readonly path: string; readonly pathSpan: Span };

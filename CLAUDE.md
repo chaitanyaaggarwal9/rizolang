@@ -72,4 +72,4 @@ Milestone 4 (pages) is in progress. Maintainer decisions:
 - Quoted text is allowed only in pages.
 - The compiler emits browser JavaScript with JSDoc types (no build step, no new dependencies).
 - Pages are served by the same Node server as the API.
-- Part 1 (read-only pages) is done. Part 2 adds forms, delete buttons, and built-in login and signup pages.
+- Part 1 (read-only pages) and part 2 (forms, delete buttons, built-in login and signup pages, login redirects with a same-site-only `next`) are done. Next: polish and a release.

@@ -17,6 +17,7 @@ export type AuditAction =
   | "login_blocked"
   | "logout"
   | "logout_all"
+  | "session_revoked"
   | "password_changed"
   | "password_check_failed"
   | "account_deleted"

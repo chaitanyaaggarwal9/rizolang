@@ -471,6 +471,30 @@ describe("emailed links", () => {
   });
 });
 
+describe("the devices list", () => {
+  it("shows each device as text, marks this one, and logs out another", async () => {
+    const urls: string[] = [];
+    const devices = { items: [
+      { id: "a1", device: HOSTILE, createdAt: "2026-01-01T00:00:00Z", lastSeenAt: "2026-01-02T00:00:00Z", current: true },
+      { id: "b/2", device: "Firefox on Windows", createdAt: "2026-01-01T00:00:00Z", lastSeenAt: "2026-01-01T00:00:00Z", current: false },
+    ] };
+    (globalThis as { fetch?: unknown }).fetch = async (url: string, init?: { method?: string }) => {
+      urls.push(`${init?.method ?? "GET"} ${url}`);
+      return { ok: true, status: init?.method === "DELETE" ? 204 : 200, json: async () => devices };
+    };
+    const page = client.renderPage({ title: "Your account", params: {}, loggedIn: true, auth: false, items: [{ kind: "sessions" }] }) as unknown as FakeElement;
+    await flush();
+    const cards = all(page).filter((e) => e.attributes.get("class") === "rizo-card");
+    expect(cards).toHaveLength(2);
+    expect(cards[0]?.textContent).toContain(`${HOSTILE} (this device)`);
+    expect(all(cards[0] as FakeElement).find((e) => e.tagName === "strong")?.children[0]).toBeInstanceOf(FakeText);
+    all(cards[1] as FakeElement).find((e) => e.tagName === "button")?.onclick?.();
+    await flush();
+    expect(urls).toContain("DELETE /auth/sessions/b%2F2");
+    expect(navigation).toEqual([]);
+  });
+});
+
 describe("buttons and the menu", () => {
   const buttonPage = () => client.renderPage({
     title: "Post", params: { id: "7" }, loggedIn: true, auth: false,

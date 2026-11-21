@@ -179,6 +179,8 @@ export type PageItemSpec =
   | { readonly kind: "passkeyLogin" }
   /** List, add and remove your passkeys (built-in account page). */
   | { readonly kind: "passkeys" }
+  /** The devices you are logged in on, each with "Log out" (built-in account page). */
+  | { readonly kind: "sessions" }
   /** Confirms the email when the page was opened from the emailed link (built-in /verify-email). */
   | { readonly kind: "verifyEmail" }
   /** Asks for a new password when the page was opened from the emailed link (built-in /reset-password). */

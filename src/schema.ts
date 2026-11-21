@@ -152,7 +152,13 @@ export function buildSchema(
         col("token_hash", "TEXT", { primaryKey: true, notNull: false }),
         col("user_id", "UUID", {}),
         col("created_at", "TIMESTAMPTZ", { default: "now()" }),
+        // Ends after 7 days without use (moved forward on use), and never after ends_at.
         col("expires_at", "TIMESTAMPTZ", {}),
+        // The public handle for listing and logging out one device: never the token hash.
+        col("id", "UUID", { default: "gen_random_uuid()", unique: constraintName(t, "id", "key") }),
+        col("ends_at", "TIMESTAMPTZ", { default: "now() + interval '30 days'" }),
+        col("last_seen_at", "TIMESTAMPTZ", { default: "now()" }),
+        col("device", "TEXT", { default: "'Unknown device'", comment: "device: a label such as \"Chrome on macOS\" from a fixed list, never the raw User-Agent" }),
       ],
       foreignKeys: [{
         name: constraintName(t, "user_id", "fkey"), column: "user_id", refTable: auth.model.table,

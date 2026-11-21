@@ -42,6 +42,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Key rotation: put a new key first, then run the generated `node reencrypt.ts` to move stored values to it.
   - New error RZ0340: an encrypted field can't be unique, the login field, a list filter or an order.
   - Adding or removing `encrypted` on an existing field replaces its column, so it needs `--allow-data-loss`.
+- Milestone 6, part 4: sessions and devices.
+  - Sessions end after 7 days without use, and 30 days after login however much they are used. The cookie's `Max-Age` is now 30 days; the server enforces the idle limit.
+  - `GET /auth/sessions` lists the devices you are logged in on, each with a label such as "Chrome on macOS" (from fixed names only; the raw User-Agent and IP address are not stored), and `DELETE /auth/sessions/:id` logs one out. Recorded in the audit log.
+  - The built-in `/account` page lists your devices, with "Log out" for each and "Log out everywhere".
+  - "Last active" is updated at most once a minute. The `_rizo_sessions` table gets `id`, `ends_at`, `last_seen_at` and `device` columns, added by migration; existing sessions keep working.
 
 ## [0.4.0] - 2026-11-21
 

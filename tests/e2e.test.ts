@@ -141,7 +141,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     const login = await call("POST", "/auth/login", { body: { email: ALICE.email, password: ALICE.password } });
     expect(login.status).toBe(200);
     expect(Object.keys(login.body as object).sort()).toEqual(["bio", "id", "name"]);
-    expect(login.headers.get("set-cookie") ?? "").toMatch(/^rizo_session=[A-Za-z0-9_-]{43}; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=604800$/);
+    expect(login.headers.get("set-cookie") ?? "").toMatch(/^rizo_session=[A-Za-z0-9_-]{43}; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=2592000$/);
     alice = login.cookie ?? "";
     aliceId = (login.body as { id: string }).id;
   });
@@ -661,6 +661,91 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
   });
 
+  describe("devices and session lifetimes", () => {
+    const KIM = { email: "kim@example.com", password: "kims long password", name: "Kim" };
+    const CHROME_MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
+    const FIREFOX_WIN = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0";
+    const at = (ua: string) => ({ "X-Forwarded-For": "198.51.100.40", "User-Agent": ua });
+    let laptop: string;
+    let pc: string;
+    const tokenHash = async (cookie: string) => (await import("../runtime/session.ts")).hashToken(cookie.split("=")[1] ?? "");
+
+    beforeAll(async () => {
+      await join(KIM, "198.51.100.40");
+      const login = async (ua: string) =>
+        (await call("POST", "/auth/login", { body: { email: KIM.email, password: KIM.password }, headers: at(ua) })).cookie ?? "";
+      laptop = await login(CHROME_MAC);
+      pc = await login(FIREFOX_WIN);
+    });
+
+    it("lists your devices with a label, marking this one, and never shows tokens", async () => {
+      const r = await call("GET", "/auth/sessions", { cookie: laptop });
+      expect(r.status).toBe(200);
+      const list = items<{ id: string; device: string; current: boolean; createdAt: string; lastSeenAt: string }>(r);
+      expect(list.map((s) => s.device)).toEqual(expect.arrayContaining(["Chrome on macOS", "Firefox on Windows"]));
+      expect(list.filter((s) => s.current).map((s) => s.device)).toEqual(["Chrome on macOS"]);
+      expect(Object.keys(list[0] ?? {}).sort()).toEqual(["createdAt", "current", "device", "id", "lastSeenAt"]);
+      expect(JSON.stringify(r.body)).not.toContain(await tokenHash(laptop));
+      expect((await call("GET", "/auth/sessions")).status).toBe(401);
+    });
+
+    it("logs out one device, and only your own", async () => {
+      const list = items<{ id: string; device: string }>(await call("GET", "/auth/sessions", { cookie: laptop }));
+      const pcId = list.find((s) => s.device === "Firefox on Windows")?.id ?? "";
+      expect((await call("DELETE", `/auth/sessions/${pcId}`, { cookie: bob })).status).toBe(404);
+      expect((await call("DELETE", "/auth/sessions/not-an-id", { cookie: laptop })).status).toBe(404);
+      expect((await call("GET", "/auth/me", { cookie: pc })).status).toBe(200);
+      const r = await call("DELETE", `/auth/sessions/${pcId}`, { cookie: laptop });
+      expect(r.status).toBe(204);
+      expect(r.headers.get("set-cookie")).toBeNull();
+      expect((await call("GET", "/auth/me", { cookie: pc })).status).toBe(401);
+      expect((await call("GET", "/auth/me", { cookie: laptop })).status).toBe(200);
+      expect((await call("DELETE", `/auth/sessions/${pcId}`, { cookie: laptop })).status).toBe(404);
+    });
+
+    it("logging out this device clears the cookie", async () => {
+      const phone = (await call("POST", "/auth/login", { body: { email: KIM.email, password: KIM.password }, headers: at("curl/8.0") })).cookie ?? "";
+      const mine = items<{ id: string; current: boolean; device: string }>(await call("GET", "/auth/sessions", { cookie: phone })).find((s) => s.current);
+      expect(mine?.device).toBe("Unknown device");
+      const r = await call("DELETE", `/auth/sessions/${mine?.id}`, { cookie: phone });
+      expect(r.headers.get("set-cookie")).toContain("Max-Age=0");
+      expect((await call("GET", "/auth/me", { cookie: phone })).status).toBe(401);
+    });
+
+    it("ends a session after 7 days without use", async () => {
+      await pool.query(`UPDATE "_rizo_sessions" SET "expires_at" = now() - interval '1 second' WHERE "token_hash" = $1`, [await tokenHash(laptop)]);
+      expect((await call("GET", "/auth/me", { cookie: laptop })).status).toBe(401);
+      laptop = (await call("POST", "/auth/login", { body: { email: KIM.email, password: KIM.password }, headers: at(CHROME_MAC) })).cookie ?? "";
+    });
+
+    it("keeps a used session alive for 7 more days, but never past 30 days from login", async () => {
+      const hash = await tokenHash(laptop);
+      const row = async () => (await pool.query(`SELECT "expires_at" - now() AS "left", "ends_at" - "created_at" AS "max", "expires_at" <= "ends_at" AS "bounded" FROM "_rizo_sessions" WHERE "token_hash" = $1`, [hash])).rows[0];
+      expect((await row()).max.days).toBe(30);
+      // Last used 3 days ago, with 4 days left: using it now moves the deadline to 7 days from now.
+      await pool.query(`UPDATE "_rizo_sessions" SET "last_seen_at" = now() - interval '3 days', "expires_at" = now() + interval '4 days' WHERE "token_hash" = $1`, [hash]);
+      expect((await call("GET", "/auth/me", { cookie: laptop })).status).toBe(200);
+      const left = (await row()).left;
+      expect(left.days ?? 0).toBeGreaterThanOrEqual(6);
+      // Close to the 30-day maximum, use doesn't extend it further, and at the maximum it ends.
+      await pool.query(`UPDATE "_rizo_sessions" SET "last_seen_at" = now() - interval '2 minutes', "ends_at" = now() + interval '1 hour' WHERE "token_hash" = $1`, [hash]);
+      expect((await call("GET", "/auth/me", { cookie: laptop })).status).toBe(200);
+      expect((await row()).bounded).toBe(true);
+      expect(((await row()).left.hours ?? 0)).toBeLessThanOrEqual(1);
+      await pool.query(`UPDATE "_rizo_sessions" SET "ends_at" = now() - interval '1 second' WHERE "token_hash" = $1`, [hash]);
+      expect((await call("GET", "/auth/me", { cookie: laptop })).status).toBe(401);
+    });
+
+    it("updates last active at most once a minute", async () => {
+      const cookie = (await call("POST", "/auth/login", { body: { email: KIM.email, password: KIM.password }, headers: at(CHROME_MAC) })).cookie ?? "";
+      const hash = await tokenHash(cookie);
+      const seen = async () => String((await pool.query(`SELECT "last_seen_at" FROM "_rizo_sessions" WHERE "token_hash" = $1`, [hash])).rows[0].last_seen_at.toISOString());
+      const first = await seen();
+      await call("GET", "/auth/me", { cookie });
+      expect(await seen()).toBe(first);
+    });
+  });
+
   describe("email links", () => {
     const FRANK = { email: "frank@example.com", password: "franks first password", name: "Frank" };
     const at = (address: string) => ({ "X-Forwarded-For": address });
@@ -749,7 +834,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect(has("record_deleted", { user_id: aliceId, detail: "Post" })).toBe(true);
     expect(has("login_failed", { user_id: aliceId, detail: "email not confirmed" })).toBe(true);
     expect(has("email_verified", { user_id: aliceId })).toBe(true);
-    for (const action of ["password_changed", "password_check_failed", "account_deleted", "logout_all", "logout", "password_reset_requested", "password_reset"]) {
+    for (const action of ["password_changed", "password_check_failed", "account_deleted", "logout_all", "logout", "password_reset_requested", "password_reset", "session_revoked"]) {
       expect(has(action), action).toBe(true);
     }
     expect(rows.every((r) => r.ip === null || /^[0-9a-f.:]+$/i.test(String(r.ip)))).toBe(true);

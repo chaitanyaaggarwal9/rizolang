@@ -21,6 +21,7 @@
  *   | ButtonItem
  *   | { kind: "passkeyLogin" }
  *   | { kind: "passkeys" }
+ *   | { kind: "sessions" }
  *   | { kind: "verifyEmail" }
  *   | { kind: "newPassword", field: FormField }} PageItem
  * @typedef {{ title: string, items: PageItem[], params: Record<string, string>, loggedIn: boolean, auth: boolean }} PageData
@@ -564,6 +565,49 @@ function passkeysItem() {
   return box;
 }
 
+/** The devices this account is logged in on, for the account page. */
+function sessionsItem() {
+  const box = el("section", { class: "rizo-show", "aria-live": "polite" }, el("h2", {}, "Devices"),
+    el("p", {}, "Where you are logged in. Log out any device you don't recognise, then change your password."));
+  const list = el("ul", { class: "rizo-list" });
+  const status = el("p", { class: "rizo-error", role: "alert" });
+  status.hidden = true;
+  const fail = (/** @type {unknown} */ e) => {
+    status.textContent = e instanceof Error ? e.message : String(e);
+    status.hidden = false;
+  };
+
+  const load = () => getJson("/auth/sessions").then((data) => {
+    const { items } = /** @type {{ items: { id: string, device: string, createdAt: string, lastSeenAt: string, current: boolean }[] }} */ (data);
+    list.replaceChildren(...items.map((s) => {
+      const out = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-link" }, "Log out"));
+      out.onclick = () => {
+        out.disabled = true;
+        sendJson("DELETE", `/auth/sessions/${encodeURIComponent(s.id)}`, undefined).then(() => (s.current ? go("/") : load()), (e) => {
+          out.disabled = false;
+          fail(e);
+        });
+      };
+      const title = el("strong", {}, s.device, s.current ? " (this device)" : "");
+      return el("li", { class: "rizo-card" }, title,
+        el("p", {}, `Logged in ${formatValue(s.createdAt, "Date")}, last active ${formatValue(s.lastSeenAt, "Date")}.`), out);
+    }));
+  }, fail);
+
+  const all = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-secondary" }, "Log out everywhere"));
+  all.onclick = () => {
+    if (!window.confirm("Log out on every device, including this one?")) return;
+    all.disabled = true;
+    sendJson("POST", "/auth/logout-all", undefined).then(() => go("/"), (e) => {
+      all.disabled = false;
+      fail(e);
+    });
+  };
+  box.append(list, el("div", { class: "rizo-actions" }, all), status);
+  load();
+  return box;
+}
+
 /**
  * The menu at the top of every page of an app with accounts.
  * @param {PageData} data
@@ -601,6 +645,7 @@ export function renderPage(data) {
     else if (item.kind === "button") main.append(buttonItem(item, data.params));
     else if (item.kind === "passkeyLogin") main.append(passkeyLoginItem());
     else if (item.kind === "passkeys") main.append(passkeysItem());
+    else if (item.kind === "sessions") main.append(sessionsItem());
     else if (item.kind === "verifyEmail") {
       if (token !== null) main.append(verifyEmailItem(token));
     } else if (item.kind === "newPassword") {

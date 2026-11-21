@@ -114,6 +114,8 @@ export interface AuthSpec {
    * device's passkey picker; empty when the login field is private.
    */
   readonly nameSql: string;
+  /** What `GET /auth/me/export` reads. */
+  readonly export: ExportSpec;
   /** Encrypted fields of the auth model. Absent means none. */
   readonly encrypted?: readonly EncryptedField[];
   /** Account management. */
@@ -124,11 +126,48 @@ export interface AuthSpec {
     readonly hashSql: string;
     /** `UPDATE <users> SET <hash column> = $2 WHERE id = $1` */
     readonly setPasswordSql: string;
-    /** `DELETE FROM <users> WHERE id = $1` */
+    /**
+     * Deletes the account ($1). When `ghost` is set, it first gives the
+     * account's records to the "Deleted user" account ($2), in the same statement.
+     */
     readonly deleteSql: string;
+    /** How to create the shared "Deleted user" account, or null when no records need one. */
+    readonly ghost: GhostSpec | null;
     /** Updating your own profile, or null when there is nothing a user may change. */
     readonly profile: { readonly body: readonly FieldSpec[]; readonly sql: string; readonly values: readonly ValueSource[] } | null;
   };
+}
+
+/** A placeholder value for a field of the "Deleted user" account. Never personal data. */
+export type GhostValue =
+  | { readonly kind: "fixed"; readonly value: string | number | boolean }
+  /** Text: "deleted-" plus random hex, cut to `max` (for unique fields). */
+  | { readonly kind: "unique"; readonly max: number }
+  /** An address under the reserved .invalid domain, which can never receive email. */
+  | { readonly kind: "email"; readonly max: number }
+  | { readonly kind: "uuid" }
+  /** A random whole number in range (for unique fields). */
+  | { readonly kind: "number"; readonly min: number; readonly max: number }
+  /** A random date (for unique fields). */
+  | { readonly kind: "date" }
+  /** Not a password hash, so nobody can ever log in as this account. */
+  | { readonly kind: "noPassword" };
+
+export interface GhostSpec {
+  /** `INSERT INTO <users> (...) VALUES ($1, ...) RETURNING "id"` */
+  readonly sql: string;
+  /** One entry per $n, in order. `key` is the JSON key (used to encrypt encrypted fields). */
+  readonly fields: readonly { readonly key: string; readonly value: GhostValue }[];
+  /** `DELETE FROM <users> WHERE id = $1`: removes a spare one made by a process that lost a race. */
+  readonly removeSql: string;
+}
+
+/** Everything stored about one account, for `GET /auth/me/export`. */
+export interface ExportSpec {
+  /** Every stored field of the account except the password hash (private and encrypted fields included: it is the user's own data). */
+  readonly account: { readonly sql: string; readonly encrypted?: readonly EncryptedField[] };
+  /** Records of other models that link to the account ($1), at most 10,000 per model. */
+  readonly records: readonly { readonly model: string; readonly sql: string; readonly encrypted?: readonly EncryptedField[] }[];
 }
 
 /** One field of a shown record, as the browser displays it. */
@@ -183,6 +222,8 @@ export type PageItemSpec =
   | { readonly kind: "sessions" }
   /** Create, list and revoke API tokens (built-in account page). */
   | { readonly kind: "tokens" }
+  /** Download your data, and delete your account (built-in account page). */
+  | { readonly kind: "yourData" }
   /** Confirms the email when the page was opened from the emailed link (built-in /verify-email). */
   | { readonly kind: "verifyEmail" }
   /** Asks for a new password when the page was opened from the emailed link (built-in /reset-password). */

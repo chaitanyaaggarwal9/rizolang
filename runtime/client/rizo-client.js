@@ -23,6 +23,7 @@
  *   | { kind: "passkeys" }
  *   | { kind: "sessions" }
  *   | { kind: "tokens" }
+ *   | { kind: "yourData" }
  *   | { kind: "verifyEmail" }
  *   | { kind: "newPassword", field: FormField }} PageItem
  * @typedef {{ title: string, items: PageItem[], params: Record<string, string>, loggedIn: boolean, auth: boolean }} PageData
@@ -650,6 +651,40 @@ function tokensItem() {
   return box;
 }
 
+/** Download everything stored about you, or delete your account, for the account page. */
+function yourDataItem() {
+  const status = el("p", { class: "rizo-error", role: "alert" });
+  status.hidden = true;
+  const download = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-secondary" }, "Download my data"));
+  // The server sends the file as a download, so the page stays open.
+  download.onclick = () => go("/auth/me/export");
+
+  const password = /** @type {HTMLInputElement} */ (el("input", { id: "rizo-delete-password", type: "password", autocomplete: "current-password", maxlength: "128" }));
+  const remove = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-danger" }, "Delete my account"));
+  remove.onclick = () => {
+    status.hidden = true;
+    if (password.value === "") {
+      status.textContent = "Enter your password to delete your account.";
+      status.hidden = false;
+      return;
+    }
+    if (!window.confirm("Delete your account? This can't be undone. Your posts and other records stay, credited to \"Deleted user\".")) return;
+    remove.disabled = true;
+    sendJson("DELETE", "/auth/me", { password: password.value }).then(() => go("/"), (e) => {
+      remove.disabled = false;
+      status.textContent = e instanceof Error ? e.message : String(e);
+      status.hidden = false;
+    });
+  };
+  return el("section", { class: "rizo-show" }, el("h2", {}, "Your data"),
+    el("p", {}, "Download a copy of everything this site stores about you."),
+    el("div", { class: "rizo-actions" }, download),
+    el("h2", {}, "Delete your account"),
+    el("p", {}, "Your account, devices, passkeys and API tokens are deleted. Records others may rely on, such as posts, stay and are shown as \"Deleted user\"."),
+    el("div", { class: "rizo-field" }, el("label", { for: "rizo-delete-password" }, "Password"), password),
+    el("div", { class: "rizo-actions" }, remove), status);
+}
+
 /** The devices this account is logged in on, for the account page. */
 function sessionsItem() {
   const box = el("section", { class: "rizo-show", "aria-live": "polite" }, el("h2", {}, "Devices"),
@@ -732,6 +767,7 @@ export function renderPage(data) {
     else if (item.kind === "passkeys") main.append(passkeysItem());
     else if (item.kind === "sessions") main.append(sessionsItem());
     else if (item.kind === "tokens") main.append(tokensItem());
+    else if (item.kind === "yourData") main.append(yourDataItem());
     else if (item.kind === "verifyEmail") {
       if (token !== null) main.append(verifyEmailItem(token));
     } else if (item.kind === "newPassword") {

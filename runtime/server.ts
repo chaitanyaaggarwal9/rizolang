@@ -18,6 +18,7 @@ import { type Keys, decryptValue, encryptValue, parseKeys } from "./encryption.t
 import { EMAIL_SQL, type Mailer, MESSAGES, RESET_SECONDS, type TokenPurpose, VERIFY_SECONDS, emailConfig, emailTokenHash, newEmailToken, readEmailToken } from "./email.ts";
 import { Limits, limitKey } from "./limits.ts";
 import { CHALLENGE_SECONDS, MAX_PASSKEYS, PASSKEY_SQL, challengeHash, challengeOf, newChallenge } from "./passkeys.ts";
+import { EXPORT_LIMIT, GHOST_SQL, ghostValues } from "./privacy.ts";
 import { MAX_TOKENS, MAX_TOKEN_DAYS, TOKEN_SQL, agentTokenHash, newAgentToken, parseEndpoints, readBearer } from "./tokens.ts";
 import { PasskeyError, SUPPORTED_ALGORITHMS, verifyAssertion, verifyRegistration } from "./webauthn.ts";
 import { IDLE_SECONDS, MAX_SECONDS, SQL, clearedCookie, deviceLabel, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
@@ -100,6 +101,7 @@ const AUTH_ROUTES: readonly AuthRoute[] = [
   { path: "/auth/logout-all", methods: ["POST"] },
   { path: "/auth/password", methods: ["POST"] },
   { path: "/auth/me", methods: ["GET", "PATCH", "DELETE"] },
+  { path: "/auth/me/export", methods: ["GET"] },
   { path: "/auth/audit", methods: ["GET"] },
   { path: "/auth/sessions", methods: ["GET"] },
   { path: "/auth/tokens", methods: ["GET", "POST"] },
@@ -707,6 +709,26 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     return 204;
   }
 
+  /**
+   * The shared "Deleted user" account, created the first time it is needed.
+   * Only one can ever exist: if two processes create one at the same time,
+   * the loser removes its own and uses the winner's.
+   */
+  async function deletedUser(): Promise<string | undefined> {
+    const auth = app.auth;
+    const spec = auth?.account.ghost;
+    if (auth === null || spec === null || spec === undefined) return undefined;
+    const found = (await db.query(GHOST_SQL.find, [])).rows[0]?.["user_id"];
+    if (typeof found === "string") return found;
+    const values = seal(ghostValues(spec), auth.encrypted);
+    const created = String((await db.query(spec.sql, spec.fields.map((f) => values.get(f.key)))).rows[0]?.["id"]);
+    const claimed = (await db.query(GHOST_SQL.claim, [created])).rows[0]?.["user_id"];
+    if (typeof claimed === "string") return claimed;
+    await db.query(spec.removeSql, [created]);
+    const winner = (await db.query(GHOST_SQL.find, [])).rows[0]?.["user_id"];
+    return typeof winner === "string" ? winner : undefined;
+  }
+
   // ----------------------------------------------------------------- auth
 
   async function requireUser(req: IncomingMessage): Promise<string> {
@@ -1192,11 +1214,14 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       const v = validateBody([{ key: "password", kind: "Text", required: true, nullable: false, max: 128 }], await readJson(req));
       if (!v.ok) throw new HttpError(400, "validation_failed", v.message, v.field || undefined);
       await confirmPassword(me, String(v.values.get("password")), "password");
+      const ghost = auth.account.ghost === null ? undefined : await deletedUser();
+      if (ghost === me) throw new HttpError(409, "in_use", "This account can't be deleted.");
       try {
-        await run(auth.account.deleteSql, [me], auth.model);
+        // Records that must have an owner go to the "Deleted user" account in the same statement.
+        await run(auth.account.deleteSql, ghost === undefined ? [me] : [me, ghost], auth.model);
       } catch (e) {
         if (e instanceof HttpError && e.code === "in_use") {
-          throw new HttpError(409, "in_use", "This account still owns records. Delete them first, then delete the account.");
+          throw new HttpError(409, "in_use", "This account still owns records that can't be kept without it. Delete them first, then delete the account.");
         }
         throw e;
       }
@@ -1204,6 +1229,35 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       res.setHeader("Set-Cookie", clearedCookie(secure));
       res.writeHead(204, SECURITY_HEADERS).end();
       return 204;
+    }
+
+    if (path === "/auth/me/export") {
+      // Everything stored about you, except your password hash. Not for API tokens: /auth/* needs the session cookie.
+      const me = await requireUser(req);
+      const gate = await limited(() => limits.consume(limitKey("export", me), 5, 3600));
+      if (!gate.allowed) throw tooMany(gate.retryAfter, "You can download your data 5 times an hour. Try again later.");
+      const account = (await db.query(auth.export.account.sql, [me])).rows[0];
+      if (account === undefined) throw new HttpError(401, "login_required", "You need to log in.");
+      const records: Record<string, unknown[]> = {};
+      const truncated: string[] = [];
+      for (const part of auth.export.records) {
+        const rows = (await db.query(part.sql, [me])).rows;
+        if (rows.length > EXPORT_LIMIT) truncated.push(part.model);
+        records[part.model] = rows.slice(0, EXPORT_LIMIT).map((row) => reveal(row, Object.keys(row), part.encrypted));
+      }
+      const list = async (sql: string, keys: readonly string[]) => (await db.query(sql, [me, ""])).rows.map((row) => pick(row, keys));
+      const data = {
+        exportedAt: new Date(now()).toISOString(),
+        account: reveal(account, Object.keys(account), auth.encrypted),
+        records,
+        ...(truncated.length > 0 ? { truncated } : {}),
+        devices: await list(SQL.list, ["device", "createdAt", "lastSeenAt"]),
+        passkeys: (await db.query(PASSKEY_SQL.list, [me])).rows.map((row) => pick(row, ["name", "createdAt", "lastUsedAt"])),
+        apiTokens: (await db.query(TOKEN_SQL.list, [me])).rows.map((row) => ({ ...pick(row, ["name", "createdAt", "expiresAt", "lastUsedAt"]), endpoints: parseEndpoints(row["endpoints"]) })),
+        securityLog: (await audit.recent(me, 500)).map((row) => pick(row, ["at", "action", "ip", "detail"])),
+      };
+      await audit.record({ action: "data_exported", userId: me, ip });
+      return send(res, 200, data, { "Content-Disposition": 'attachment; filename="my-data.json"' });
     }
 
     if (path === "/auth/tokens") return tokens(req, res, method);

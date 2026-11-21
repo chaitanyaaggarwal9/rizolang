@@ -5,6 +5,7 @@
  *   3. Unknown field types are rejected and no output is produced.
  *   4. Names cannot inject SQL.
  *   5. Passkeys work only on their own site and are never copied (SPEC §7.11).
+ *   8. People can export their data, and deleting an account keeps no personal data (SPEC §7.15).
  *   7. Encrypted fields reach the database only as ciphertext bound to their column (SPEC §7.13).
  *   6. Signup never reveals which emails have accounts, and emailed links are one-time and hashed (SPEC §7.12).
  */
@@ -15,6 +16,8 @@ import { EMAIL_SQL, MESSAGES, newEmailToken } from "../runtime/email.ts";
 import { EncryptionError, decryptValue, encryptValue, parseKeys } from "../runtime/encryption.ts";
 import { IDLE_SECONDS, MAX_SECONDS, SQL as SESSION_SQL } from "../runtime/session.ts";
 import { MAX_TOKEN_DAYS, TOKEN_SQL } from "../runtime/tokens.ts";
+import { ghostValue } from "../runtime/privacy.ts";
+import { validateValue } from "../runtime/validate.ts";
 import { PasskeyError, verifyAssertion, verifyRegistration } from "../runtime/webauthn.ts";
 import { SoftAuthenticator } from "./authenticator.js";
 import { compile } from "../src/compiler.js";
@@ -449,5 +452,72 @@ describe("security: API tokens", () => {
     expect(TOKEN_SQL.list).not.toContain("token_hash");
     expect(TOKEN_SQL.remove).toContain('WHERE "id" = $1 AND "user_id" = $2');
     expect(MAX_TOKEN_DAYS).toBe(90);
+  });
+});
+
+describe("security: data export and account deletion", () => {
+  const source = `auth User by email
+model User {
+  email: Email unique private
+  password: Password
+  handle: Text unique min 3 max 12
+  displayName: Text max 5
+  phone: Text optional private encrypted
+  age: Number min 13 max 120
+}
+model Post {
+  author: User
+  editor: User optional
+  title: Text
+}
+model Like {
+  user: User
+  post: Post
+}
+`;
+  const r = compileOk(source);
+  const auth = buildApp(r.apis, r.auth, [], r.models).auth;
+
+  it("exports the account's own data, private and encrypted fields included, but never the password hash", () => {
+    expect(auth?.export.account.sql).toBe('SELECT "id", "email", "handle", "display_name" AS "displayName", "phone", "age" FROM "users" WHERE "id" = $1');
+    expect(auth?.export.account.encrypted).toEqual([{ key: "phone", aad: "users.phone" }]);
+    expect(auth?.export.records.map((x) => [x.model, x.sql])).toEqual([
+      ["Post", 'SELECT "id", "author_id" AS "author", "editor_id" AS "editor", "title" FROM "posts" WHERE "author_id" = $1 OR "editor_id" = $1 ORDER BY "id" LIMIT 10001'],
+      ["Like", 'SELECT "id", "user_id" AS "user", "post_id" AS "post" FROM "likes" WHERE "user_id" = $1 ORDER BY "id" LIMIT 10001'],
+    ]);
+  });
+
+  it("moves records that need an owner to \"Deleted user\" in the same statement as the delete", () => {
+    expect(auth?.account.deleteSql).toBe(
+      'WITH "moved1" AS (UPDATE "posts" SET "author_id" = $2 WHERE "author_id" = $1), "moved2" AS (UPDATE "likes" SET "user_id" = $2 WHERE "user_id" = $1) DELETE FROM "users" WHERE "id" = $1',
+    );
+  });
+
+  it("fills the \"Deleted user\" account only with valid placeholders, never personal data, and no password", () => {
+    const ghost = auth?.account.ghost;
+    expect(ghost?.sql).toBe('INSERT INTO "users" ("email", "password_hash", "handle", "display_name", "age") VALUES ($1, $2, $3, $4, $5) RETURNING "id"');
+    const limits: Record<string, { kind: "Text" | "Email" | "Number"; min?: number; max?: number }> = {
+      email: { kind: "Email", max: 254 }, handle: { kind: "Text", min: 3, max: 12 }, displayName: { kind: "Text", max: 5 }, age: { kind: "Number", min: 13, max: 120 },
+    };
+    for (let i = 0; i < 50; i++) {
+      for (const f of ghost?.fields ?? []) {
+        const value = ghostValue(f.value);
+        if (f.key === "password") {
+          expect(value).toBe("!");
+          continue;
+        }
+        const spec = limits[f.key];
+        if (spec === undefined) throw new Error(f.key);
+        expect(validateValue({ key: f.key, ...spec }, value), `${f.key}=${String(value)}`).toEqual({ value });
+      }
+    }
+    expect(String(ghostValue({ kind: "email", max: 254 }))).toMatch(/@deleted\.invalid$/);
+  });
+
+  it("falls back to refusing deletion when no placeholder account can be made", () => {
+    const team = compileOk("auth User by email\nmodel Team {\n  name: Text\n}\nmodel User {\n  email: Email unique\n  password: Password\n  team: Team\n}\nmodel Post {\n  author: User\n}\n");
+    const a = buildApp(team.apis, team.auth, [], team.models).auth;
+    expect(a?.account.ghost).toBeNull();
+    expect(a?.account.deleteSql).toBe('DELETE FROM "users" WHERE "id" = $1');
   });
 });

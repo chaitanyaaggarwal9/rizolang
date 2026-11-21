@@ -21,6 +21,7 @@ export type AuditAction =
   | "token_created"
   | "token_used"
   | "token_revoked"
+  | "data_exported"
   | "password_changed"
   | "password_check_failed"
   | "account_deleted"

@@ -80,7 +80,7 @@ export function compile(source: string, file: string): CompileResult {
       typescript: emitTypeScript(models, auth, label),
       server: hasServer
         ? {
-            routes: emitRoutes(apis, auth, pages, label),
+            routes: emitRoutes(apis, auth, pages, label, models),
             server: emitServer(label),
             packageJson: emitPackageJson(),
             tsconfig: emitTsconfig(),

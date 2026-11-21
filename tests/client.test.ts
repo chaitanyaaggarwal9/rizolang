@@ -520,6 +520,34 @@ describe("API tokens", () => {
   });
 });
 
+describe("your data", () => {
+  const page = () => client.renderPage({ title: "Your account", params: {}, loggedIn: true, auth: false, items: [{ kind: "yourData" }] }) as unknown as FakeElement;
+  const button = (p: FakeElement, text: string) => all(p).find((e) => e.tagName === "button" && e.textContent === text);
+
+  it("downloads the export by opening it, which stays on the page", () => {
+    button(page(), "Download my data")?.onclick?.();
+    expect(navigation).toEqual(["/auth/me/export"]);
+  });
+
+  it("deletes the account only with a password and a confirmation", async () => {
+    const sent = stubSend(null, 204);
+    const p = page();
+    button(p, "Delete my account")?.onclick?.();
+    expect(sent).toEqual([]);
+    expect(all(p).find((e) => e.attributes.get("role") === "alert")?.textContent).toContain("Enter your password");
+    const input = all(p).find((e) => e.attributes.get("id") === "rizo-delete-password");
+    if (input) input.value = "my password";
+    confirmAnswer = false;
+    button(p, "Delete my account")?.onclick?.();
+    expect(sent).toEqual([]);
+    confirmAnswer = true;
+    button(p, "Delete my account")?.onclick?.();
+    await flush();
+    expect(sent.map((x) => [x.method, x.url, x.body])).toEqual([["DELETE", "/auth/me", { password: "my password" }]]);
+    expect(navigation).toEqual(["/"]);
+  });
+});
+
 describe("buttons and the menu", () => {
   const buttonPage = () => client.renderPage({
     title: "Post", params: { id: "7" }, loggedIn: true, auth: false,

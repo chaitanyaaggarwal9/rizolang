@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Roles: `auth User by email roles admin, editor`, `requires role admin, editor`, and `requires owner author or role admin`.
+  - Roles are stored in a hidden `role` column that only accepts the declared names, and are never accepted from requests or returned.
+  - Admins assign roles with `PUT /auth/users/:id/role`, but never to themselves.
+  - `RIZO_ADMIN_EMAILS` makes existing accounts admins at startup.
+- New errors RZ0219 and RZ0332.
+
 ## [0.2.0] - 2026-11-20
 
 ### Added

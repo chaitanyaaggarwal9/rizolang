@@ -30,7 +30,9 @@ export type ValueSource =
   | { readonly from: "body"; readonly key: string }
   /** true when the body contains `key` (used for partial updates). */
   | { readonly from: "provided"; readonly key: string }
-  | { readonly from: "const"; readonly value: number | boolean };
+  | { readonly from: "const"; readonly value: number | boolean }
+  /** true when the logged-in user has one of these roles (`requires owner author or role admin`). */
+  | { readonly from: "hasRole"; readonly roles: readonly string[] };
 
 export type PathPart =
   | { readonly static: string }
@@ -44,6 +46,8 @@ export interface Route {
   readonly pattern: string;
   readonly path: readonly PathPart[];
   readonly access: "public" | "login";
+  /** The caller must have one of these roles; empty for no role check. */
+  readonly roles: readonly string[];
   /** Accepted body fields, or null if the request must not have a body. */
   readonly body: readonly FieldSpec[] | null;
   readonly sql: string;
@@ -68,6 +72,14 @@ export interface AuthSpec {
   /** `SELECT <public columns> FROM <users> WHERE id = $1` */
   readonly meSql: string;
   readonly publicKeys: readonly string[];
+  /** Declared roles; empty when the app does not use roles. */
+  readonly roles: readonly string[];
+  /** `SELECT "role" FROM <users> WHERE id = $1` (empty string without roles) */
+  readonly roleSql: string;
+  /** `UPDATE <users> SET "role" = $2 WHERE id = $1 RETURNING id, "role"` (empty string without roles) */
+  readonly setRoleSql: string;
+  /** Grants admin to existing accounts whose login email is in $1 (empty string without roles). */
+  readonly grantAdminSql: string;
 }
 
 export interface App {

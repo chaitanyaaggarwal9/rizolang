@@ -33,6 +33,10 @@ export function emitTypeScript(models: readonly ResolvedModel[], auth: ResolvedA
       `export interface ${model.name} {`,
       "  readonly id: string;",
       ...model.fields.map((f) => `  readonly ${f.name}: ${storedType(f)};`),
+      ...(auth !== undefined && auth.model === model && auth.roles.length > 0
+        ? [`  /** Assigned by admins only. Never accepted from requests or returned. */`,
+           `  readonly role: ${auth.roles.map((r) => JSON.stringify(r)).join(" | ")} | null;`]
+        : []),
       "}",
       "",
       `/** ${model.name}.public: safe to return from an API. Password and private fields are never included. */`,

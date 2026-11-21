@@ -1,6 +1,6 @@
 # Rizo Lang Specification
 
-Version 0.2 (draft) · Milestone 2: models, auth and APIs
+Version 0.3 (draft) · Milestone 3: roles
 
 Rizo Lang is a secure, simple, full-stack web language. Source files end in `.rz`. The compiler, `rizolang`, turns Rizo Lang into existing technology: a PostgreSQL schema, TypeScript types and a Node.js server. HTML and TypeScript frontends come later.
 
@@ -133,13 +133,14 @@ Modifiers come after the type, on the same line, in any order, each at most once
 auth User by email
 ```
 
-This line turns on accounts and sessions. It is written `auth <Model> by <field>`.
+This line turns on accounts and sessions. It is written `auth <Model> by <field>`, optionally followed by `roles <name>, <name>, ...`.
 
 Rules (error RZ0317):
 - The field must be declared as `Email unique`, and it must not be optional.
 - The model must have exactly one required `Password` field.
 - A link from the model to itself must be optional.
 - There can be at most one `auth` line per file.
+- Roles, if declared, are camelCase names, at most 20 of them, and must include `admin`. The model must not have its own field named `role`.
 
 It adds four endpoints. Paths under `/auth` are reserved.
 
@@ -154,6 +155,25 @@ It adds four endpoints. Paths under `/auth` are reserved.
 - Passwords are hashed with scrypt (N=2^15, r=8, p=3) and a random salt.
 - A wrong password and an unknown email give the same 401 response, in about the same time.
 - After 5 failed logins for an account, or 20 from one address, within 15 minutes, login answers 429. Signups are limited to 10 per hour per address.
+
+### 4.1 Roles
+
+```rizo
+auth User by email roles admin, editor
+```
+
+Each account has at most one role, or none.
+- **Storage:** the role is kept in a hidden `role` column that only accepts the declared names.
+- **Never from or to clients:** the role is never accepted in a request body and never appears in any response or public type.
+- **Checked on every request:** a role change applies to existing sessions immediately.
+
+**Assigning roles.** Admins use a built-in endpoint:
+
+| Endpoint | Body | Result |
+|----------|------|--------|
+| `PUT /auth/users/:id/role` | `{ "role": "editor" }` or `{ "role": null }` | 200 `{ "id", "role" }`. Admins only: 401 if not logged in, 403 if not an admin or if it's your own account |
+
+**The first admin.** Sign up normally, then start the server with `RIZO_ADMIN_EMAILS=you@example.com`. At startup, accounts that **already exist** with a listed email become admins. Accounts created later are never promoted this way, so nobody can claim admin by signing up with a listed email.
 
 **How sessions work**
 - The session is a random 256-bit token in the `rizo_session` cookie: `HttpOnly; Secure; SameSite=Lax; Path=/`, lasting 7 days.
@@ -175,7 +195,8 @@ An endpoint has a header, an access rule, an optional owner rule and one return 
 ```
 api <METHOD> <path> [-> <return type>] {
   public | requires login
-  [requires owner <link field>]
+  [requires role <role>, <role>]
+  [requires owner <link field> [or role <role>, <role>]]
   return db.<Model>.<action>(<arguments>)
 }
 ```
@@ -208,7 +229,12 @@ There is no default, so an endpoint can never be left open by accident. `require
 - `<field>` must be a link to the auth model, for example `author`.
 - It works with `find`, `update` and `delete`.
 - The check is part of the SQL `WHERE` clause. A record owned by someone else behaves exactly like a missing one (404), so callers can't tell that it exists.
-- It is **required** for `update` and `delete` on a model that links to the auth model (RZ0331), so one user can never change another user's records.
+- It is **required** for `update` and `delete` on a model that links to the auth model (RZ0331), unless the endpoint has `requires role`. That way one user can never change another user's records.
+- `requires owner author or role admin` also lets the listed roles act on records they don't own. This check is part of the `WHERE` clause too.
+
+`requires role admin, editor` only lets users with one of the listed roles call the endpoint; anyone else gets 403.
+- It needs `requires login`, and the roles must be declared on the `auth` line (RZ0332).
+- With `update` or `delete`, it lets those roles change any record.
 - A public endpoint can't update or delete such a model either: `requires owner` needs `requires login`.
 
 ### 5.3 Queries
@@ -332,6 +358,7 @@ DATABASE_URL=postgres://user:pass@localhost:5432/app node server.ts
 | `RIZO_TRUST_PROXY`          | off         | `1` to read the client IP from `X-Forwarded-For` (only behind a trusted proxy) |
 | `RIZO_DEV_INSECURE_COOKIES` | off         | `1` to drop the `Secure` cookie flag for local http. **Never in production.** |
 | `RIZO_DB_POOL_SIZE`         | `10`        | Maximum number of database connections                     |
+| `RIZO_ADMIN_EMAILS`         | none        | Comma-separated emails of **existing** accounts to make admins at startup (§4.1) |
 
 ### HTTP behaviour
 
@@ -340,7 +367,7 @@ DATABASE_URL=postgres://user:pass@localhost:5432/app node server.ts
   - Path parameters are validated by type. An invalid id gets 400 before any query runs.
 - **Responses** are JSON:
   - Errors look like `{ "error": { "code": "...", "message": "...", "field": "..." } }`.
-  - Status codes: 400 invalid input, 401 not logged in, 403 cross-site request, 404 not found, 405 wrong method, 409 duplicate or still in use, 413 too large, 415 not JSON, 429 too many attempts, 500 internal error (with a request id).
+  - Status codes: 400 invalid input, 401 not logged in, 403 cross-site request or missing role, 404 not found, 405 wrong method, 409 duplicate or still in use, 413 too large, 415 not JSON, 429 too many attempts, 500 internal error (with a request id).
   - Every response carries `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and a `Content-Security-Policy` that allows nothing.
 - **Cross-site requests:** POST, PUT, PATCH and DELETE requests with an `Origin` header from another site are rejected with 403.
 - **Logs:** one line per request: the method, the route pattern (such as `/posts/:id`), the status, the time and a request id. Logs never contain URLs with values, bodies, cookies or passwords.
@@ -355,7 +382,7 @@ These are enforced by the compiler and the runtime, and covered by `tests/securi
 2. A Password is never stored in plain text.
 3. All SQL is written at compile time. Request data only fills `$1, $2, …` parameters, and names can't break out of their quotes.
 4. Every endpoint declares its access, and `requires owner` is enforced inside the query. Records that belong to a user can only be changed or deleted by that user.
-5. A record's owner is always the logged-in user. It is never taken from the request.
+5. A record's owner is always the logged-in user, and a user's role is only ever set by an admin. Neither is taken from the request body.
 6. All input is validated against the model before it reaches the database, and unknown fields are rejected.
 7. `GET` endpoints never change data. Cross-site writes are rejected.
 8. When there is any compile error, no output is written.
@@ -397,6 +424,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0216 | Unknown statement in an `api` block                                     |
 | RZ0217 | Invalid query syntax                                                    |
 | RZ0218 | Invalid `auth` line                                                     |
+| RZ0219 | Missing role name in a role list                                        |
 | RZ0301 | Unknown field type                                                      |
 | RZ0302 | Modifier not allowed on this type                                       |
 | RZ0303 | Modifier repeated                                                       |
@@ -428,6 +456,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0329 | Invalid `requires owner`                                                |
 | RZ0330 | `me` used in a public endpoint                                          |
 | RZ0331 | `update` or `delete` of an owned record without `requires owner`        |
+| RZ0332 | Unknown role, or roles used without declaring them                      |
 | RZ0901 | Cannot read the input file                                              |
 | RZ0902 | Input file does not end in `.rz`                                        |
 | RZ0903 | Wrong command-line usage                                                |
@@ -569,13 +598,14 @@ model      = "model" NAME "{" { field } "}" ;
 field      = NAME ":" TYPE { modifier } NEWLINE ;
 modifier   = "unique" | "optional" | "private" | "min" INT | "max" INT ;
 TYPE       = "Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID" | NAME ;
-auth       = "auth" NAME "by" NAME NEWLINE ;
+auth       = "auth" NAME "by" NAME [ "roles" NAME { "," NAME } ] NEWLINE ;
 api        = "api" METHOD PATH [ "->" rettype ] "{" { statement NEWLINE } "}" ;
 METHOD     = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" ;
 PATH       = "/" [ segment { "/" segment } ] ;
 segment    = LOWER { LOWER | DIGIT | "-" } | ":" NAME ;
 rettype    = [ "list" ] NAME "." "public" ;
-statement  = "public" | "requires" "login" | "requires" "owner" NAME | "return" query ;
+statement  = "public" | "requires" "login" | "requires" "role" NAME { "," NAME }
+           | "requires" "owner" NAME [ "or" "role" NAME { "," NAME } ] | "return" query ;
 query      = "db" "." NAME "." ACTION "(" [ arg { "," arg } ] ")" ;
 ACTION     = "find" | "list" | "create" | "update" | "delete" ;
 arg        = NAME | NAME "=" value | "order" NAME [ "asc" | "desc" ] | "limit" INT ;
@@ -591,7 +621,6 @@ comment    = "//" { any character except newline } ;
 
 These are **not** part of the language yet. Using them is an error.
 
-- Roles (`requires role admin`).
 - Pagination, and filters other than `=`.
 - Changing or deleting accounts.
 - Frontend `page` blocks.

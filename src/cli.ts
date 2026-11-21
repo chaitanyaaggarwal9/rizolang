@@ -104,8 +104,17 @@ export function run(argv: readonly string[], io: CliIo): number {
   const existing = existsSync(migDir) ? readdirSync(migDir).filter((f) => MIGRATION_FILE.test(f)).sort() : [];
   let plan: MigrationPlan;
   const snapshotPath = join(migDir, SNAPSHOT_FILE);
-  if (existsSync(snapshotPath)) {
-    const parsed = parseSnapshot(readFileSync(snapshotPath, "utf8"));
+  // Read directly instead of checking existence first, so the file cannot change in between.
+  let snapshot: string | undefined;
+  try {
+    snapshot = readFileSync(snapshotPath, "utf8");
+  } catch (e) {
+    if ((e as { code?: unknown }).code !== "ENOENT") {
+      return usageError(io, "RZ0905", `Cannot read ${MIGRATIONS_DIR}/${SNAPSHOT_FILE}.`, "Check the file's permissions.");
+    }
+  }
+  if (snapshot !== undefined) {
+    const parsed = parseSnapshot(snapshot);
     if ("error" in parsed) {
       return usageError(io, "RZ0905", `${MIGRATIONS_DIR}/${SNAPSHOT_FILE} cannot be used: ${parsed.error}.`,
         `Restore it from version control. It must match the last migration in ${MIGRATIONS_DIR}/.`);
@@ -127,6 +136,24 @@ export function run(argv: readonly string[], io: CliIo): number {
     return 1;
   }
 
+  // Record the migration and the new snapshot.
+  let migrationNote = "";
+  if (plan.statements.length > 0) {
+    const last = existing[existing.length - 1];
+    const number = last === undefined ? 1 : Number(MIGRATION_FILE.exec(last)?.[1] ?? "0") + 1;
+    const name = `${String(number).padStart(4, "0")}_${plan.slug}.sql`;
+    mkdirSync(migDir, { recursive: true });
+    try {
+      // "wx": never overwrite an existing migration.
+      writeFileSync(join(migDir, name), migrationFile(plan, number, file.replace(/[^\x20-\x7e]/g, "?")), { flag: "wx" });
+    } catch {
+      return usageError(io, "RZ0905", `${MIGRATIONS_DIR}/${name} already exists.`,
+        `Another build may be running, or ${MIGRATIONS_DIR}/ was changed by hand. Restore it from version control and build again.`);
+    }
+    writeFileSync(snapshotPath, snapshotText(schema));
+    existing.push(name);
+    migrationNote = `\nNew migration: ${MIGRATIONS_DIR}/${name}\n${plan.summary.map((s) => `  - ${s}`).join("\n")}\n`;
+  }
   const outDir = join(io.cwd, OUT_DIR);
   mkdirSync(outDir, { recursive: true });
   // Remove server files from a previous build so they never go stale.
@@ -149,18 +176,6 @@ export function run(argv: readonly string[], io: CliIo): number {
       writeFileSync(join(outDir, RUNTIME_DIR, f), readFileSync(join(src, f)));
     }
     written.push(`${OUT_DIR}/server.ts`, `${OUT_DIR}/routes.ts`, `${OUT_DIR}/runtime/`);
-  }
-  // Record the migration and the new snapshot.
-  let migrationNote = "";
-  if (plan.statements.length > 0) {
-    const last = existing[existing.length - 1];
-    const number = last === undefined ? 1 : Number(MIGRATION_FILE.exec(last)?.[1] ?? "0") + 1;
-    const name = `${String(number).padStart(4, "0")}_${plan.slug}.sql`;
-    mkdirSync(migDir, { recursive: true });
-    writeFileSync(join(migDir, name), migrationFile(plan, number, file.replace(/[^\x20-\x7e]/g, "?")));
-    writeFileSync(snapshotPath, snapshotText(schema));
-    existing.push(name);
-    migrationNote = `\nNew migration: ${MIGRATIONS_DIR}/${name}\n${plan.summary.map((s) => `  - ${s}`).join("\n")}\n`;
   }
   if (output.server !== undefined) {
     writeFileSync(join(outDir, "migrate.ts"), output.server.migrate);

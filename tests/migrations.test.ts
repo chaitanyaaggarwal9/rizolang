@@ -28,7 +28,7 @@ describe("migration planning", () => {
   });
 
   it("adds optional and required fields without data loss", () => {
-    const p = plan(BASE, BASE.replace("}", "  bio: Text optional\n  age: Number min 0\n}"));
+    const p = plan(BASE, "model User {\n  email: Email unique\n  name: Text max 100\n  bio: Text optional\n  age: Number min 0\n}\n");
     expect(p.statements).toEqual([
       'ALTER TABLE "users" ADD COLUMN "bio" TEXT CONSTRAINT "users_bio_check" CHECK (char_length("bio") <= 10000);',
       'ALTER TABLE "users" ADD COLUMN "age" INTEGER NOT NULL CONSTRAINT "users_age_check" CHECK ("age" >= 0);',

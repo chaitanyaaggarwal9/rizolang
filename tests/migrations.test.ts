@@ -110,3 +110,65 @@ describe("constraint names", () => {
     expect(constraintName("a".repeat(40), "b".repeat(41), "check")).not.toBe(long);
   });
 });
+
+describe("indexes for list endpoints", () => {
+  const SRC = `auth User by email
+model User {
+  email: Email unique
+  password: Password
+}
+model Post {
+  author: User
+  title: Text
+  published: Bool
+}
+api GET /api/posts -> list Post.public {
+  public
+  return db.Post.list(published = true, order title desc)
+}
+api GET /api/mine -> list Post.public {
+  requires login
+  return db.Post.list(author = me)
+}
+api GET /api/again -> list Post.public {
+  public
+  return db.Post.list(published = false, order title)
+}
+api GET /api/all -> list Post.public {
+  public
+  return db.Post.list()
+}
+`;
+  const withApis = (src: string) => {
+    const r = compileOk(src);
+    return buildSchema(r.models, r.auth, true, r.apis);
+  };
+
+  it("adds one index per distinct filter and order, ending in id", () => {
+    const posts = withApis(SRC).tables.find((t) => t.name === "posts");
+    expect(posts?.indexes).toEqual([
+      { name: "posts_published_title_id_idx", columns: ["published", "title", "id"] },
+      { name: "posts_author_id_id_idx", columns: ["author_id", "id"] },
+    ]);
+  });
+
+  it("creates them in schema.sql and in migrations, and drops unused ones", () => {
+    const before = withApis(SRC);
+    expect(initialPlan(before).statements).toContain('CREATE INDEX "posts_published_title_id_idx" ON "posts" ("published", "title", "id");');
+    const after = withApis(SRC.replace("order title desc)", "order title desc)\n}\napi GET /api/x -> list Post.public {\n  public\n  return db.Post.list(order published)").replace(/api GET \/api\/mine[\s\S]*?\n}\n/, ""));
+    const plan = planMigration(before, after);
+    expect(plan.statements).toEqual([
+      'DROP INDEX IF EXISTS "posts_author_id_id_idx";',
+      'CREATE INDEX "posts_published_id_idx" ON "posts" ("published", "id");',
+    ]);
+    expect(plan.dataLoss).toEqual([]);
+  });
+
+  it("reads snapshots from before indexes existed", () => {
+    const old = withApis(SRC);
+    const legacy = { ...old, tables: old.tables.map(({ indexes: _ignored, ...t }) => t) };
+    const parsed = parseSnapshot(JSON.stringify(legacy));
+    expect("schema" in parsed).toBe(true);
+    if ("schema" in parsed) expect(planMigration(parsed.schema, old).statements.filter((s) => s.startsWith("CREATE INDEX"))).toHaveLength(2);
+  });
+});

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ResolvedAuth } from "./check-api.js";
+import type { ResolvedApi, ResolvedAuth } from "./check-api.js";
 import type { ResolvedField, ResolvedModel } from "./checker.js";
 import { FIELD_TYPES } from "./types.js";
 
@@ -39,10 +39,18 @@ export interface ForeignKey {
   readonly index: string;
 }
 
+/** An index the compiler adds so a list endpoint's filters and order are fast. */
+export interface Index {
+  readonly name: string;
+  readonly columns: readonly string[];
+}
+
 export interface Table {
   readonly name: string;
   readonly columns: readonly Column[];
   readonly foreignKeys: readonly ForeignKey[];
+  /** Indexes for list endpoints. Older snapshots don't have this. */
+  readonly indexes?: readonly Index[];
   readonly comment: string | null;
 }
 
@@ -88,7 +96,12 @@ export const LIMITS_TABLE = "_rizo_rate_limits";
  * @param server true when the app has a generated server (auth, api or pages),
  *               which needs its own tables, such as rate-limit counters.
  */
-export function buildSchema(models: readonly ResolvedModel[], auth: ResolvedAuth | undefined, server = false): Schema {
+export function buildSchema(
+  models: readonly ResolvedModel[],
+  auth: ResolvedAuth | undefined,
+  server = false,
+  apis: readonly ResolvedApi[] = [],
+): Schema {
   const tables: Table[] = models.map((model) => {
     const columns: Column[] = [idColumn, ...model.fields.map((f) => fieldColumn(model.table, f))];
     if (auth !== undefined && auth.model === model && auth.roles.length > 0) {
@@ -111,7 +124,7 @@ export function buildSchema(models: readonly ResolvedModel[], auth: ResolvedAuth
         index: constraintName(model.table, f.column, "idx"),
       }];
     });
-    return { name: model.table, columns, foreignKeys, comment: null };
+    return { name: model.table, columns, foreignKeys, indexes: listIndexes(model, apis), comment: null };
   });
 
   if (auth !== undefined) {
@@ -146,6 +159,30 @@ export function buildSchema(models: readonly ResolvedModel[], auth: ResolvedAuth
     });
   }
   return { version: 1, tables };
+}
+
+/**
+ * One index per distinct list query on this model: its filter columns (in a
+ * fixed order), then its sort column, then id. Equality filters followed by
+ * the sort order let PostgreSQL read each page straight from the index,
+ * including "Load more" (which continues after the last id).
+ */
+function listIndexes(model: ResolvedModel, apis: readonly ResolvedApi[]): Index[] {
+  const out = new Map<string, Index>();
+  for (const api of apis) {
+    const q = api.query;
+    if (q.action !== "list" || q.model !== model) continue;
+    const filters = q.filters.map((f) => f.field.column).sort();
+    const columns = [...filters, ...(q.order.field === undefined ? [] : [q.order.field.column]), "id"];
+    if (columns.length === 1) continue; // only id: the primary key already covers it
+    const key = columns.join(",");
+    if (!out.has(key)) out.set(key, { name: constraintName(model.table, columns.join("_"), "idx"), columns });
+  }
+  return [...out.values()];
+}
+
+export function createListIndex(table: string, index: Index): string {
+  return `CREATE INDEX ${q(index.name)} ON ${q(table)} (${index.columns.map(q).join(", ")});`;
 }
 
 function fieldColumn(table: string, f: ResolvedField): Column {
@@ -213,6 +250,9 @@ export function createStatements(schema: Schema): string[] {
   const out = schema.tables.map(createTable);
   for (const t of schema.tables) {
     for (const fk of t.foreignKeys) out.push(addForeignKey(t.name, fk), createIndex(t.name, fk));
+  }
+  for (const t of schema.tables) {
+    for (const index of t.indexes ?? []) out.push(createListIndex(t.name, index));
   }
   return out;
 }

@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Password hashing runs at most two at a time; a full queue answers 503 with `Retry-After`.
   - `Sec-Fetch-Site` checks reject cross-site writes, in addition to the `Origin` check.
 - New errors RZ0222 and RZ0339.
+- Milestone 5, part 2: speed and stability.
+  - Automatic indexes: one per distinct `list` filter and order, ending in `id`, created and removed by migrations. On 200,000 posts, the example's home-page query went from 10.2 ms (full scan) to 0.036 ms.
+  - Every query is cancelled after 5 seconds (`RIZO_DB_STATEMENT_TIMEOUT_MS`) and answered with 503 and `Retry-After`.
+  - Rate limits use a sliding window, so a burst at a window edge (for example 5 login guesses just before and 5 just after) is no longer possible.
 
 ## [0.4.0] - 2026-11-21
 

@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { BusyError, dummyHash, hashPassword, verifyPassword } from "../runtime/password.ts";
 import { LIMIT_SQL, Limits, limitKey } from "../runtime/limits.ts";
-import { type Db, createRequestHandler } from "../runtime/server.ts";
+import { DEFAULT_STATEMENT_TIMEOUT_MS, type Db, createRequestHandler, poolConfig } from "../runtime/server.ts";
 import { SESSIONS_TABLE, clearedCookie, hashToken, newToken, readToken, sessionCookie } from "../runtime/session.ts";
 import type { App, FieldSpec } from "../runtime/types.ts";
 import { validateBody, validatePathParam, validateValue } from "../runtime/validate.ts";
@@ -124,9 +124,9 @@ function limitDb() {
       const key = String(values[0]);
       if (sql === LIMIT_SQL.consume) {
         rows.set(key, (rows.get(key) ?? 0) + 1);
-        return { rows: [{ count: rows.get(key) }], rowCount: 1 };
+        return { rows: [{ current: rows.get(key), previous: rows.get(String(values[2])) ?? null }], rowCount: 1 };
       }
-      if (sql === LIMIT_SQL.peek) return { rows: rows.has(key) ? [{ count: rows.get(key) }] : [], rowCount: 1 };
+      if (sql === LIMIT_SQL.peek) return { rows: [{ current: rows.get(key) ?? null, previous: rows.get(String(values[1])) ?? null }], rowCount: 1 };
       if (sql === LIMIT_SQL.clear) {
         for (const k of [...rows.keys()]) if (k.startsWith(key.replace(/%$/, ""))) rows.delete(k);
         return { rows: [], rowCount: 0 };
@@ -137,8 +137,8 @@ function limitDb() {
 }
 
 describe("rate limits", () => {
-  it("allow up to the limit in each window, then say when to retry", async () => {
-    let now = 120_000; // 2 minutes after the epoch: the start of a minute window
+  it("allow up to the limit, then say when to retry", async () => {
+    let now = 120_000; // the start of a minute window
     const db = limitDb();
     const limits = new Limits(db, () => now);
     const key = limitKey("GET /api/posts", "ip:1.2.3.4");
@@ -146,8 +146,20 @@ describe("rate limits", () => {
     expect((await limits.consume(key, 2, 60)).allowed).toBe(true);
     now += 15_000;
     expect(await limits.consume(key, 2, 60)).toEqual({ allowed: false, retryAfter: 45 });
-    now += 45_000; // next window
+    now = 120_000 + 2 * 60_000; // two windows later, the old requests no longer count
     expect((await limits.consume(key, 2, 60)).allowed).toBe(true);
+  });
+
+  it("don't reset at a window edge: the previous window still counts", async () => {
+    let now = 120_000 + 59_000; // one second before the end of a window
+    const limits = new Limits(limitDb(), () => now);
+    const key = limitKey("POST /auth/login", "a@b.co");
+    for (let i = 0; i < 5; i++) expect((await limits.consume(key, 5, 60)).allowed).toBe(true);
+    now += 2_000; // just past the edge: a fixed window would allow 5 more right away
+    expect((await limits.blocked(key, 5, 60)).allowed).toBe(false);
+    expect((await limits.consume(key, 5, 60)).allowed).toBe(false);
+    now += 50_000; // most of the way through the next window, the old count has faded
+    expect((await limits.blocked(key, 5, 60)).allowed).toBe(true);
   });
 
   it("can check and clear without counting", async () => {
@@ -166,6 +178,18 @@ describe("rate limits", () => {
     expect(key).toMatch(/^[0-9a-f]{16}:[0-9a-f]{32}$/);
     expect(limitKey("login-ip", "203.0.113.8")).not.toBe(key);
     expect(limitKey("signup", "203.0.113.7")).not.toBe(key);
+  });
+});
+
+describe("database settings", () => {
+  it("cuts off slow queries after 5 seconds by default", () => {
+    expect(poolConfig({ DATABASE_URL: "postgres://x" })).toEqual({ connectionString: "postgres://x", max: 10, statement_timeout: DEFAULT_STATEMENT_TIMEOUT_MS });
+    expect(DEFAULT_STATEMENT_TIMEOUT_MS).toBe(5000);
+    expect(poolConfig({ RIZO_DB_STATEMENT_TIMEOUT_MS: "2000", RIZO_DB_POOL_SIZE: "20" })).toMatchObject({ max: 20, statement_timeout: 2000 });
+  });
+
+  it.each([["RIZO_DB_STATEMENT_TIMEOUT_MS", "0"], ["RIZO_DB_STATEMENT_TIMEOUT_MS", "abc"], ["RIZO_DB_POOL_SIZE", "-1"]])("rejects %s=%s", (name, value) => {
+    expect(() => poolConfig({ [name]: value })).toThrow(name);
   });
 });
 
@@ -238,7 +262,7 @@ describe("request handling without a database", () => {
   it("limits each endpoint per IP address", async () => {
     const db = limitDb();
     const limited: App = { ...app, routes: app.routes.map((r) => ({ ...r, rateLimit: { max: 2, windowSeconds: 60 } })) };
-    const handler = createRequestHandler(limited, { db: { query: async (sql, values) => (sql.startsWith("INSERT INTO \"_rizo_rate") || sql.startsWith("SELECT \"count\"") ? db.query(sql, values) : { rows: [{ id: "1" }], rowCount: 1 }) }, log: () => undefined });
+    const handler = createRequestHandler(limited, { db: { query: async (sql, values) => (sql === LIMIT_SQL.consume || sql === LIMIT_SQL.peek ? db.query(sql, values) : { rows: [{ id: "1" }], rowCount: 1 }) }, log: () => undefined });
     server = createServer((req, res) => void handler(req, res));
     await new Promise<void>((r) => server?.listen(0, "127.0.0.1", r));
     const base = `http://127.0.0.1:${(server?.address() as AddressInfo).port}`;
@@ -259,6 +283,14 @@ describe("request handling without a database", () => {
       expect((await fetch(`${base}/things/new`, { method: "POST", headers: { "Sec-Fetch-Site": site } })).status, site).toBe(403);
     }
     expect((await fetch(`${base}/things/new`, { method: "POST", headers: { "Sec-Fetch-Site": "same-origin" } })).status).toBe(200);
+  });
+
+  it("answers 503 when the database cancels a slow query", async () => {
+    const base = await start({ query: async () => { throw Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" }); } });
+    const r = await fetch(`${base}/things/8d3f1a2b-0000-4000-8000-000000000000`);
+    expect(r.status).toBe(503);
+    expect(r.headers.get("retry-after")).toBe("2");
+    expect(((await r.json()) as { error: { code: string } }).error.code).toBe("timeout");
   });
 
   it("hides internal errors from clients and logs them without request data", async () => {

@@ -188,7 +188,9 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     } catch (caught) {
       const e = caught instanceof BusyError
         ? new HttpError(503, "busy", "The server is busy. Try again in a moment.", undefined, { "Retry-After": "2" })
-        : caught;
+        : (caught as { code?: unknown } | null)?.code === "57014"
+          ? new HttpError(503, "timeout", "The request took too long. Please try again.", undefined, { "Retry-After": "2" })
+          : caught;
       if (e instanceof HttpError) {
         status = e.status;
         send(res, e.status, { error: { code: e.code, message: e.message, ...(e.field ? { field: e.field } : {}) } }, e.headers);
@@ -495,6 +497,8 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
           throw sql.startsWith("DELETE")
             ? new HttpError(409, "in_use", `This ${model} cannot be deleted because other records link to it.`)
             : new HttpError(400, "invalid_link", `${field ?? "A linked record"} refers to a record that does not exist.`, field);
+        case "57014":
+          throw new HttpError(503, "timeout", "The request took too long. Please try again.", undefined, { "Retry-After": "2" });
         case "23514":
         case "23502":
         case "22P02":
@@ -780,6 +784,29 @@ export async function grantAdmins(app: App, db: Db, emails: readonly string[]): 
   return r.rowCount ?? 0;
 }
 
+/** Default limit for one database query, in milliseconds. */
+export const DEFAULT_STATEMENT_TIMEOUT_MS = 5000;
+
+/**
+ * Database connection settings from environment variables. Every query the
+ * app runs is cancelled by PostgreSQL after the statement timeout, so one slow
+ * query can't tie up the database.
+ */
+export function poolConfig(env: Readonly<Record<string, string | undefined>>): {
+  connectionString: string;
+  max: number;
+  statement_timeout: number;
+} {
+  const url = env["DATABASE_URL"] ?? "";
+  const max = Number(env["RIZO_DB_POOL_SIZE"] ?? "10");
+  const timeout = Number(env["RIZO_DB_STATEMENT_TIMEOUT_MS"] ?? String(DEFAULT_STATEMENT_TIMEOUT_MS));
+  if (!Number.isInteger(max) || max < 1 || max > 1000) throw new Error("RIZO_DB_POOL_SIZE must be a whole number from 1 to 1000");
+  if (!Number.isInteger(timeout) || timeout < 100 || timeout > 600_000) {
+    throw new Error("RIZO_DB_STATEMENT_TIMEOUT_MS must be a whole number from 100 to 600000");
+  }
+  return { connectionString: url, max, statement_timeout: timeout };
+}
+
 /** Start the server. Configuration comes from environment variables. */
 export function startServer(app: App): void {
   const url = process.env["DATABASE_URL"];
@@ -791,7 +818,14 @@ export function startServer(app: App): void {
   }
   const insecure = process.env["RIZO_DEV_INSECURE_COOKIES"] === "1";
   if (insecure) process.stderr.write("rizo: WARNING: session cookies are not marked Secure. Use this only for local development over http.\n");
-  const pool = new pg.Pool({ connectionString: url, max: Number(process.env["RIZO_DB_POOL_SIZE"] ?? "10") });
+  let config: ReturnType<typeof poolConfig>;
+  try {
+    config = poolConfig(process.env);
+  } catch (e) {
+    process.stderr.write(`rizo: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(1);
+  }
+  const pool = new pg.Pool(config);
   const handler = createRequestHandler(app, {
     db: { query: (sql, vals) => pool.query(sql, vals) },
     secureCookies: !insecure,

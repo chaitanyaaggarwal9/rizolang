@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BusyError, dummyHash, hashPassword, verifyPassword } from "../runtime/password.ts";
 import { LIMIT_SQL, Limits, limitKey } from "../runtime/limits.ts";
 import { DEFAULT_STATEMENT_TIMEOUT_MS, type Db, createRequestHandler, poolConfig } from "../runtime/server.ts";
-import { apiTokenHash, newApiToken, parseEndpoints, readBearer } from "../runtime/tokens.ts";
+import { agentTokenHash, newAgentToken, parseEndpoints, readBearer } from "../runtime/tokens.ts";
 import { SESSIONS_TABLE, clearedCookie, deviceLabel, hashToken, newToken, readToken, sessionCookie } from "../runtime/session.ts";
 import type { App, FieldSpec } from "../runtime/types.ts";
 import { validateBody, validatePathParam, validateValue } from "../runtime/validate.ts";
@@ -126,9 +126,9 @@ describe("sessions", () => {
   });
 
   it("reads only well-formed bearer tokens", () => {
-    const { token, hash } = newApiToken();
+    const { token, hash } = newAgentToken();
     expect(token).toMatch(/^rzt_[A-Za-z0-9_-]{43}$/);
-    expect(hash).toBe(apiTokenHash(token));
+    expect(hash).toBe(agentTokenHash(token));
     expect(readBearer(`Bearer ${token}`)).toBe(token);
     expect(readBearer(undefined)).toBeUndefined();
     for (const bad of ["", "Bearer", `bearer ${token}`, `Basic ${token}`, `Bearer ${token}x`, "Bearer rzt_' OR 1=1 --"]) expect(readBearer(bad)).toBeNull();

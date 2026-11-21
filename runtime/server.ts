@@ -17,7 +17,7 @@ import { type Keys, decryptValue, encryptValue, parseKeys } from "./encryption.t
 import { EMAIL_SQL, type Mailer, MESSAGES, RESET_SECONDS, type TokenPurpose, VERIFY_SECONDS, emailConfig, emailTokenHash, newEmailToken, readEmailToken } from "./email.ts";
 import { Limits, limitKey } from "./limits.ts";
 import { CHALLENGE_SECONDS, MAX_PASSKEYS, PASSKEY_SQL, challengeHash, challengeOf, newChallenge } from "./passkeys.ts";
-import { MAX_TOKENS, MAX_TOKEN_DAYS, TOKEN_SQL, apiTokenHash, newApiToken, parseEndpoints, readBearer } from "./tokens.ts";
+import { MAX_TOKENS, MAX_TOKEN_DAYS, TOKEN_SQL, agentTokenHash, newAgentToken, parseEndpoints, readBearer } from "./tokens.ts";
 import { PasskeyError, SUPPORTED_ALGORITHMS, verifyAssertion, verifyRegistration } from "./webauthn.ts";
 import { IDLE_SECONDS, MAX_SECONDS, SQL, clearedCookie, deviceLabel, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
 import { PAGE_HEADERS, asset, renderMessage, renderPage } from "./pages.ts";
@@ -642,7 +642,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     if (bearer === undefined) return currentUser(req);
     const invalid = new HttpError(401, "invalid_token", "This API token is not valid or has expired. Create a new one on your account page.");
     if (bearer === null) throw invalid;
-    const row = (await db.query(TOKEN_SQL.lookup, [apiTokenHash(bearer)])).rows[0];
+    const row = (await db.query(TOKEN_SQL.lookup, [agentTokenHash(bearer)])).rows[0];
     if (row === undefined) throw invalid;
     const userId = String(row["user_id"]);
     const endpoint = `${route.method} ${route.pattern}`;
@@ -678,7 +678,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     }
     const count = Number((await db.query(TOKEN_SQL.count, [me])).rows[0]?.["n"] ?? 0);
     if (count >= MAX_TOKENS) throw new HttpError(409, "too_many_tokens", `You can have at most ${MAX_TOKENS} API tokens. Revoke one first.`);
-    const { token, hash } = newApiToken();
+    const { token, hash } = newAgentToken();
     const r = await db.query(TOKEN_SQL.create, [hash, me, name, JSON.stringify([...new Set(list as string[])]), days]);
     const row = r.rows[0] ?? {};
     await audit.record({ action: "token_created", userId: me, ip: clientIp(req) });

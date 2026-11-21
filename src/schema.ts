@@ -103,7 +103,7 @@ export const UNVERIFIED_TABLE = "_rizo_unverified";
 export const EMAIL_TOKENS_TABLE = "_rizo_email_tokens";
 
 /** API tokens for scripts and AI agents (apps with an auth line). */
-export const API_TOKENS_TABLE = "_rizo_tokens";
+export const AGENT_TOKENS_TABLE = "_rizo_tokens";
 
 /** Name of the security audit log table (apps with a server). */
 export const AUDIT_TABLE = "_rizo_audit";
@@ -217,11 +217,11 @@ export function buildSchema(
     });
     // API tokens: only hashes, each limited to chosen endpoints and an expiry.
     tables.push({
-      name: API_TOKENS_TABLE,
+      name: AGENT_TOKENS_TABLE,
       comment: "API tokens for scripts and AI agents. Only SHA-256 hashes are stored.",
       columns: [
         col("id", "UUID", { primaryKey: true, notNull: false, default: "gen_random_uuid()" }),
-        col("token_hash", "TEXT", { unique: constraintName(API_TOKENS_TABLE, "token_hash", "key") }),
+        col("token_hash", "TEXT", { unique: constraintName(AGENT_TOKENS_TABLE, "token_hash", "key") }),
         col("user_id", "UUID", {}),
         col("name", "TEXT", {}),
         col("endpoints", "TEXT", { comment: "endpoints: a JSON list such as [\"GET /api/posts\"]" }),
@@ -230,8 +230,8 @@ export function buildSchema(
         col("last_used_at", "TIMESTAMPTZ", { notNull: false }),
       ],
       foreignKeys: [{
-        name: constraintName(API_TOKENS_TABLE, "user_id", "fkey"), column: "user_id", refTable: auth.model.table,
-        onDelete: "CASCADE", index: constraintName(API_TOKENS_TABLE, "user_id", "idx"),
+        name: constraintName(AGENT_TOKENS_TABLE, "user_id", "fkey"), column: "user_id", refTable: auth.model.table,
+        onDelete: "CASCADE", index: constraintName(AGENT_TOKENS_TABLE, "user_id", "idx"),
       }],
     });
     // Links sent by email (confirm the address, reset the password).

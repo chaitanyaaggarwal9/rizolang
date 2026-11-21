@@ -32,12 +32,12 @@ export const TOKEN_SQL = {
 } as const;
 
 /** A new token (shown once) and its hash (stored). */
-export function newApiToken(): { token: string; hash: string } {
+export function newAgentToken(): { token: string; hash: string } {
   const token = `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
-  return { token, hash: apiTokenHash(token) };
+  return { token, hash: agentTokenHash(token) };
 }
 
-export function apiTokenHash(token: string): string {
+export function agentTokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 

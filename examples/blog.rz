@@ -1,0 +1,16 @@
+// A small blog: users write posts.
+model User {
+  email: Email unique
+  password: Password min 12
+  name: Text max 100
+  bio: Text max 500 optional
+  isAdmin: Bool
+}
+
+model BlogPost {
+  authorId: ID
+  title: Text min 1 max 200
+  body: Text
+  views: Number min 0
+  publishedAt: Date optional
+}

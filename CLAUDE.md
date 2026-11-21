@@ -57,19 +57,16 @@ Rizo Lang is a secure, simple, full-stack web language for the AI era. Source fi
 
 ## Current milestone
 
-Milestones 1–3 are complete (v0.3.0): models, `auth`, `api` blocks, links, `private` fields, roles, pagination, account management and migrations. Maintainer decisions that still apply:
+Milestones 1–4 are complete (v0.4.0): models, `auth`, `api` blocks, links, `private` fields, roles, pagination, account management, migrations, and web pages with forms. Maintainer decisions that still apply:
 - `api` blocks use braces, like `model` blocks.
 - Sessions are server-side, stored as hashed tokens in `_rizo_sessions` and sent in an HttpOnly cookie.
 - Generated apps use `pg` plus the runtime copied into `dist/`.
 - List endpoints return `{ items, next }` with keyset pagination.
 - Changes that would delete data need `--allow-data-loss`.
 - `RIZO_ADMIN_EMAILS` only promotes accounts that already exist.
+- Pages are generated from endpoints (`show`, `form`, `button`); there are no HTML templates. Quoted text is allowed only in pages.
+- The browser runtime is plain JavaScript with JSDoc types (no build step, no new dependencies), served by the same Node server as the API. It navigates only by setting `location.pathname`.
 
-Releases are published to npm by `.github/workflows/publish.yml` (see CONTRIBUTING.md, "Releasing").
+Releases are published to npm by `.github/workflows/publish.yml`: the workflow stages the version, and the maintainer approves it on npm with two-factor authentication (see CONTRIBUTING.md, "Releasing").
 
-Milestone 4 (pages) is in progress. Maintainer decisions:
-- Pages are generated from endpoints (`show GET /api/...`); there are no HTML templates.
-- Quoted text is allowed only in pages.
-- The compiler emits browser JavaScript with JSDoc types (no build step, no new dependencies).
-- Pages are served by the same Node server as the API.
-- Part 1 (read-only pages) and part 2 (forms, delete buttons, built-in login and signup pages, login redirects with a same-site-only `next`) are done. Next: polish and a release.
+Don't start new language features until the maintainer chooses the next milestone.

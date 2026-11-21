@@ -407,7 +407,7 @@ Rizo Lang is in **early development**, so expect the language to change before 1
 - [x] **Milestone 1:** models, compiled to a PostgreSQL schema and TypeScript types ([v0.1.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.1.0))
 - [x] **Milestone 2:** `auth`, `api` endpoints, links, `private` fields and a generated Node.js server ([v0.2.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.2.0))
 - [x] **Milestone 3:** roles, pagination, account management and migrations ([v0.3.1](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.3.1))
-- [x] **Milestone 4:** pages, forms, delete buttons, and built-in login and signup pages
+- [x] **Milestone 4:** pages, forms, delete buttons, and built-in login and signup pages ([v0.4.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.4.0))
 - [x] Publish the compiler to npm ([`rizolang`](https://www.npmjs.com/package/rizolang))
 - [ ] A VS Code extension with syntax highlighting
 

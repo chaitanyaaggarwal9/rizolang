@@ -288,6 +288,35 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     }
   });
 
+  it("answers every list query from its generated index, in order, at scale", async () => {
+    // A realistic amount of data, so PostgreSQL plans as it would in production.
+    const post = (await pool.query(
+      `INSERT INTO posts (author_id, title, body, published)
+       SELECT $1, 'bulk-' || md5(i::text), 'x', i % 2 = 0 FROM generate_series(1, 20000) AS i RETURNING id`,
+      [aliceId],
+    )).rows[0].id as string;
+    await pool.query(
+      `INSERT INTO comments (post_id, author_id, body) SELECT $1, $2, 'bulk' FROM generate_series(1, 20000)`,
+      [post, aliceId],
+    );
+    await pool.query("ANALYZE posts");
+    await pool.query("ANALYZE comments");
+    try {
+      for (const route of app.routes.filter((r) => r.result === "list")) {
+        const args = route.values.map((v) =>
+          v.from === "cursorSet" ? false : v.from === "pageLimit" ? 21 : v.from === "const" ? v.value
+          : v.from === "me" ? aliceId : v.from === "path" ? post : null);
+        const plan = JSON.stringify((await pool.query(`EXPLAIN (FORMAT JSON) ${route.sql}`, args)).rows[0]);
+        expect(plan, route.pattern).toMatch(/"Node Type":"Index (Only )?Scan"/);
+        expect(plan, route.pattern).not.toContain('"Node Type":"Sort"');
+        expect(plan, route.pattern).not.toContain('"Node Type":"Seq Scan"');
+      }
+    } finally {
+      await pool.query("DELETE FROM comments WHERE body = 'bulk'");
+      await pool.query("DELETE FROM posts WHERE title LIKE 'bulk-%'");
+    }
+  });
+
   describe("pages", () => {
     const page = async (path: string, cookie?: string) => {
       const r = await fetch(base + path, { redirect: "manual", ...(cookie ? { headers: { Cookie: cookie } } : {}) });

@@ -1,4 +1,4 @@
-import type { ResolvedAuth } from "../check-api.js";
+import type { ResolvedApi, ResolvedAuth } from "../check-api.js";
 import type { ResolvedModel } from "../checker.js";
 import { type Schema, buildSchema, createStatements } from "../schema.js";
 import { VERSION } from "../version.js";
@@ -10,8 +10,14 @@ export { SESSIONS_TABLE, q, roleLiteral } from "../schema.js";
  * only allows letters and digits in names, so no identifier can break out of
  * its quotes.
  */
-export function emitSql(models: readonly ResolvedModel[], auth: ResolvedAuth | undefined, sourceFile: string, server = false): string {
-  return emitSchemaSql(buildSchema(models, auth, server), sourceFile);
+export function emitSql(
+  models: readonly ResolvedModel[],
+  auth: ResolvedAuth | undefined,
+  sourceFile: string,
+  server = false,
+  apis: readonly ResolvedApi[] = [],
+): string {
+  return emitSchemaSql(buildSchema(models, auth, server, apis), sourceFile);
 }
 
 export function emitSchemaSql(schema: Schema, sourceFile: string): string {

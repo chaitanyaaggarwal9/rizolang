@@ -262,6 +262,7 @@ api POST /api/drafts -> Post.public {
 
 - The number is 1 to 100,000, and the unit is `second`, `minute`, `hour` or `day`. One `limit` line per endpoint (RZ0222, RZ0339). There's no way to turn limits off.
 - Over the limit, the response is 429 with a `Retry-After` header. Every request counts, including rejected ones.
+- Limits use a sliding window: requests from the previous window still count as they fade out, so there's no burst allowed at window edges.
 - Counters live in PostgreSQL (`_rizo_rate_limits`), so the limits hold when the app runs on several servers.
 - The table stores only hashes of IP addresses and account ids, never the values themselves, and old counters are deleted automatically.
 
@@ -283,6 +284,8 @@ The return line is `return db.<Model>.<action>(...)`. There are five actions. Ea
 - `limit N`: the largest page size, from 1 to 100. The default is 50.
 
 Hidden fields (Password or `private`) cannot be used in filters or ordering.
+
+**Indexes are automatic.** For every `list`, the compiler creates an index on its filter fields, then its order field, then `id`, so each page (including "Load more") is read straight from the index instead of scanning the table. Migrations add and remove these indexes as your endpoints change.
 
 **Values** on the right of `=`:
 - `me`: the logged-in user. It only works with a link to the auth model, and is not allowed in public endpoints.
@@ -493,7 +496,8 @@ Every build compares your models with the last build and records the difference 
 
 Renaming looks like removing and adding, so it is refused too. Keep the old name.
 
-**Other changes** are generated automatically: adding models, fields and links, and changing limits, `unique`, `optional` and roles.
+**Other changes** are generated automatically: adding models, fields and links, and changing limits, `unique`, `optional`, roles and list indexes.
+- Creating an index on a very large table can take a while, and blocks writes to that table until it's done. Apply such migrations at a quiet time.
 - Making a field required, adding a required field, or tightening limits can fail if existing rows don't fit.
 - In that case the migration is rolled back and nothing changes.
 
@@ -524,6 +528,7 @@ To start a brand-new database, `psql "$DATABASE_URL" -f schema.sql` works too. T
 | `RIZO_TRUST_PROXY`          | off         | `1` to read the client IP from `X-Forwarded-For` (only behind a trusted proxy) |
 | `RIZO_DEV_INSECURE_COOKIES` | off         | `1` to drop the `Secure` cookie flag for local http. **Never in production.** |
 | `RIZO_DB_POOL_SIZE`         | `10`        | Maximum number of database connections                     |
+| `RIZO_DB_STATEMENT_TIMEOUT_MS` | `5000`   | Longest time one query may run (100–600000). Slower queries are cancelled and answered with 503 |
 | `RIZO_ADMIN_EMAILS`         | none        | Comma-separated emails of **existing** accounts to make admins at startup (§4.1) |
 
 ### HTTP behaviour
@@ -534,7 +539,7 @@ To start a brand-new database, `psql "$DATABASE_URL" -f schema.sql` works too. T
   - Path parameters are validated by type. An invalid id gets 400 before any query runs.
 - **Responses** are JSON:
   - Errors look like `{ "error": { "code": "...", "message": "...", "field": "..." } }`.
-  - Status codes: 400 invalid input, 401 not logged in, 403 cross-site request or missing role, 429 too many requests (`Retry-After`), 503 server busy (`Retry-After`), 404 not found, 405 wrong method, 409 duplicate or still in use, 413 too large, 415 not JSON, 429 too many attempts, 500 internal error (with a request id).
+  - Status codes: 400 invalid input, 401 not logged in, 403 cross-site request or missing role, 429 too many requests (`Retry-After`), 503 server busy or query too slow (`Retry-After`), 404 not found, 405 wrong method, 409 duplicate or still in use, 413 too large, 415 not JSON, 429 too many attempts, 500 internal error (with a request id).
   - Every response carries `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and a `Content-Security-Policy` that allows nothing.
 - **Cross-site requests:** POST, PUT, PATCH and DELETE requests are rejected with 403 when the browser marks them as coming from another site (`Sec-Fetch-Site` is not `same-origin` or `none`), or when their `Origin` is another site. `RIZO_ALLOWED_ORIGINS` lists exceptions.
 - **Password hashing** runs at most two at a time. If too many are waiting (a login flood), new requests get 503 with `Retry-After`, instead of slowing down every other request.
@@ -553,7 +558,7 @@ These are enforced by the compiler and the runtime, and covered by `tests/securi
 5. A record's owner is always the logged-in user, and a user's role is only ever set by an admin. Neither is taken from the request body.
 6. All input is validated against the model before it reaches the database, and unknown fields are rejected.
 7. `GET` endpoints never change data. Cross-site writes are rejected.
-8. Every endpoint is rate-limited, with counters shared by all server processes. Login, signup and password checks have their own stricter limits.
+8. Every endpoint is rate-limited, with counters shared by all server processes. Login, signup and password checks have their own stricter limits. No database query runs longer than the statement timeout (5 seconds by default).
 9. When there is any compile error, or a change would delete data without `--allow-data-loss`, no output is written.
 10. Pages contain no HTML or code. All text is inserted as text, links stay on the site, and pages are served with a strict Content-Security-Policy. A page is never more open than the data it shows.
 

@@ -71,7 +71,7 @@ export function compile(source: string, file: string): CompileResult {
     apis,
     pages,
     output: {
-      sql: emitSql(models, auth, label, hasServer),
+      sql: emitSql(models, auth, label, hasServer, apis),
       typescript: emitTypeScript(models, auth, label),
       server: hasServer
         ? {

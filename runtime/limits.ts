@@ -10,10 +10,14 @@ import { createHash } from "node:crypto";
 export const LIMITS_TABLE = '"_rizo_rate_limits"';
 
 export const LIMIT_SQL = {
-  /** Count one request and return the new total for this window. */
-  consume: `INSERT INTO ${LIMITS_TABLE} ("key", "expires_at", "count") VALUES ($1, to_timestamp($2), 1)
-ON CONFLICT ("key") DO UPDATE SET "count" = ${LIMITS_TABLE}."count" + 1 RETURNING "count"`,
-  peek: `SELECT "count" FROM ${LIMITS_TABLE} WHERE "key" = $1`,
+  /** Count one request in the current window, and read the previous window's count. */
+  consume: `WITH cur AS (
+  INSERT INTO ${LIMITS_TABLE} ("key", "expires_at", "count") VALUES ($1, to_timestamp($2), 1)
+  ON CONFLICT ("key") DO UPDATE SET "count" = ${LIMITS_TABLE}."count" + 1 RETURNING "count"
+)
+SELECT (SELECT "count" FROM cur) AS "current", (SELECT "count" FROM ${LIMITS_TABLE} WHERE "key" = $3) AS "previous"`,
+  /** Read the current and previous windows without counting. */
+  peek: `SELECT (SELECT "count" FROM ${LIMITS_TABLE} WHERE "key" = $1) AS "current", (SELECT "count" FROM ${LIMITS_TABLE} WHERE "key" = $2) AS "previous"`,
   clear: `DELETE FROM ${LIMITS_TABLE} WHERE "key" LIKE $1`,
   sweep: `DELETE FROM ${LIMITS_TABLE} WHERE "expires_at" < now()`,
 } as const;
@@ -41,26 +45,40 @@ export class Limits {
     this.#now = now;
   }
 
-  #window(windowSeconds: number): { start: number; end: number; retryAfter: number } {
+  /**
+   * Sliding window: the previous window still counts, fading out as the
+   * current one goes on. This stops bursts at window edges (e.g. 5 tries just
+   * before a boundary and 5 more just after).
+   */
+  #window(windowSeconds: number) {
     const nowSeconds = this.#now() / 1000;
     const start = Math.floor(nowSeconds / windowSeconds) * windowSeconds;
-    return { start, end: start + windowSeconds, retryAfter: Math.max(1, Math.ceil(start + windowSeconds - nowSeconds)) };
+    return {
+      start,
+      previous: start - windowSeconds,
+      // Counters are kept for two windows, so the next window can still see this one.
+      expires: start + 2 * windowSeconds,
+      remaining: 1 - (nowSeconds - start) / windowSeconds,
+      retryAfter: Math.max(1, Math.ceil(start + windowSeconds - nowSeconds)),
+    };
   }
 
-  /** Count a request. Allowed while the count stays within `max`. */
+  #estimate(row: Record<string, unknown> | undefined, remaining: number): number {
+    return Number(row?.["current"] ?? 0) + Number(row?.["previous"] ?? 0) * remaining;
+  }
+
+  /** Count a request. Allowed while the (sliding) count stays within `max`. */
   async consume(key: string, max: number, windowSeconds: number): Promise<LimitResult> {
     const w = this.#window(windowSeconds);
-    const r = await this.#db.query(LIMIT_SQL.consume, [`${key}@${w.start}`, w.end]);
-    const count = Number(r.rows[0]?.["count"] ?? 0);
-    return { allowed: count <= max, retryAfter: w.retryAfter };
+    const r = await this.#db.query(LIMIT_SQL.consume, [`${key}@${w.start}`, w.expires, `${key}@${w.previous}`]);
+    return { allowed: this.#estimate(r.rows[0], w.remaining) <= max, retryAfter: w.retryAfter };
   }
 
-  /** Check without counting, e.g. "has this account failed too often?". */
+  /** Check without counting: would one more attempt stay within `max`? */
   async blocked(key: string, max: number, windowSeconds: number): Promise<LimitResult> {
     const w = this.#window(windowSeconds);
-    const r = await this.#db.query(LIMIT_SQL.peek, [`${key}@${w.start}`]);
-    const count = Number(r.rows[0]?.["count"] ?? 0);
-    return { allowed: count < max, retryAfter: w.retryAfter };
+    const r = await this.#db.query(LIMIT_SQL.peek, [`${key}@${w.start}`, `${key}@${w.previous}`]);
+    return { allowed: this.#estimate(r.rows[0], w.remaining) + 1 <= max, retryAfter: w.retryAfter };
   }
 
   /** Forget a key in every window, e.g. after a successful login. */

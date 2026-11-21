@@ -4,6 +4,7 @@ import {
   type Table,
   addForeignKey,
   columnDefinition,
+  createListIndex,
   createIndex,
   createStatements,
   createTable,
@@ -88,7 +89,29 @@ export function planMigration(prev: Schema, next: Schema): MigrationPlan {
     columnChanges(pt, nt, statements, summary, dataLoss);
   }
 
-  // 5. Add new or changed foreign keys and their indexes.
+  // 5. List indexes: drop the ones no list uses any more, create new ones.
+  for (const pt of prev.tables) {
+    const nt = nextTables.get(pt.name);
+    if (nt === undefined) continue; // dropped with the table
+    for (const index of pt.indexes ?? []) {
+      if (!(nt.indexes ?? []).some((x) => x.name === index.name)) {
+        // IF EXISTS: dropping a column in the same migration already removed its indexes.
+        statements.push(`DROP INDEX IF EXISTS ${q(index.name)};`);
+        summary.push(`drop index ${index.name}`);
+      }
+    }
+  }
+  for (const nt of next.tables) {
+    const pt = prevTables.get(nt.name);
+    for (const index of nt.indexes ?? []) {
+      if (!(pt?.indexes ?? []).some((x) => x.name === index.name)) {
+        statements.push(createListIndex(nt.name, index));
+        summary.push(`add index on ${nt.name} (${index.columns.join(", ")})`);
+      }
+    }
+  }
+
+  // 6. Add new or changed foreign keys and their indexes.
   for (const nt of next.tables) {
     const pt = prevTables.get(nt.name);
     for (const fk of nt.foreignKeys) {
@@ -206,6 +229,13 @@ export function parseSnapshot(text: string): { schema: Schema } | { error: strin
       if (c.values !== null && (!Array.isArray(c.values) || !c.values.every(roleOk))) return { error: `the role list of "${t.name}" is malformed` };
     }
     for (const fk of t.foreignKeys) names.push(fk?.name, fk?.column, fk?.refTable, fk?.index);
+    if (t.indexes !== undefined) {
+      if (!Array.isArray(t.indexes)) return { error: `the indexes of "${t.name}" are malformed` };
+      for (const index of t.indexes) {
+        if (!Array.isArray(index?.columns)) return { error: `an index of "${t.name}" is malformed` };
+        names.push(index.name, ...index.columns);
+      }
+    }
     for (const n of names) {
       if (typeof n !== "string" || !/^[a-z_][a-z0-9_]*$/.test(n)) return { error: `name ${JSON.stringify(n)} in "${String(t.name)}" is not allowed` };
     }

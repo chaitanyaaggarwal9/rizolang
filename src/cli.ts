@@ -175,6 +175,11 @@ export function run(argv: readonly string[], io: CliIo): number {
     for (const f of readdirSync(src).filter((n) => n.endsWith(".ts") && !n.endsWith(".test.ts"))) {
       writeFileSync(join(outDir, RUNTIME_DIR, f), readFileSync(join(src, f)));
     }
+    // The browser runtime for pages: one script and one stylesheet.
+    mkdirSync(join(outDir, RUNTIME_DIR, "client"));
+    for (const f of ["rizo-client.js", "styles.css"]) {
+      writeFileSync(join(outDir, RUNTIME_DIR, "client", f), readFileSync(join(src, "client", f)));
+    }
     written.push(`${OUT_DIR}/server.ts`, `${OUT_DIR}/routes.ts`, `${OUT_DIR}/runtime/`);
   }
   if (output.server !== undefined) {

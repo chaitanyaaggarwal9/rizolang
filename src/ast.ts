@@ -6,6 +6,7 @@ export interface Program {
   readonly models: readonly ModelDecl[];
   readonly auths: readonly AuthDecl[];
   readonly apis: readonly ApiDecl[];
+  readonly pages: readonly PageDecl[];
 }
 
 export interface ModelDecl {
@@ -110,3 +111,31 @@ export type Value =
   | { readonly kind: "name"; readonly name: string; readonly span: Span }
   | { readonly kind: "int"; readonly value: number; readonly span: Span }
   | { readonly kind: "bool"; readonly value: boolean; readonly span: Span };
+
+/** Quoted text as written in a page, e.g. `"Latest posts"`. */
+export interface TextRef {
+  readonly text: string;
+  readonly span: Span;
+}
+
+/** `page /posts { ... }` */
+export interface PageDecl {
+  readonly span: Span;
+  readonly path: string;
+  readonly pathSpan: Span;
+  readonly statements: readonly PageStatement[];
+  readonly endSpan: Span;
+}
+
+export type PageStatement =
+  | { readonly kind: "public"; readonly span: Span }
+  | { readonly kind: "requiresLogin"; readonly span: Span }
+  | { readonly kind: "requiresRole"; readonly span: Span; readonly roles: readonly RoleRef[] }
+  /** `title "Latest posts"` */
+  | { readonly kind: "title"; readonly span: Span; readonly text: TextRef }
+  /** `text "Welcome!"` */
+  | { readonly kind: "text"; readonly span: Span; readonly text: TextRef }
+  /** `link "Write a post" /posts/new` */
+  | { readonly kind: "link"; readonly span: Span; readonly label: TextRef; readonly path: string; readonly pathSpan: Span }
+  /** `show GET /api/posts` */
+  | { readonly kind: "show"; readonly span: Span; readonly method: string; readonly methodSpan: Span; readonly path: string; readonly pathSpan: Span };

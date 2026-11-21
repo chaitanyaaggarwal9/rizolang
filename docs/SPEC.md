@@ -1,12 +1,12 @@
 # Rizo Lang Specification
 
-Version 0.3 (draft) · Milestone 3: roles, pagination, accounts and migrations
+Version 0.4 (draft) · Milestone 4: pages
 
 Rizo Lang is a secure, simple, full-stack web language. Source files end in `.rz`. The compiler, `rizolang`, turns Rizo Lang into existing technology: a PostgreSQL schema, TypeScript types and a Node.js server. HTML and TypeScript frontends come later.
 
 This document is the complete language reference. It is written for people and for AI models alike. If something is not described here, it is not part of the language.
 
-> **Status:** `model`, `auth` and `api` blocks are available. `page` and other blocks are planned but are **not** available yet. Using them is a compile error (RZ0211).
+> **Status:** `model`, `auth`, `api` and `page` blocks are available. Forms in pages come next. Other blocks are not available, and using them is a compile error (RZ0211).
 
 ---
 
@@ -25,13 +25,13 @@ This document is the complete language reference. It is written for people and f
 ## 2. Files and basic syntax
 
 - A source file is UTF-8 text with the extension `.rz`.
-- A file contains `model` blocks, at most one `auth` line, and `api` blocks, in any order.
+- A file contains `model` blocks, at most one `auth` line, `api` blocks and `page` blocks, in any order.
 - Comments start with `//` and run to the end of the line. A comment after a path needs a space before it.
 - Whitespace separates tokens. Indentation has no meaning, but two spaces are conventional.
 - **One item per line.** Each field, and each statement in an `api` block, goes on its own line. Commas appear only between query arguments.
 - Names contain only ASCII letters and digits and start with a letter. Underscores and hyphens are not allowed in names.
 - Numbers are whole numbers, optionally negative: `100`, `0`, `-5`. Decimals are not allowed.
-- There are no quoted strings.
+- Quoted text (`"Latest posts"`) is allowed only in `page` blocks. It stays on one line, has at most 200 characters, and can only escape `\"` and `\\`.
 - Lines and columns in error messages start at 1. A tab counts as one column.
 
 ---
@@ -191,7 +191,7 @@ Each account has at most one role, or none.
 
 ---
 
-## 5. Endpoints: `api` blocks
+## 5. Endpoints and pages: `api` and `page` blocks
 
 ```rizo
 api GET /posts/:id -> Post.public {
@@ -288,7 +288,7 @@ The auth model itself cannot be created, updated or deleted through `api` blocks
 
 Every path parameter must be used in the query (RZ0323).
 
-### 5.4 Pages
+### 5.4 Pagination
 
 A `list` endpoint returns one page at a time:
 
@@ -345,6 +345,56 @@ api DELETE /posts/:id {
 
 ---
 
+### 5.6 Web pages: `page` blocks
+
+A page shows data from the file's own endpoints. You never write HTML or browser code: the compiler generates the page.
+
+```rizo
+page / {
+  public
+  title "Rizo Blog"
+  text "Stories from our writers."
+  show GET /api/posts
+}
+
+page /posts/:id {
+  public
+  show GET /api/posts/:id
+  link "Back to all posts" /
+}
+```
+
+| Line | Meaning |
+|------|---------|
+| `public` or `requires login` | Who may see the page. Exactly one is required (RZ0333). `requires role admin` can be added after `requires login` |
+| `title "..."` | The page heading and browser title. The default comes from the path (`/blog-posts` → "Blog posts", `/` → "Home") |
+| `text "..."` | A paragraph |
+| `link "..." /path` | A link to another page in the file (or `/login` and `/signup` when there is an auth line) |
+| `show GET /api/...` | The data to show, from a GET endpoint in the file. At most one per page |
+
+**Rules:**
+- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. `/login` and `/signup` are reserved for the built-in pages.
+- **Parameters:** a page's `:parameters` fill in the parameters of the endpoint it shows, by name. Every page parameter must be used (RZ0323).
+- **Never more open than its data (RZ0335):**
+  - A page that shows a `requires login` endpoint must also `requires login`.
+  - A page that shows an endpoint with `requires role` must require one of those roles.
+- **What a page shows:**
+  - A `list` endpoint is shown as cards, with a "Load more" button for the next page.
+  - A `find` endpoint is shown as a list of fields.
+  - Only public fields appear, labelled from their names (`publishedAt` → "Published at").
+  - When another page shows one record of the same model (for example `page /posts/:id { show GET /api/posts/:id }`), each card links to it.
+
+**How pages are served:**
+- The generated server answers `GET` for every page with a small HTML document.
+- The browser runtime (`/_rizo/client.js`) builds the page from data in an inert JSON block, and fetches the data from the API with the same login cookie.
+- If the page needs a login the visitor doesn't have, the server answers 401 instead of the page, or 403 for a missing role. An invalid parameter gets 404.
+
+**Safety:**
+- Pages contain no HTML and no code.
+- All text, both written in the file and coming from the database, is inserted as text and never interpreted as HTML. The runtime never uses `innerHTML`.
+- Links can only point to this site.
+- Pages are sent with a strict Content-Security-Policy that allows only the site's own script and stylesheet, and no inline scripts.
+
 ## 6. What the compiler generates
 
 `rizolang build app.rz` writes everything to `dist/`.
@@ -354,6 +404,7 @@ api DELETE /posts/:id {
 | `schema.sql`         | PostgreSQL 13+ tables, constraints, foreign keys and the sessions table, inside one transaction |
 | `types.ts`           | `Model`, `ModelPublic` and `ModelInput` types for every model                |
 | `routes.ts`          | Every endpoint as data, with its SQL written out in full                      |
+| `runtime/pages.ts`, `runtime/client/` | Serves pages, plus the browser runtime and default styles (§5.6) |
 | `migrate.ts`, `migrations/` | Applies the migrations from your project's `migrations/` folder (§6, Migrations) |
 | `server.ts`          | The entry point                                                              |
 | `runtime/`           | The Rizo runtime: validation, sessions, password hashing and the HTTP server |
@@ -443,6 +494,7 @@ These are enforced by the compiler and the runtime, and covered by `tests/securi
 6. All input is validated against the model before it reaches the database, and unknown fields are rejected.
 7. `GET` endpoints never change data. Cross-site writes are rejected.
 8. When there is any compile error, or a change would delete data without `--allow-data-loss`, no output is written.
+9. Pages contain no HTML or code. All text is inserted as text, links stay on the site, and pages are served with a strict Content-Security-Policy. A page is never more open than the data it shows.
 
 ---
 
@@ -463,6 +515,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 |--------|-------------------------------------------------------------------------|
 | RZ0101 | Unexpected character (semicolon, underscore, quote…)                    |
 | RZ0102 | Invalid number (decimal, too large, letters attached)                   |
+| RZ0103 | Invalid quoted text (not closed, bad escape, control character, too long) |
 | RZ0201 | Expected `model`, `auth` or `api` at the top level                      |
 | RZ0202 | Missing model name                                                      |
 | RZ0203 | Missing `{`                                                             |
@@ -473,7 +526,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0208 | Missing number after `min`/`max`                                        |
 | RZ0209 | Field or statement does not start on a new line                        |
 | RZ0210 | Block missing its closing `}`                                           |
-| RZ0211 | Block type not available yet (e.g. `page`)                              |
+| RZ0211 | Block type not available yet (e.g. `component`)                         |
 | RZ0212 | Unexpected token after a field or statement                             |
 | RZ0213 | Missing or invalid HTTP method                                          |
 | RZ0214 | Missing path                                                            |
@@ -482,6 +535,8 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0217 | Invalid query syntax                                                    |
 | RZ0218 | Invalid `auth` line                                                     |
 | RZ0219 | Missing role name in a role list                                        |
+| RZ0220 | Unknown or incomplete line in a `page` block                            |
+| RZ0221 | Missing quoted text (after `title`, `text` or `link`)                   |
 | RZ0301 | Unknown field type                                                      |
 | RZ0302 | Modifier not allowed on this type                                       |
 | RZ0303 | Modifier repeated                                                       |
@@ -514,6 +569,11 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0330 | `me` used in a public endpoint                                          |
 | RZ0331 | `update` or `delete` of an owned record without `requires owner`        |
 | RZ0332 | Unknown role, or roles used without declaring them                      |
+| RZ0333 | Page access missing, repeated or contradictory                          |
+| RZ0334 | Page path already used by another page, an endpoint or a built-in page  |
+| RZ0335 | `show` names a missing or non-GET endpoint, or the page is more open than it |
+| RZ0336 | `link` to a page that doesn't exist, or that needs missing parameters   |
+| RZ0337 | `title` or `show` repeated in a page                                    |
 | RZ0901 | Cannot read the input file                                              |
 | RZ0902 | Input file does not end in `.rz`                                        |
 | RZ0903 | Wrong command-line usage                                                |
@@ -649,10 +709,25 @@ api GET /users/:id -> User.public {
 
 ---
 
+**A page with the same path as its endpoint, or with no access line.**
+
+```rizo
+// Wrong
+page /api/posts {
+  show GET /api/posts
+}
+
+// Right
+page /posts {
+  public
+  show GET /api/posts
+}
+```
+
 ## 10. Grammar
 
 ```ebnf
-file       = { model | auth | api } ;
+file       = { model | auth | api | page } ;
 model      = "model" NAME "{" { field } "}" ;
 field      = NAME ":" TYPE { modifier } NEWLINE ;
 modifier   = "unique" | "optional" | "private" | "min" INT | "max" INT ;
@@ -671,6 +746,10 @@ arg        = NAME | NAME "=" value | "order" NAME [ "asc" | "desc" ] | "limit" I
 value      = NAME | INT | "true" | "false" ;
 NAME       = LETTER { LETTER | DIGIT } ;
 INT        = [ "-" ] DIGIT { DIGIT } ;
+page       = "page" PATH "{" { pageline NEWLINE } "}" ;
+pageline   = "public" | "requires" "login" | "requires" "role" NAME { "," NAME }
+           | "title" TEXT | "text" TEXT | "link" TEXT PATH | "show" METHOD PATH ;
+TEXT       = '"' { any character except '"', '\\', newline, control; or '\\"' or '\\\\' } '"' ;
 comment    = "//" { any character except newline } ;
 ```
 
@@ -682,4 +761,4 @@ These are **not** part of the language yet. Using them is an error.
 
 - Pagination, and filters other than `=`.
 - Changing the login email, and password reset by email (these need email verification).
-- Frontend `page` blocks.
+- Forms in pages (create and edit records), delete buttons, and built-in login and signup pages.

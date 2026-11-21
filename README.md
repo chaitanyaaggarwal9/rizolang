@@ -102,6 +102,17 @@ api DELETE /posts/:id {
   requires owner author
   return db.Post.delete(id)
 }
+
+page / {
+  public
+  title "My blog"
+  show GET /posts/feed
+}
+
+api GET /posts/feed -> list Post.public {
+  public
+  return db.Post.list(published = true)
+}
 ```
 
 ```sh
@@ -113,6 +124,7 @@ That's a complete backend:
 - **Validation:** every request body and path parameter is checked against your models.
 - **Ownership:** only a post's author can change or delete it. Everyone else gets 404.
 - **Privacy:** emails and passwords are never returned by any endpoint.
+- **Web pages:** `page /` is a real web page listing the posts, with no HTML to write and no way to inject any.
 
 ---
 
@@ -281,6 +293,22 @@ Add roles with `auth User by email roles admin, editor`, then protect endpoints 
 - Rate limits on login and signup.
 - The same response for a wrong password and an unknown account, so callers can't find out which emails are registered.
 
+### Pages
+
+```rizo
+page /posts/:id {
+  public
+  title "A post"
+  show GET /api/posts/:id
+}
+```
+
+**How pages work:**
+- Pages are generated from your endpoints: lists with "Load more", single records, text and links.
+- You never write HTML or browser code. All text is inserted as plain text, and pages are served with a strict Content-Security-Policy.
+- A page is never more open than the data it shows: a page showing a `requires login` endpoint must also say `requires login`.
+- By convention, endpoints live under `/api` so they don't clash with page paths.
+
 ### Endpoints
 
 ```
@@ -325,6 +353,7 @@ The compiler enforces these rules:
 | Account enumeration at login | Identical responses and timing for an unknown account and a wrong password. |
 | Accidental data loss | Migrations that would drop data are refused unless you pass `--allow-data-loss`. Each migration runs in a transaction, and edited migrations are detected. |
 | Leaky logs | Logs contain only the method, route pattern, status, time and request id. |
+| Cross-site scripting (XSS) | Pages contain no HTML or code. All text is inserted as text (never `innerHTML`), links stay on the site, and a strict CSP allows only the site's own script. |
 | Clickjacking and sniffing | A strict CSP, plus `X-Frame-Options: DENY`, `nosniff` and `no-store` on every response. |
 
 Every guarantee is tested, in [`tests/security.test.ts`](tests/security.test.ts) and in the end-to-end suite [`tests/e2e.test.ts`](tests/e2e.test.ts), which attacks a real server backed by PostgreSQL. Found a hole? Please [report it privately](SECURITY.md).
@@ -369,7 +398,7 @@ Rizo Lang is in **early development**, so expect the language to change before 1
 - [x] **Milestone 1:** models, compiled to a PostgreSQL schema and TypeScript types ([v0.1.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.1.0))
 - [x] **Milestone 2:** `auth`, `api` endpoints, links, `private` fields and a generated Node.js server ([v0.2.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.2.0))
 - [x] **Milestone 3:** roles, pagination, account management and migrations ([v0.3.1](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.3.1))
-- [ ] **Milestone 4:** frontend `page` blocks compiled to HTML and TypeScript
+- [ ] **Milestone 4** (in progress): `page` blocks ✓, forms, built-in login and signup pages
 - [x] Publish the compiler to npm ([`rizolang`](https://www.npmjs.com/package/rizolang))
 - [ ] A VS Code extension with syntax highlighting
 
@@ -388,7 +417,8 @@ rizolang/
 │   ├── check-api.ts     #   auth and api: access, ownership, queries
 │   ├── emit/            #   SQL, TypeScript types and routes
 │   └── cli.ts           #   `rizolang build`
-├── runtime/             # copied into every generated app (validation, sessions, server)
+├── runtime/             # copied into every generated app (validation, sessions, server, pages)
+│   └── client/          #   the browser runtime and default styles
 ├── tests/               # unit, security, docs and end-to-end tests
 ├── docs/                # SPEC.md and SPEC-COMPACT.md
 └── examples/blog.rz     # a complete example app

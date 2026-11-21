@@ -140,6 +140,7 @@ describe("request handling without a database", () => {
 
   const app: App = {
     auth: null,
+    pages: [],
     routes: [
       {
         method: "GET", pattern: "/things/:id", path: [{ static: "things" }, { param: "id", kind: "ID" }],

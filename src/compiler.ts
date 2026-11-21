@@ -1,4 +1,5 @@
 import type { ResolvedApi, ResolvedAuth } from "./check-api.js";
+import type { ResolvedPage } from "./check-page.js";
 import { type ResolvedModel, check } from "./checker.js";
 import { type Diagnostic, diagnostic, sourceLines } from "./diagnostics.js";
 import { emitMigrate, emitPackageJson, emitRoutes, emitServer, emitTsconfig } from "./emit/routes.js";
@@ -35,6 +36,7 @@ export type CompileResult =
       readonly models: readonly ResolvedModel[];
       readonly auth: ResolvedAuth | undefined;
       readonly apis: readonly ResolvedApi[];
+      readonly pages: readonly ResolvedPage[];
       readonly output: CompileOutput;
     }
   | { readonly ok: false; readonly diagnostics: readonly Diagnostic[] };
@@ -60,19 +62,20 @@ export function compile(source: string, file: string): CompileResult {
 
   // The file name is echoed into generated comments; keep it to one printable line.
   const label = file.replace(/[^\x20-\x7e]/g, "?");
-  const { models, auth, apis } = checked;
-  const hasServer = auth !== undefined || apis.length > 0;
+  const { models, auth, apis, pages } = checked;
+  const hasServer = auth !== undefined || apis.length > 0 || pages.length > 0;
   return {
     ok: true,
     models,
     auth,
     apis,
+    pages,
     output: {
       sql: emitSql(models, auth, label),
       typescript: emitTypeScript(models, auth, label),
       server: hasServer
         ? {
-            routes: emitRoutes(apis, auth, label),
+            routes: emitRoutes(apis, auth, pages, label),
             server: emitServer(label),
             packageJson: emitPackageJson(),
             tsconfig: emitTsconfig(),

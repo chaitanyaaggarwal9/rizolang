@@ -78,7 +78,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     await admin.end();
     pool = new pg.Pool({ connectionString: DATABASE_URL, options: `-c search_path="${schema}",public` });
     await pool.query(result.output.sql);
-    app = buildApp(result.apis, result.auth);
+    app = buildApp(result.apis, result.auth, result.pages);
     const handler = createRequestHandler(app, {
       db: { query: (sql, values) => pool.query(sql, values) },
       log: (line) => logs.push(line),
@@ -142,69 +142,69 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
 
   it("requires login and sets the owner from the session, never from the body", async () => {
     const post = { title: "Hello", body: "First post", published: true };
-    expect((await call("POST", "/posts", { body: post })).status).toBe(401);
-    const spoof = await call("POST", "/posts", { cookie: bob, body: { ...post, author: aliceId } });
+    expect((await call("POST", "/api/posts", { body: post })).status).toBe(401);
+    const spoof = await call("POST", "/api/posts", { cookie: bob, body: { ...post, author: aliceId } });
     expect(spoof).toMatchObject({ status: 400, body: { error: { field: "author" } } });
-    const r = await call("POST", "/posts", { cookie: alice, body: post });
+    const r = await call("POST", "/api/posts", { cookie: alice, body: post });
     expect(r.status).toBe(201);
     expect(r.body).toMatchObject({ ...post, author: aliceId, views: null });
     postId = (r.body as { id: string }).id;
   });
 
   it("finds records, and rejects malformed ids before they reach SQL", async () => {
-    expect((await call("GET", `/posts/${postId}`)).body).toMatchObject({ id: postId, title: "Hello" });
-    expect((await call("GET", "/posts/00000000-0000-0000-0000-000000000000")).status).toBe(404);
-    const inj = await call("GET", `/posts/${encodeURIComponent("1' OR '1'='1")}`);
+    expect((await call("GET", `/api/posts/${postId}`)).body).toMatchObject({ id: postId, title: "Hello" });
+    expect((await call("GET", "/api/posts/00000000-0000-0000-0000-000000000000")).status).toBe(404);
+    const inj = await call("GET", `/api/posts/${encodeURIComponent("1' OR '1'='1")}`);
     expect(inj).toMatchObject({ status: 400, body: { error: { code: "invalid_parameter", field: "id" } } });
   });
 
   it("stores SQL-looking text as plain data", async () => {
     const title = `x'); DROP TABLE "posts"; --`;
-    const r = await call("POST", "/posts", { cookie: alice, body: { title, body: "b", published: false } });
+    const r = await call("POST", "/api/posts", { cookie: alice, body: { title, body: "b", published: false } });
     expect((r.body as { title: string }).title).toBe(title);
     expect((await pool.query('SELECT count(*)::int AS n FROM "posts"')).rows[0].n).toBe(2);
   });
 
   it("enforces ownership: other users get 404 for update and delete", async () => {
-    expect((await call("PATCH", `/posts/${postId}`, { cookie: bob, body: { title: "Mine now" } })).status).toBe(404);
-    expect((await call("DELETE", `/posts/${postId}`, { cookie: bob })).status).toBe(404);
-    expect((await call("GET", `/posts/${postId}`)).body).toMatchObject({ title: "Hello" });
+    expect((await call("PATCH", `/api/posts/${postId}`, { cookie: bob, body: { title: "Mine now" } })).status).toBe(404);
+    expect((await call("DELETE", `/api/posts/${postId}`, { cookie: bob })).status).toBe(404);
+    expect((await call("GET", `/api/posts/${postId}`)).body).toMatchObject({ title: "Hello" });
   });
 
   it("updates only the fields sent, and cannot change the owner", async () => {
-    const r = await call("PATCH", `/posts/${postId}`, { cookie: alice, body: { title: "Hello again", views: 3 } });
+    const r = await call("PATCH", `/api/posts/${postId}`, { cookie: alice, body: { title: "Hello again", views: 3 } });
     expect(r.body).toMatchObject({ title: "Hello again", body: "First post", published: true, views: 3, author: aliceId });
-    const cleared = await call("PATCH", `/posts/${postId}`, { cookie: alice, body: { views: null } });
+    const cleared = await call("PATCH", `/api/posts/${postId}`, { cookie: alice, body: { views: null } });
     expect(cleared.body).toMatchObject({ views: null });
-    expect((await call("PATCH", `/posts/${postId}`, { cookie: alice, body: { title: null } })).status).toBe(400);
-    expect((await call("PATCH", `/posts/${postId}`, { cookie: alice, body: { author: "x" } })).status).toBe(400);
+    expect((await call("PATCH", `/api/posts/${postId}`, { cookie: alice, body: { title: null } })).status).toBe(400);
+    expect((await call("PATCH", `/api/posts/${postId}`, { cookie: alice, body: { author: "x" } })).status).toBe(400);
   });
 
   it("filters lists by the logged-in user and by path parameters", async () => {
-    const mine = await call("GET", "/my/posts", { cookie: alice });
+    const mine = await call("GET", "/api/my/posts", { cookie: alice });
     expect(items(mine).length).toBe(2);
-    expect((await call("GET", "/my/posts", { cookie: bob })).body).toEqual({ items: [], next: null });
-    const published = await call("GET", "/posts");
+    expect((await call("GET", "/api/my/posts", { cookie: bob })).body).toEqual({ items: [], next: null });
+    const published = await call("GET", "/api/posts");
     expect(items<{ title: string }>(published).map((p) => p.title)).toEqual(["Hello again"]);
   });
 
   it("checks links and protects linked records", async () => {
-    const missing = await call("POST", "/comments", { cookie: bob, body: { post: "00000000-0000-0000-0000-000000000000", body: "?" } });
+    const missing = await call("POST", "/api/comments", { cookie: bob, body: { post: "00000000-0000-0000-0000-000000000000", body: "?" } });
     expect(missing).toMatchObject({ status: 400, body: { error: { code: "invalid_link", field: "post" } } });
-    expect((await call("POST", "/comments", { cookie: bob, body: { post: postId, body: "Nice" } })).status).toBe(201);
-    expect(items(await call("GET", `/posts/${postId}/comments`))).toMatchObject([{ body: "Nice", post: postId }]);
-    expect((await call("DELETE", `/posts/${postId}`, { cookie: alice })).status).toBe(409);
+    expect((await call("POST", "/api/comments", { cookie: bob, body: { post: postId, body: "Nice" } })).status).toBe(201);
+    expect(items(await call("GET", `/api/posts/${postId}/comments`))).toMatchObject([{ body: "Nice", post: postId }]);
+    expect((await call("DELETE", `/api/posts/${postId}`, { cookie: alice })).status).toBe(409);
   });
 
   it("deletes a record its owner owns", async () => {
-    const other = await call("POST", "/posts", { cookie: alice, body: { title: "Bye", body: "b", published: false } });
+    const other = await call("POST", "/api/posts", { cookie: alice, body: { title: "Bye", body: "b", published: false } });
     const id = (other.body as { id: string }).id;
-    expect((await call("DELETE", `/posts/${id}`, { cookie: alice })).status).toBe(204);
-    expect((await call("GET", `/posts/${id}`)).status).toBe(404);
+    expect((await call("DELETE", `/api/posts/${id}`, { cookie: alice })).status).toBe(204);
+    expect((await call("GET", `/api/posts/${id}`)).status).toBe(404);
   });
 
   it("never returns private or secret fields", async () => {
-    expect((await call("GET", `/users/${aliceId}`)).body).toEqual({ id: aliceId, name: "Alice", bio: "hi" });
+    expect((await call("GET", `/api/users/${aliceId}`)).body).toEqual({ id: aliceId, name: "Alice", bio: "hi" });
   });
 
   describe("roles", () => {
@@ -222,23 +222,23 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       expect(await grantAdmins(app, db(), [" ALICE@example.com ", "late@example.com"])).toBe(1);
       const late = await call("POST", "/auth/signup", { body: { email: "late@example.com", password: "long enough password", name: "Late" } });
       expect(late.status).toBe(201);
-      expect((await call("GET", "/admin/posts", { cookie: late.cookie ?? "" })).status).toBe(403);
+      expect((await call("GET", "/api/admin/posts", { cookie: late.cookie ?? "" })).status).toBe(403);
     });
 
     it("lets only the listed roles call role endpoints", async () => {
-      expect((await call("GET", "/admin/posts", { cookie: bob })).status).toBe(403);
-      expect((await call("GET", "/admin/posts")).status).toBe(401);
-      const all = await call("GET", "/admin/posts", { cookie: alice });
+      expect((await call("GET", "/api/admin/posts", { cookie: bob })).status).toBe(403);
+      expect((await call("GET", "/api/admin/posts")).status).toBe(401);
+      const all = await call("GET", "/api/admin/posts", { cookie: alice });
       expect(all.status).toBe(200);
       expect(items<{ published: boolean }>(all).some((p) => !p.published)).toBe(true);
     });
 
     it("lets an admin delete posts they do not own, but not other users", async () => {
       bobId = ((await call("GET", "/auth/me", { cookie: bob })).body as { id: string }).id;
-      bobPost = ((await call("POST", "/posts", { cookie: bob, body: { title: "Bob's", body: "b", published: true } })).body as { id: string }).id;
-      const alicePost = ((await call("POST", "/posts", { cookie: alice, body: { title: "Alice's", body: "a", published: true } })).body as { id: string }).id;
-      expect((await call("DELETE", `/posts/${alicePost}`, { cookie: bob })).status).toBe(404);
-      expect((await call("DELETE", `/posts/${bobPost}`, { cookie: alice })).status).toBe(204);
+      bobPost = ((await call("POST", "/api/posts", { cookie: bob, body: { title: "Bob's", body: "b", published: true } })).body as { id: string }).id;
+      const alicePost = ((await call("POST", "/api/posts", { cookie: alice, body: { title: "Alice's", body: "a", published: true } })).body as { id: string }).id;
+      expect((await call("DELETE", `/api/posts/${alicePost}`, { cookie: bob })).status).toBe(404);
+      expect((await call("DELETE", `/api/posts/${bobPost}`, { cookie: alice })).status).toBe(204);
     });
 
     it("lets only admins assign roles, never to themselves", async () => {
@@ -251,9 +251,33 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       const ok = await call("PUT", path, { cookie: alice, body: { role: "editor" } });
       expect(ok).toMatchObject({ status: 200, body: { id: bobId, role: "editor" } });
       // The new role applies to Bob's existing session immediately.
-      expect((await call("GET", "/admin/posts", { cookie: bob })).status).toBe(200);
+      expect((await call("GET", "/api/admin/posts", { cookie: bob })).status).toBe(200);
       expect((await call("PUT", path, { cookie: alice, body: { role: null } })).body).toMatchObject({ role: null });
-      expect((await call("GET", "/admin/posts", { cookie: bob })).status).toBe(403);
+      expect((await call("GET", "/api/admin/posts", { cookie: bob })).status).toBe(403);
+    });
+  });
+
+  describe("pages", () => {
+    const page = async (path: string, cookie?: string) => {
+      const r = await fetch(base + path, cookie ? { headers: { Cookie: cookie } } : {});
+      return { status: r.status, csp: r.headers.get("content-security-policy"), html: await r.text() };
+    };
+
+    it("serves the example's pages next to its API", async () => {
+      const home = await page("/");
+      expect(home.status).toBe(200);
+      expect(home.csp).toContain("script-src 'self'");
+      const data = JSON.parse(/id="rizo-page">([^<]*)</.exec(home.html)?.[1] ?? "{}") as { title: string; items: { kind: string; endpoint?: string }[] };
+      expect(data.title).toBe("Rizo Blog");
+      expect(data.items.find((i) => i.kind === "show")?.endpoint).toBe("/api/posts");
+      expect((await page(`/posts/${postId}`)).status).toBe(200);
+      expect((await page("/posts/not-an-id")).status).toBe(404);
+    });
+
+    it("applies login and roles to pages", async () => {
+      expect((await page("/admin")).status).toBe(401);
+      expect((await page("/admin", bob)).status).toBe(403);
+      expect((await page("/admin", alice)).status).toBe(200);
     });
   });
 
@@ -261,7 +285,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     const titles = ["d", "a", "c", "b", "e", "c"]; // includes a duplicate title
     beforeAll(async () => {
       for (const title of titles) {
-        await call("POST", "/posts", { cookie: alice, body: { title, body: "x", published: true } });
+        await call("POST", "/api/posts", { cookie: alice, body: { title, body: "x", published: true } });
       }
     });
 
@@ -282,8 +306,8 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     }
 
     it("walks every page in order, without gaps or repeats, even with equal sort values", async () => {
-      const all = items<{ id: string; title: string }>(await call("GET", "/posts"));
-      const walked = await walk("/posts", 2);
+      const all = items<{ id: string; title: string }>(await call("GET", "/api/posts"));
+      const walked = await walk("/api/posts", 2);
       expect(walked.ids).toEqual(all.map((p) => p.id));
       expect(new Set(walked.ids).size).toBe(walked.ids.length);
       // Same order as one unpaged query (PostgreSQL's own collation decides the order).
@@ -292,13 +316,13 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     });
 
     it("pages by id when no order is given, and stays correct when rows are added", async () => {
-      const first = await call("GET", "/my/posts?limit=3", { cookie: alice });
+      const first = await call("GET", "/api/my/posts?limit=3", { cookie: alice });
       const page1 = first.body as { items: { id: string }[]; next: string };
-      await call("POST", "/posts", { cookie: alice, body: { title: "late", body: "x", published: false } });
+      await call("POST", "/api/posts", { cookie: alice, body: { title: "late", body: "x", published: false } });
       const rest: string[] = [];
       let next: string | null = page1.next;
       while (next !== null) {
-        const r = await call("GET", `/my/posts?limit=3&after=${next}`, { cookie: alice });
+        const r = await call("GET", `/api/my/posts?limit=3&after=${next}`, { cookie: alice });
         const p = r.body as { items: { id: string }[]; next: string | null };
         rest.push(...p.items.map((x) => x.id));
         next = p.next;
@@ -310,23 +334,23 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
 
     it("rejects bad limits, tampered cursors and unknown parameters", async () => {
       for (const q of ["limit=0", "limit=21", "limit=abc", "limit=-1", "limit=1&limit=2"]) {
-        expect((await call("GET", `/posts?${q}`)).status, q).toBe(400);
+        expect((await call("GET", `/api/posts?${q}`)).status, q).toBe(400);
       }
       const forged = (parts: unknown) => Buffer.from(JSON.stringify(parts)).toString("base64url");
       for (const after of ["!!!", "bm90IGpzb24", forged(["a"]), forged(["a", "not-a-uuid"]), forged([1, 2]), forged(["x", "y", "z"])]) {
-        const r = await call("GET", `/posts?after=${after}`);
+        const r = await call("GET", `/api/posts?after=${after}`);
         expect(r, after).toMatchObject({ status: 400, body: { error: { field: "after" } } });
       }
-      expect((await call("GET", "/posts?sort=title")).status).toBe(400);
-      expect((await call("GET", `/posts/${postId}?debug=1`)).status).toBe(400);
+      expect((await call("GET", "/api/posts?sort=title")).status).toBe(400);
+      expect((await call("GET", `/api/posts/${postId}?debug=1`)).status).toBe(400);
     });
 
     it("never lets a cursor change the query", async () => {
       const injected = Buffer.from(JSON.stringify([`a') OR 1=1 --`, "00000000-0000-0000-0000-000000000000"])).toString("base64url");
-      const r = await call("GET", `/posts?after=${injected}`);
+      const r = await call("GET", `/api/posts?after=${injected}`);
       expect(r.status).toBe(200);
       // The text is only a value to sort against: the result is a slice of the normal list, never more.
-      const all = items<{ id: string; published: boolean }>(await call("GET", "/posts")).map((p) => p.id);
+      const all = items<{ id: string; published: boolean }>(await call("GET", "/api/posts")).map((p) => p.id);
       const got = items<{ id: string; published: boolean }>(r);
       expect(got.every((p) => p.published && all.includes(p.id))).toBe(true);
       expect(got.length).toBeLessThan(all.length);
@@ -382,16 +406,16 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     });
 
     it("deletes the account only with the password, and only when nothing links to it", async () => {
-      const post = await call("POST", "/posts", { cookie: carol, body: { title: "Mine", body: "x", published: false } });
+      const post = await call("POST", "/api/posts", { cookie: carol, body: { title: "Mine", body: "x", published: false } });
       const blocked = await call("DELETE", "/auth/me", { cookie: carol, body: { password: CAROL_NEW } });
       expect(blocked).toMatchObject({ status: 409, body: { error: { code: "in_use" } } });
-      await call("DELETE", `/posts/${(post.body as { id: string }).id}`, { cookie: carol });
+      await call("DELETE", `/api/posts/${(post.body as { id: string }).id}`, { cookie: carol });
       expect((await call("DELETE", "/auth/me", { cookie: carol, body: { password: "wrong wrong wrong" } })).status).toBe(403);
       const r = await call("DELETE", "/auth/me", { cookie: carol, body: { password: CAROL_NEW } });
       expect(r.status).toBe(204);
       expect((await call("GET", "/auth/me", { cookie: carol })).status).toBe(401);
       expect((await login(CAROL_NEW)).status).toBe(401);
-      expect((await call("GET", `/users/${carolId}`)).status).toBe(404);
+      expect((await call("GET", `/api/users/${carolId}`)).status).toBe(404);
     });
 
     it("locks out repeated wrong passwords on sensitive changes", async () => {
@@ -403,32 +427,32 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
   });
 
   it("rejects cross-site writes, wrong content types, oversized and unexpected bodies", async () => {
-    const evil = await call("POST", "/posts", {
+    const evil = await call("POST", "/api/posts", {
       cookie: alice, body: { title: "x", body: "x", published: true }, headers: { Origin: "https://evil.example" },
     });
     expect(evil.status).toBe(403);
-    const sameOrigin = await call("POST", "/posts", {
+    const sameOrigin = await call("POST", "/api/posts", {
       cookie: alice, body: { title: "x", body: "x", published: false }, headers: { Origin: base },
     });
     expect(sameOrigin.status).toBe(201);
-    const form = await call("POST", "/posts", { cookie: alice, raw: "title=x", headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+    const form = await call("POST", "/api/posts", { cookie: alice, raw: "title=x", headers: { "Content-Type": "application/x-www-form-urlencoded" } });
     expect(form.status).toBe(415);
-    const big = await call("POST", "/posts", { cookie: alice, body: { title: "x", body: "a".repeat(1_100_000), published: true } });
+    const big = await call("POST", "/api/posts", { cookie: alice, body: { title: "x", body: "a".repeat(1_100_000), published: true } });
     expect(big.status).toBe(413);
-    const unexpected = await call("DELETE", `/posts/${postId}`, { cookie: alice, raw: "{}", headers: { "Content-Type": "application/json" } });
+    const unexpected = await call("DELETE", `/api/posts/${postId}`, { cookie: alice, raw: "{}", headers: { "Content-Type": "application/json" } });
     expect(unexpected).toMatchObject({ status: 400, body: { error: { code: "unexpected_body" } } });
-    expect((await call("POST", "/posts", { cookie: alice, raw: "{not json", headers: { "Content-Type": "application/json" } })).status).toBe(400);
+    expect((await call("POST", "/api/posts", { cookie: alice, raw: "{not json", headers: { "Content-Type": "application/json" } })).status).toBe(400);
   });
 
   it("answers unknown paths with 404 and wrong methods with 405", async () => {
     expect((await call("GET", "/nope")).status).toBe(404);
-    const r = await call("PUT", "/posts");
+    const r = await call("PUT", "/api/posts");
     expect(r.status).toBe(405);
     expect(r.headers.get("allow")).toContain("GET");
   });
 
   it("sends security headers on every response", async () => {
-    const r = await call("GET", "/posts");
+    const r = await call("GET", "/api/posts");
     expect(r.headers.get("x-content-type-options")).toBe("nosniff");
     expect(r.headers.get("cache-control")).toBe("no-store");
     expect(r.headers.get("content-security-policy")).toContain("default-src 'none'");
@@ -457,7 +481,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       expect(everything).not.toContain(secret);
     }
     // Logs name the route pattern, never the concrete URL or body.
-    expect(logs.some((l) => l.startsWith("PATCH /posts/:id 200"))).toBe(true);
+    expect(logs.some((l) => l.startsWith("PATCH /api/posts/:id 200"))).toBe(true);
     expect(logs.join("\n")).not.toContain(postId);
     expect(logs.join("\n")).not.toContain("DROP TABLE");
   });

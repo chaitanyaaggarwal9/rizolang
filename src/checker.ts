@@ -1,5 +1,6 @@
 import type { FieldDecl, ModelDecl, Modifier, Program } from "./ast.js";
 import { type ResolvedApi, type ResolvedAuth, checkApis, checkAuth } from "./check-api.js";
+import { type ResolvedPage, checkPages } from "./check-page.js";
 import { type Diagnostic, type Span, didYouMean, diagnostic } from "./diagnostics.js";
 import { FIELD_TYPES, FIELD_TYPE_NAMES, type FieldTypeName, TYPE_ALIASES, isFieldTypeName } from "./types.js";
 
@@ -36,6 +37,7 @@ export type CheckResult =
       readonly models: readonly ResolvedModel[];
       readonly auth: ResolvedAuth | undefined;
       readonly apis: readonly ResolvedApi[];
+      readonly pages: readonly ResolvedPage[];
     }
   | { readonly ok: false; readonly diagnostics: readonly Diagnostic[] };
 
@@ -120,7 +122,8 @@ export function check(program: Program, file: string): CheckResult {
   if (errors.length > 0) return { ok: false, diagnostics: errors };
   const auth = checkAuth(program.auths, models, err);
   const apis = checkApis(program.apis, models, auth, program.auths.length > 0, err);
-  return errors.length > 0 ? { ok: false, diagnostics: errors } : { ok: true, models, auth, apis };
+  const pages = checkPages(program.pages, auth, apis, program.auths.length > 0, err);
+  return errors.length > 0 ? { ok: false, diagnostics: errors } : { ok: true, models, auth, apis, pages };
 
   function checkModelName(model: ModelDecl): void {
     const { name, nameSpan } = model;

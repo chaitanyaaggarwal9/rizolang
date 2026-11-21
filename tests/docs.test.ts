@@ -28,13 +28,21 @@ model Post {
   title: Text max 200
   published: Bool
 }
+api GET /api/posts -> list Post.public {
+  public
+  return db.Post.list()
+}
+api GET /api/posts/:id -> Post.public {
+  public
+  return db.Post.find(id)
+}
 `;
-const isBlock = (s: string) => /^(model|auth|api)\b/m.test(s.trimStart());
+const isBlock = (s: string) => /^(model|auth|api|page)\b/m.test(s.trimStart());
 /** Compile a snippet: whole blocks as they are (api blocks with the §3 models), single fields inside a model. */
 const asFile = (s: string): string => {
   const t = s.trimStart();
   if (t.startsWith("auth") && !t.includes("model")) return PRELUDE; // the bare auth line from SPEC §4
-  if (/^api\b/m.test(t) && !/^model\b/m.test(t)) return PRELUDE + s;
+  if (/^(api|page)\b/m.test(t) && !/^model\b/m.test(t)) return PRELUDE + s;
   return isBlock(s) ? s : wrapField(s.split("\n").join("\n  "));
 };
 

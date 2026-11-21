@@ -46,8 +46,8 @@ model Post {
   });
 
   it("rejects blocks from later milestones", () => {
-    const d = firstError("model User {\n  x: Text\n}\n\npage /home {\n}\n");
-    expect(d).toMatchObject({ code: "RZ0211", span: { line: 5, col: 1, length: 4 } });
+    const d = firstError("model User {\n  x: Text\n}\n\ncomponent Home {\n}\n");
+    expect(d).toMatchObject({ code: "RZ0211", span: { line: 5, col: 1, length: 9 } });
   });
 
   it("does not mistake a field named like a future keyword for a block", () => {

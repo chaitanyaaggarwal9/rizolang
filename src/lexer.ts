@@ -4,6 +4,7 @@ export type TokenKind =
   | "ident"
   | "int"
   | "path"
+  | "string"
   | "lbrace"
   | "rbrace"
   | "lparen"
@@ -17,6 +18,7 @@ export type TokenKind =
 
 export interface Token {
   readonly kind: TokenKind;
+  /** The token as written; for "string" tokens, the decoded text without quotes. */
   readonly text: string;
   /** Numeric value, only for "int" tokens. */
   readonly value: number;
@@ -27,6 +29,9 @@ export type LexResult =
   | { readonly ok: true; readonly tokens: readonly Token[] }
   | { readonly ok: false; readonly diagnostic: Diagnostic };
 
+/** Longest text allowed in quotes, in characters. */
+export const MAX_TEXT = 200;
+
 /** Integers may have at most this many digits (enough for any 32-bit value). */
 const MAX_DIGITS = 10;
 
@@ -36,8 +41,7 @@ const CHARACTER_FIXES: Readonly<Record<string, string>> = {
   "_": "Names may contain only letters and digits. Use camelCase (userName) for fields and PascalCase (BlogPost) for models.",
   "?": 'Mark optional fields with the optional modifier: `nickname: Text optional`.',
   "@": "Write modifiers without @: `email: Email unique`.",
-  '"': "Quoted text is not supported. Remove the quotes.",
-  "'": "Quoted text is not supported. Remove the quotes.",
+  "'": 'Write text in double quotes: "Latest posts".',
   "[": "Lists are not supported. To return many records, write `-> list Post.public`.",
   "]": "Lists are not supported. To return many records, write `-> list Post.public`.",
   "#": "Comments start with two slashes: `// like this`.",
@@ -94,6 +98,42 @@ export function lex(rawSource: string, file: string): LexResult {
         i++;
         col++;
       }
+    } else if (c === '"') {
+      // Quoted text: one line, only \" and \\ escapes, no control characters.
+      let j = i + 1;
+      let value = "";
+      for (;;) {
+        const d = src[j];
+        if (d === undefined || d === "\n") {
+          return fail("RZ0103", { line, col, length: j - i },
+            "Quoted text is not closed on this line.", 'End the text with a double quote on the same line: "like this".');
+        }
+        if (d === '"') break;
+        if (d === "\\") {
+          const e = src[j + 1];
+          if (e !== '"' && e !== "\\") {
+            return fail("RZ0103", { line, col: col + (j - i), length: 2 },
+              `"\\${e ?? ""}" is not allowed in quoted text.`, 'Only \\" (a double quote) and \\\\ (a backslash) can be escaped. Remove the backslash.');
+          }
+          value += e;
+          j += 2;
+          continue;
+        }
+        if (d < " " || d === "\u007f") {
+          return fail("RZ0103", { line, col: col + (j - i), length: 1 },
+            "Quoted text contains a control character.", "Remove it. Text must be printable characters on one line.");
+        }
+        value += d;
+        j++;
+      }
+      const raw = src.slice(i, j + 1);
+      if ([...value].length > MAX_TEXT) {
+        return fail("RZ0103", { line, col, length: raw.length },
+          `Quoted text is ${[...value].length} characters long; at most ${MAX_TEXT} are allowed.`, "Shorten the text.");
+      }
+      tokens.push({ kind: "string", text: value, value: 0, span: { line, col, length: raw.length } });
+      i += raw.length;
+      col += raw.length;
     } else if (c === "/") {
       let j = i;
       // Inside a path, "//" is part of the path (the checker reports the empty

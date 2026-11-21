@@ -69,4 +69,4 @@ Milestones 1–4 are complete (v0.4.0): models, `auth`, `api` blocks, links, `pr
 
 Releases are published to npm by `.github/workflows/publish.yml`: the workflow stages the version, and the maintainer approves it on npm with two-factor authentication (see CONTRIBUTING.md, "Releasing").
 
-Don't start new language features until the maintainer chooses the next milestone.
+Milestone 5 (hardening) is done: rate limits on every endpoint, with sliding windows in PostgreSQL; a hashing queue; `Sec-Fetch-Site` checks; automatic list indexes; a 5-second statement timeout; and the security audit log (365-day retention). Roadmap: Milestone 6 (accounts: passkeys, email verification and reset, encrypted fields), Milestone 7 (AI agents: scoped tokens, OpenAPI, `--json`, `rizolang audit`), Milestone 8 (privacy rules per country the developer declares). The maintainer wants a single final release after Milestone 8. Show a plan before each milestone.

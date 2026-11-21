@@ -22,6 +22,21 @@ export interface FieldSpec {
   readonly max?: number;
 }
 
+/** A field stored encrypted: its JSON key, and the "table.column" its ciphertext is bound to. */
+export interface EncryptedField {
+  readonly key: string;
+  readonly aad: string;
+}
+
+/** An encrypted column, with the SQL `reencrypt.ts` uses to move values to the current key. */
+export interface EncryptedColumn {
+  readonly aad: string;
+  /** `SELECT id, <column> AS value ... WHERE <column> NOT LIKE $1 AND id > $2 ORDER BY id LIMIT 500` */
+  readonly select: string;
+  /** `UPDATE ... SET <column> = $2 WHERE id = $1 AND <column> = $3` */
+  readonly update: string;
+}
+
 /** Where the value for one SQL parameter comes from. */
 export type ValueSource =
   | { readonly from: "path"; readonly name: string }
@@ -70,6 +85,8 @@ export interface Route {
   readonly publicKeys: readonly string[];
   /** Model name, used in error messages such as "Post not found". */
   readonly model: string;
+  /** Fields encrypted before they are written and decrypted after they are read. Absent means none. */
+  readonly encrypted?: readonly EncryptedField[];
 }
 
 export interface AuthSpec {
@@ -97,6 +114,8 @@ export interface AuthSpec {
    * device's passkey picker; empty when the login field is private.
    */
   readonly nameSql: string;
+  /** Encrypted fields of the auth model. Absent means none. */
+  readonly encrypted?: readonly EncryptedField[];
   /** Account management. */
   readonly account: {
     /** Limits for a new password (the Password field's min and max). */
@@ -179,4 +198,6 @@ export interface App {
   readonly routes: readonly Route[];
   readonly auth: AuthSpec | null;
   readonly pages: readonly PageRoute[];
+  /** Every encrypted column the app writes. Absent means none. */
+  readonly encrypted?: readonly EncryptedColumn[];
 }

@@ -57,12 +57,12 @@ api DELETE /posts/:id {
 
 | Type       | Meaning                                         | Modifiers allowed                   |
 |------------|-------------------------------------------------|-------------------------------------|
-| `Text`     | text, max 10000 chars by default                | unique optional private min max     |
-| `Number`   | whole number (32-bit). Use cents for money      | unique optional private min max     |
+| `Text`     | text, max 10000 chars by default                | unique optional private encrypted min max |
+| `Number`   | whole number (32-bit). Use cents for money      | unique optional private encrypted min max |
 | `Bool`     | true/false                                      | optional private                    |
-| `Email`    | email address, 3–254 chars, stored lowercase    | unique optional private min max     |
+| `Email`    | email address, 3–254 chars, stored lowercase    | unique optional private encrypted min max |
 | `Password` | hashed, never returned, 8–128 chars             | optional min max                    |
-| `Date`     | date and time (UTC)                             | unique optional private             |
+| `Date`     | date and time (UTC)                             | unique optional private encrypted   |
 | `ID`       | UUID                                            | unique optional private             |
 | *Model*    | link to another model, e.g. `author: User`      | unique optional private             |
 
@@ -70,6 +70,7 @@ Modifiers:
 - `unique`: no two records share the value.
 - `optional`: the value may be null.
 - `private`: never returned by the API.
+- `encrypted`: stored encrypted; the API still sees the plain value. Never use it with unique, on the login field, or in list filters or order. Use it for sensitive data such as phone numbers.
 - `min N` / `max N`: the length for text, the value for Number.
 
 A field named `password` (or ending in `Password`) must have the type `Password`.

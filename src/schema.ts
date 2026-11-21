@@ -28,6 +28,8 @@ export interface Column {
   readonly values: readonly string[] | null;
   /** A short note written above the column in schema.sql. */
   readonly comment: string | null;
+  /** Holds AES-256-GCM ciphertext written by the runtime. Absent means false. */
+  readonly encrypted?: true;
 }
 
 export interface ForeignKey {
@@ -282,6 +284,15 @@ export function createListIndex(table: string, index: Index): string {
 function fieldColumn(table: string, f: ResolvedField): Column {
   const info = FIELD_TYPES[f.type];
   const col = q(f.column);
+  if (f.encrypted) {
+    // The database only sees ciphertext. Limits and formats are checked by
+    // the runtime before encrypting.
+    return {
+      name: f.column, type: "TEXT", primaryKey: false, default: null, notNull: !f.optional,
+      unique: null, check: null, values: null, encrypted: true,
+      comment: `${f.name}: encrypted with AES-256-GCM by the server; the database never sees the value`,
+    };
+  }
   const checks: string[] = [];
   if (info.secret) {
     // Password limits apply to the plain-text input, not to the stored hash.

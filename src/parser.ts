@@ -199,7 +199,7 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
             `After the type, write only modifiers: ${MODIFIER_NAMES.join(", ")}. Example: \`${nameTok.text}: ${typeTok.text} max 100\`.`);
       }
       next();
-      if (t.text === "unique" || t.text === "optional" || t.text === "private") {
+      if (t.text === "unique" || t.text === "optional" || t.text === "private" || t.text === "encrypted") {
         modifiers.push({ kind: t.text, span: t.span });
         prev = t;
       } else if (t.text === "min" || t.text === "max") {

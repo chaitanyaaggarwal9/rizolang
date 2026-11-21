@@ -30,7 +30,7 @@ Usage:
   rizolang --help            Print this help`;
 
 /** Files the build owns in dist/ besides schema.sql and types.ts. Removed before each build. */
-const SERVER_FILES = ["routes.ts", "server.ts", "migrate.ts", "package.json", "tsconfig.json"];
+const SERVER_FILES = ["routes.ts", "server.ts", "migrate.ts", "reencrypt.ts", "package.json", "tsconfig.json"];
 const RUNTIME_DIR = "runtime";
 
 /** Locate the runtime sources shipped with the compiler (works from src/ and build/src/). */
@@ -184,6 +184,10 @@ export function run(argv: readonly string[], io: CliIo): number {
   }
   if (output.server !== undefined) {
     writeFileSync(join(outDir, "migrate.ts"), output.server.migrate);
+    if (output.server.reencrypt !== undefined) {
+      writeFileSync(join(outDir, "reencrypt.ts"), output.server.reencrypt);
+      written.push(`${OUT_DIR}/reencrypt.ts`);
+    }
     mkdirSync(join(outDir, MIGRATIONS_DIR));
     for (const f of existing) writeFileSync(join(outDir, MIGRATIONS_DIR, f), readFileSync(join(migDir, f)));
   }

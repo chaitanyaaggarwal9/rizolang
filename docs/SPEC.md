@@ -93,6 +93,7 @@ Modifiers come after the type, on the same line, in any order, each at most once
 | `unique`   | No two records may have the same value.                                                        |
 | `optional` | The value may be missing (`null`). Without it, the field is required.                          |
 | `private`  | Stored and accepted as input, but **never returned** by any endpoint, and not allowed in filters or ordering. |
+| `encrypted` | Text, Email, Number, Date: stored encrypted (AES-256-GCM), so the database and its backups never see the value. See below. |
 | `min N`    | Text, Email, Password: minimum length in characters. Number: minimum value.                    |
 | `max N`    | Text, Email, Password: maximum length in characters. Number: maximum value.                    |
 
@@ -107,6 +108,14 @@ Modifiers come after the type, on the same line, in any order, each at most once
 - `unique` is not allowed on `Bool` or `Password`.
 - `min` and `max` are not allowed on `Bool`, `Date`, `ID` or links.
 - `private` is not allowed on `Password`, which is always hidden.
+
+**Encrypted fields.** `phone: Text optional encrypted` is encrypted by the server before it is written, and decrypted when it is read.
+- Endpoints send and receive the plain value, and limits (`min`, `max`, email format) are still checked. Combine with `private` to also keep it out of responses.
+- Each value gets a random IV and is tied to its table and column, so a value copied into another column can't be decrypted.
+- The database can't compare encrypted values, so an encrypted field can't be `unique`, the login field, a `list` filter or an `order` (RZ0340).
+- Keys come from `RIZO_ENCRYPTION_KEYS` (§6). Without them, an app with encrypted fields refuses to start.
+- **Rotating keys:** put a new key first in `RIZO_ENCRYPTION_KEYS`, keep the old ones after it, and restart. New values use the new key. Then run `node reencrypt.ts` to move stored values to it, and remove the old key once it reports nothing failed. If a key is lost, the values encrypted with it are lost too.
+- Making an existing field encrypted (or no longer encrypted) replaces its column, which deletes its values (`--allow-data-loss`). To keep them, add a new encrypted field and copy the values over.
 
 ### 3.3 Naming
 
@@ -523,7 +532,7 @@ Every build compares your models with the last build and records the difference 
 
 **Refused changes.** These changes would delete data, so the build stops (RZ0904) and writes no files, unless you run `rizolang build app.rz --allow-data-loss`:
 - removing a model or field,
-- changing a field's type,
+- changing a field's type, or adding or removing `encrypted`,
 - removing a role.
 
 Renaming looks like removing and adding, so it is refused too. Keep the old name.
@@ -566,6 +575,7 @@ To start a brand-new database, `psql "$DATABASE_URL" -f schema.sql` works too. T
 | `RIZO_PUBLIC_URL`           | (required with `auth`) | The app's address for links in emails, e.g. `https://blog.example`. https, or http only for localhost. No path |
 | `RIZO_EMAIL_API_KEY`        | (required with `auth`) | Resend API key |
 | `RIZO_EMAIL_FROM`           | (required with `auth`) | Sender on a domain verified with Resend, e.g. `Blog <hello@blog.example>` |
+| `RIZO_ENCRYPTION_KEYS`      | (required with `encrypted` fields) | Comma-separated `id:key` pairs. The id is 1–16 lowercase letters or digits, the key 32 random bytes in base64 (`openssl rand -base64 32`). The first key encrypts; all of them decrypt |
 | `RIZO_EMAIL_DEV`            | off         | `1` to print emails to the console instead of sending them (then the key and sender aren't needed). **Never in production** |
 
 An app with an `auth` line refuses to start when the email settings are missing or invalid, and says which one to fix.
@@ -602,6 +612,7 @@ These are enforced by the compiler and the runtime, and covered by `tests/securi
 10. Pages contain no HTML or code. All text is inserted as text, links stay on the site, and pages are served with a strict Content-Security-Policy. A page is never more open than the data it shows.
 11. A passkey works only on the site that created it, only once per challenge, and only with the user verified. The server never stores a private key, and a copied passkey (counter going backwards) is refused.
 12. Signup, resending a confirmation link and asking for a password reset answer the same whether or not the email has an account. Emailed links work once, expire, are stored only as hashes and never appear in logs, and accounts can't log in before confirming their email.
+13. Encrypted fields are stored only as AES-256-GCM ciphertext, tied to their column, and are decrypted only by the server. They can never be compared, sorted or made unique in the database.
 
 ---
 
@@ -684,6 +695,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0337 | `title`, `show`, `then go`, or the page's form or button repeated        |
 | RZ0338 | Missing, misplaced or invalid `then go`                                  |
 | RZ0339 | Invalid rate limit (unknown unit, out of range, repeated)               |
+| RZ0340 | An encrypted field used as unique, as the login field, in a filter or in an order |
 | RZ0901 | Cannot read the input file                                              |
 | RZ0902 | Input file does not end in `.rz`                                        |
 | RZ0903 | Wrong command-line usage                                                |
@@ -871,7 +883,7 @@ comment    = "//" { any character except newline } ;
 
 These are **not** part of the language yet. Using them is an error.
 
-- Pagination, and filters other than `=`.
-- Changing the login email, and password reset by email (these need email verification).
+- Filters other than `=`.
+- Changing the login email.
 - Custom page layouts and styling.
 - Changing your account from a page (the API endpoints exist already).

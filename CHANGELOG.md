@@ -36,6 +36,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Signing up with an email that has an account emails its owner instead, so signup can't be used to find out who has an account.
   - Links are one-time, expire (24 hours to confirm, 1 hour to reset), are stored only as hashes, and carry the token after `#` so it never reaches logs. At most 3 emails an hour go to one account.
   - The `_rizo_unverified` and `_rizo_email_tokens` tables, added by migration. Emails are sent with `fetch`, with no new dependencies.
+- Milestone 6, part 3: encrypted fields.
+  - New `encrypted` modifier for Text, Email, Number and Date fields. The server encrypts values with AES-256-GCM (random IV, bound to the table and column) before they are written, and decrypts them when they are read, so the database and its backups hold only ciphertext. Limits are still checked on the plain value.
+  - Keys come from `RIZO_ENCRYPTION_KEYS` (`id:key` pairs; the first encrypts, all decrypt). An app with encrypted fields refuses to start without them.
+  - Key rotation: put a new key first, then run the generated `node reencrypt.ts` to move stored values to it.
+  - New error RZ0340: an encrypted field can't be unique, the login field, a list filter or an order.
+  - Adding or removing `encrypted` on an existing field replaces its column, so it needs `--allow-data-loss`.
 
 ## [0.4.0] - 2026-11-21
 

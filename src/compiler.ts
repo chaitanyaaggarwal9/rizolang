@@ -2,7 +2,7 @@ import type { ResolvedApi, ResolvedAuth } from "./check-api.js";
 import type { ResolvedPage } from "./check-page.js";
 import { type ResolvedModel, check } from "./checker.js";
 import { type Diagnostic, diagnostic, sourceLines } from "./diagnostics.js";
-import { emitMigrate, emitPackageJson, emitRoutes, emitServer, emitTsconfig } from "./emit/routes.js";
+import { emitMigrate, emitPackageJson, emitReencrypt, emitRoutes, emitServer, emitTsconfig } from "./emit/routes.js";
 import { emitSql } from "./emit/sql.js";
 import { emitTypeScript } from "./emit/typescript.js";
 import { lex } from "./lexer.js";
@@ -20,6 +20,8 @@ export interface ServerOutput {
   readonly tsconfig: string;
   /** dist/migrate.ts: applies migrations/ to the database. */
   readonly migrate: string;
+  /** Only for apps with encrypted fields. */
+  readonly reencrypt?: string;
 }
 
 export interface CompileOutput {
@@ -80,6 +82,7 @@ export function compile(source: string, file: string): CompileResult {
             packageJson: emitPackageJson(),
             tsconfig: emitTsconfig(),
             migrate: emitMigrate(label),
+            ...(models.some((m) => m.fields.some((f) => f.encrypted)) ? { reencrypt: emitReencrypt(label) } : {}),
           }
         : undefined,
     },

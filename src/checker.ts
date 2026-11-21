@@ -25,6 +25,8 @@ export interface ResolvedField {
   readonly optional: boolean;
   /** Excluded from public types (but not hashed). */
   readonly private: boolean;
+  /** Stored encrypted (AES-256-GCM); can't be unique, filtered, sorted or used to log in. */
+  readonly encrypted: boolean;
   /** Effective lower limit (length or value), after defaults. */
   readonly min: number | undefined;
   /** Effective upper limit (length or value), after defaults. */
@@ -254,6 +256,14 @@ export function check(program: Program, file: string): CheckResult {
         `Make min less than or equal to max${max === undefined ? `, or add \`max ${effMin}\` or higher` : ""}.`);
     }
 
+    const encrypted = seen.get("encrypted");
+    const unique = seen.get("unique");
+    if (encrypted !== undefined && unique !== undefined) {
+      ok = false;
+      err("RZ0340", unique.span, `Field "${where}" is encrypted, so it cannot be unique.`,
+        "Each encryption gives a different result, so the database can't compare encrypted values. Remove unique or encrypted.");
+    }
+
     if (!ok) return undefined;
     return {
       name: field.name,
@@ -263,6 +273,7 @@ export function check(program: Program, file: string): CheckResult {
       unique: seen.has("unique"),
       optional: seen.has("optional"),
       private: seen.has("private"),
+      encrypted: encrypted !== undefined,
       min: effMin,
       max: effMax,
     };

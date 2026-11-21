@@ -25,12 +25,12 @@ export interface FieldDecl {
 }
 
 export type Modifier =
-  | { readonly kind: "unique" | "optional" | "private"; readonly span: Span }
+  | { readonly kind: "unique" | "optional" | "private" | "encrypted"; readonly span: Span }
   | { readonly kind: "min" | "max"; readonly value: number; readonly span: Span; readonly valueSpan: Span };
 
 export type ModifierKind = Modifier["kind"];
 
-export const MODIFIER_NAMES: readonly ModifierKind[] = ["unique", "optional", "private", "min", "max"];
+export const MODIFIER_NAMES: readonly ModifierKind[] = ["unique", "optional", "private", "encrypted", "min", "max"];
 
 /** A role name as written, e.g. `admin`. */
 export interface RoleRef {

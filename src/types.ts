@@ -41,13 +41,13 @@ export const INT32_MAX = 2147483647;
 export const FIELD_TYPES: Readonly<Record<FieldTypeName, FieldTypeInfo>> = {
   Text: {
     sql: "TEXT", ts: "string", tsInput: "string",
-    modifiers: ["unique", "optional", "private", "min", "max"],
+    modifiers: ["unique", "optional", "private", "encrypted", "min", "max"],
     length: { defaultMin: 0, defaultMax: 10_000, lowest: 0, highest: 1_000_000 },
     secret: false,
   },
   Number: {
     sql: "INTEGER", ts: "number", tsInput: "number",
-    modifiers: ["unique", "optional", "private", "min", "max"],
+    modifiers: ["unique", "optional", "private", "encrypted", "min", "max"],
     valueRange: { lowest: INT32_MIN, highest: INT32_MAX },
     secret: false,
   },
@@ -57,13 +57,14 @@ export const FIELD_TYPES: Readonly<Record<FieldTypeName, FieldTypeInfo>> = {
     secret: false,
     disallowedReason: {
       unique: "A Bool has only two values, so it cannot be unique.",
+      encrypted: "A Bool has only two values, so encrypting it hides little. Use private to keep it out of responses.",
       min: "A Bool has no size or range.",
       max: "A Bool has no size or range.",
     },
   },
   Email: {
     sql: "TEXT", ts: "string", tsInput: "string",
-    modifiers: ["unique", "optional", "private", "min", "max"],
+    modifiers: ["unique", "optional", "private", "encrypted", "min", "max"],
     length: { defaultMin: 3, defaultMax: 254, lowest: 3, highest: 254 },
     secret: false,
   },
@@ -75,11 +76,12 @@ export const FIELD_TYPES: Readonly<Record<FieldTypeName, FieldTypeInfo>> = {
     disallowedReason: {
       unique: "Passwords are stored as salted hashes, so they cannot be unique.",
       private: "Password fields are always hidden, so private is not needed.",
+      encrypted: "Passwords are hashed, which is stronger than encryption: nobody can read them back.",
     },
   },
   Date: {
     sql: "TIMESTAMPTZ", ts: "Date", tsInput: "Date",
-    modifiers: ["unique", "optional", "private"],
+    modifiers: ["unique", "optional", "private", "encrypted"],
     secret: false,
     disallowedReason: {
       min: "Date ranges are not supported yet.",
@@ -93,6 +95,7 @@ export const FIELD_TYPES: Readonly<Record<FieldTypeName, FieldTypeInfo>> = {
     disallowedReason: {
       min: "An ID is a fixed-size UUID and has no range.",
       max: "An ID is a fixed-size UUID and has no range.",
+      encrypted: "IDs and links are used to find records, so they can't be encrypted.",
     },
   },
 };

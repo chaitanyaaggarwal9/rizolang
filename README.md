@@ -15,6 +15,7 @@ Write your data models and endpoints in a few readable lines. Rizo Lang compiles
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white)
 ![Open Source](https://img.shields.io/badge/open%20source-Apache--2.0-10b981)
+[![npm](https://img.shields.io/npm/v/rizolang?color=cb3837&logo=npm)](https://www.npmjs.com/package/rizolang)
 
 [Website](https://rizobot.com) · [Language spec](docs/SPEC.md) · [Compact spec for AI](docs/SPEC-COMPACT.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
@@ -153,7 +154,14 @@ Part of the `PATCH /posts/:id` route above, as it appears in `routes.ts`:
 
 ### Install the compiler
 
-Rizo Lang is not published to npm yet. Build it from source:
+Rizo Lang is on npm as [`rizolang`](https://www.npmjs.com/package/rizolang):
+
+```sh
+npx rizolang build app.rz          # run without installing
+npm install --save-dev rizolang    # or add it to your project
+```
+
+To build from source instead:
 
 ```sh
 git clone https://github.com/chaitanyaaggarwal9/rizolang.git
@@ -166,7 +174,7 @@ npm link              # optional: makes the `rizolang` command available everywh
 ### Build and run an app
 
 ```sh
-rizolang build app.rz                 # or: node path/to/rizolang/build/src/bin.js build app.rz
+npx rizolang build app.rz
 cd dist
 npm install                           # installs pg
 psql "$DATABASE_URL" -f schema.sql    # create the tables
@@ -249,7 +257,13 @@ Every model gets an `id` automatically.
 auth User by email
 ```
 
-This one line adds `POST /auth/signup`, `POST /auth/login`, `POST /auth/logout` and `GET /auth/me`.
+This one line adds signup, login and logout (`/auth/signup`, `/auth/login`, `/auth/logout`), plus account management:
+- `GET` and `PATCH /auth/me` to read and edit your profile,
+- `POST /auth/password` to change your password, which logs out your other sessions,
+- `POST /auth/logout-all` to log out everywhere,
+- `DELETE /auth/me` to delete your account.
+
+Changing the password and deleting the account need the current password.
 
 Add roles with `auth User by email roles admin, editor`, then protect endpoints with `requires role admin`, or with `requires owner author or role admin` so admins can act on anyone's records. Admins assign roles through `PUT /auth/users/:id/role`. To make the first admin, sign up, then restart the server with `RIZO_ADMIN_EMAILS=you@example.com`.
 
@@ -344,9 +358,10 @@ Rizo Lang is in **early development**, so expect the language to change before 1
 
 - [x] **Milestone 1:** models, compiled to a PostgreSQL schema and TypeScript types ([v0.1.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.1.0))
 - [x] **Milestone 2:** `auth`, `api` endpoints, links, `private` fields and a generated Node.js server ([v0.2.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.2.0))
-- [ ] **Milestone 3** (in progress): roles ✓, pagination ✓, account management, migrations
+- [ ] **Milestone 3** (in progress): roles ✓, pagination ✓, account management ✓, migrations
 - [ ] **Milestone 4:** frontend `page` blocks compiled to HTML and TypeScript
-- [ ] Publish the compiler to npm, and a VS Code extension with syntax highlighting
+- [x] Publish the compiler to npm ([`rizolang`](https://www.npmjs.com/package/rizolang))
+- [ ] A VS Code extension with syntax highlighting
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 

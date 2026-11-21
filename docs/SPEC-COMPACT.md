@@ -76,7 +76,7 @@ A field named `password` (or ending in `Password`) must have the type `Password`
 
 ## auth
 
-`auth User by email` turns on accounts. User needs `email: Email unique` and one `Password` field. It adds `POST /auth/signup`, `POST /auth/login`, `POST /auth/logout` and `GET /auth/me`. Sessions use a secure cookie. Don't write your own login endpoints.
+`auth User by email` turns on accounts. User needs `email: Email unique` and one `Password` field. It adds `POST /auth/signup`, `POST /auth/login`, `POST /auth/logout`, `POST /auth/logout-all`, `GET /auth/me`, `PATCH /auth/me` (edit profile), `POST /auth/password` and `DELETE /auth/me`. Sessions use a secure cookie. Don't write your own login endpoints.
 
 Roles: `auth User by email roles admin, editor` (must include admin). Admins assign roles with `PUT /auth/users/:id/role`. Never add a `role` field yourself; it is hidden and never comes from request bodies.
 

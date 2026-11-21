@@ -90,6 +90,19 @@ export interface AuthSpec {
   readonly setRoleSql: string;
   /** Grants admin to existing accounts whose login email is in $1 (empty string without roles). */
   readonly grantAdminSql: string;
+  /** Account management. */
+  readonly account: {
+    /** Limits for a new password (the Password field's min and max). */
+    readonly password: FieldSpec;
+    /** `SELECT <hash column> AS hash FROM <users> WHERE id = $1` */
+    readonly hashSql: string;
+    /** `UPDATE <users> SET <hash column> = $2 WHERE id = $1` */
+    readonly setPasswordSql: string;
+    /** `DELETE FROM <users> WHERE id = $1` */
+    readonly deleteSql: string;
+    /** Updating your own profile, or null when there is nothing a user may change. */
+    readonly profile: { readonly body: readonly FieldSpec[]; readonly sql: string; readonly values: readonly ValueSource[] } | null;
+  };
 }
 
 export interface App {

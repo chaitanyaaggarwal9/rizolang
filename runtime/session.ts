@@ -16,6 +16,8 @@ export const SQL = {
   lookup: `SELECT "user_id" FROM ${SESSIONS_TABLE} WHERE "token_hash" = $1 AND "expires_at" > now()`,
   delete: `DELETE FROM ${SESSIONS_TABLE} WHERE "token_hash" = $1`,
   deleteExpired: `DELETE FROM ${SESSIONS_TABLE} WHERE "user_id" = $1 AND "expires_at" <= now()`,
+  deleteOthers: `DELETE FROM ${SESSIONS_TABLE} WHERE "user_id" = $1 AND "token_hash" <> $2`,
+  deleteAll: `DELETE FROM ${SESSIONS_TABLE} WHERE "user_id" = $1`,
 } as const;
 
 export function newToken(): string {

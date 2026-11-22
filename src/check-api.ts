@@ -1,4 +1,4 @@
-import {
+import { type CompareOp,
   QUERY_ACTIONS,
   type RoleRef,
   type ApiDecl,
@@ -48,11 +48,21 @@ export type ResolvedValue =
   | { readonly kind: "me" }
   | { readonly kind: "param"; readonly name: string }
   | { readonly kind: "int"; readonly value: number }
-  | { readonly kind: "bool"; readonly value: boolean };
+  | { readonly kind: "bool"; readonly value: boolean }
+  /** An optional query parameter (`?q`): when it is missing, the filter is skipped. */
+  | { readonly kind: "query"; readonly name: string };
 
 export interface FieldValue {
   readonly field: ResolvedField;
   readonly value: ResolvedValue;
+  /** How a list filter compares (always "=" in create). */
+  readonly op: CompareOp;
+}
+
+/** An optional query parameter of a list endpoint (`?q`), and the type its value must have. */
+export interface QueryParam {
+  readonly name: string;
+  readonly type: "ID" | "Number" | "Bool" | "Text" | "Email" | "Date";
 }
 
 export type ResolvedQuery =
@@ -61,6 +71,8 @@ export type ResolvedQuery =
       readonly action: "list";
       readonly model: ResolvedModel;
       readonly filters: readonly FieldValue[];
+      /** Query parameters the filters use (`?q`). */
+      readonly queryParams: readonly QueryParam[];
       /** Undefined field means "order by id". */
       readonly order: { readonly field: ResolvedField | undefined; readonly descending: boolean };
       readonly limit: number;
@@ -403,8 +415,16 @@ export function checkApis(
       }
       return f;
     };
-    const value = (f: ResolvedField, v: Value): ResolvedValue | undefined => {
+    const value = (f: ResolvedField, v: Value, inList = false): ResolvedValue | undefined => {
       const where = `${model.name}.${f.name}`;
+      if (v.kind === "query") {
+        if (!inList) {
+          err("RZ0325", v.span, `Query parameters such as ?${v.name} can only filter lists.`,
+            "Set fields from body, me or a path parameter instead.");
+          return undefined;
+        }
+        return { kind: "query", name: v.name };
+      }
       if (v.kind === "name" && v.name === "me") {
         if (!authDeclared) {
           err("RZ0319", v.span, `"me" means the logged-in user, but there is no auth line.`,
@@ -434,14 +454,14 @@ export function checkApis(
       }
       if (v.kind === "int") {
         if (f.type !== "Number") {
-          err("RZ0325", v.span, `"${where}" has type ${f.link ? `link (${f.link})` : f.type}, so it cannot equal the number ${v.value}.`,
+          err("RZ0325", v.span, `"${where}" has type ${f.link ? `link (${f.link})` : f.type}, so it can't be compared with the number ${v.value}.`,
             "Compare Number fields with numbers, and Bool fields with true or false.");
           return undefined;
         }
         return { kind: "int", value: v.value };
       }
       if (f.type !== "Bool") {
-        err("RZ0325", v.span, `"${where}" has type ${f.link ? `link (${f.link})` : f.type}, so it cannot equal ${v.value}.`,
+        err("RZ0325", v.span, `"${where}" has type ${f.link ? `link (${f.link})` : f.type}, so it can't be compared with ${v.value}.`,
           "Compare Bool fields with true or false.");
         return undefined;
       }
@@ -517,6 +537,11 @@ export function checkApis(
               "Passwords always come from the request body.");
             continue;
           }
+          if (a.op !== "=") {
+            good = false;
+            err("RZ0325", a.opSpan, `create sets fields with "=", not "${a.op}".`, `Write \`${f.name} = value\`.`);
+            continue;
+          }
           const v = value(f, a.value);
           if (v === undefined) { good = false; continue; }
           if (authLinks.includes(f) && v.kind !== "me") {
@@ -525,7 +550,7 @@ export function checkApis(
               `Write \`${f.name} = me\`. Records always belong to the user who creates them.`);
             continue;
           }
-          assigns.push({ field: f, value: v });
+          assigns.push({ field: f, value: v, op: "=" });
         }
         for (const f of authLinks) {
           if (!assigns.some((x) => x.field === f)) {
@@ -539,6 +564,7 @@ export function checkApis(
       }
       case "list": {
         const filters: FieldValue[] = [];
+        const queryParams: QueryParam[] = [];
         let order: { field: ResolvedField | undefined; descending: boolean } = { field: undefined, descending: false };
         let orderSeen = false;
         let limit: number | undefined;
@@ -601,17 +627,59 @@ export function checkApis(
                 "The database only sees encrypted values, so it can't compare them. Filter by a field that isn't encrypted.");
               continue;
             }
-            if (filters.some((x) => x.field === f)) {
+            if (filters.some((x) => x.field === f && x.op === a.op)) {
               good = false;
-              err("RZ0325", a.fieldSpan, `"${f.name}" is filtered more than once.`, "Remove the duplicate filter.");
+              err("RZ0325", a.fieldSpan, `"${f.name} ${a.op}" appears more than once.`, "Remove the duplicate filter.");
               continue;
             }
-            const v = value(f, a.value);
+            if (a.op === "contains" && a.value.kind !== "query" && a.value.kind !== "name") {
+              good = false;
+              err("RZ0325", a.value.span, `"contains" needs text from the request.`, `Write \`${f.name} contains ?q\` to search with \`?q=...\`.`);
+              continue;
+            }
+            const v = value(f, a.value, true);
             if (v === undefined) { good = false; continue; }
-            filters.push({ field: f, value: v });
+            const where = `${model.name}.${f.name}`;
+            const kind = f.link !== undefined ? `a link (${f.link})` : `a ${f.type}`;
+            if (a.op === "contains" && (f.link !== undefined || (f.type !== "Text" && f.type !== "Email"))) {
+              good = false;
+              err("RZ0325", a.opSpan, `"contains" works on Text and Email fields, but "${where}" is ${kind}.`, "Use = to match the whole value.");
+              continue;
+            }
+            if (a.op === "contains" && v.kind !== "query" && v.kind !== "param") {
+              good = false;
+              err("RZ0325", a.value.span, `"contains" needs text from the request.`, `Write \`${f.name} contains ?q\` to search with \`?q=...\`.`);
+              continue;
+            }
+            if ((a.op === "<" || a.op === "<=" || a.op === ">" || a.op === ">=") && (f.link !== undefined || (f.type !== "Number" && f.type !== "Date"))) {
+              good = false;
+              err("RZ0325", a.opSpan, `"${a.op}" works on Number and Date fields, but "${where}" is ${kind}.`, "Use = or != instead.");
+              continue;
+            }
+            if (v.kind === "query") {
+              const type: QueryParam["type"] = a.op === "contains" ? "Text" : f.type === "Password" ? "Text" : f.type;
+              const prev = queryParams.find((x) => x.name === v.name);
+              if (v.name === "limit" || v.name === "after") {
+                good = false;
+                err("RZ0325", a.value.span, `?${v.name} is used for pages.`, "Choose another name, for example ?minViews.");
+                continue;
+              }
+              if (params.has(v.name)) {
+                good = false;
+                err("RZ0325", a.value.span, `"${v.name}" is a path parameter.`, `Write \`${v.name}\` without "?", or choose another name.`);
+                continue;
+              }
+              if (prev !== undefined && prev.type !== type) {
+                good = false;
+                err("RZ0325", a.value.span, `?${v.name} is used as both ${prev.type} and ${type}.`, "Use a different name for each.");
+                continue;
+              }
+              if (prev === undefined) queryParams.push({ name: v.name, type });
+            }
+            filters.push({ field: f, value: v, op: a.op });
           }
         }
-        if (good) query = { action, model, filters, order, limit: limit ?? DEFAULT_LIST_LIMIT };
+        if (good) query = { action, model, filters, queryParams, order, limit: limit ?? DEFAULT_LIST_LIMIT };
         break;
       }
     }

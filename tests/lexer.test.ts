@@ -47,12 +47,20 @@ describe("lexer", () => {
     ["?", "optional"],
     ["@", "without @"],
     ["#", "two slashes"],
-    ["!", "`=` only"],
+    ["!", "write `!=`"],
   ])("rejects %s with a targeted fix", (ch, hint) => {
     const d = lexError(`model A {\n  x${ch}`);
     expect(d.code).toBe("RZ0101");
     expect(d.span).toEqual({ line: 2, col: 4, length: 1 });
     expect(d.fix).toContain(hint);
+  });
+
+  it("lexes comparisons and query parameters in list filters", () => {
+    const t = tokens("db.Post.list(views >= ?minViews, views < 10, title contains ?q, status != 0)");
+    expect(t.filter((x) => x.kind === "compare").map((x) => x.text)).toEqual([">=", "<", "!="]);
+    expect(t.filter((x) => x.kind === "query").map((x) => [x.text, x.span.length])).toEqual([["minViews", 9], ["q", 2]]);
+    // "?" not followed by a letter is still an error with the optional-field advice.
+    expect(lexError("model A {\n  x?: Text\n}").fix).toContain("optional");
   });
 
   it("lexes the punctuation used by api blocks", () => {

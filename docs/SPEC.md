@@ -378,13 +378,23 @@ The return line is `return db.<Model>.<action>(...)`. There are five actions. Ea
 | `delete` | DELETE        | `(id)`                                            | 204, or 404                               |
 
 **`list` arguments**, separated by commas:
-- `field = value`: filters by equality, combined with AND.
+- `field OP value`: filters, combined with AND.
+  - `=` and `!=` work on every field type.
+  - `<`, `<=`, `>` and `>=` work on Number and Date fields.
+  - `contains` works on Text and Email fields: a case-insensitive "includes" (`%` and `_` are plain characters). Its value comes from the request: `?q` or a path parameter.
+  - A value is `me`, a path parameter, a number, `true`, `false`, or a **query parameter** such as `?q`.
+- **Query parameters** (`?name`) let clients filter: `db.Post.list(title contains ?q, views >= ?minViews)` reads `/api/posts?q=rizo&minViews=10`.
+  - Each one is optional: when it is left out, its filter is skipped.
+  - Its value must fit the field's type (text up to 200 characters for `contains`), or the request answers 400 before any query runs. Unknown parameters also answer 400.
+  - A name can't be `limit` or `after`, can't also be a path parameter, and keeps one type wherever it is used.
+  - When asking for the next page, send the same filters along with `after`.
+  - Query parameters only filter lists, and `create` sets fields only with `=` (RZ0325).
 - `order field` or `order field desc`: sorts. The default order is by `id`. You can't order by an `optional` field, because pages need a sort value in every record.
 - `limit N`: the largest page size, from 1 to 100. The default is 50.
 
 Hidden fields (Password or `private`) cannot be used in filters or ordering.
 
-**Indexes are automatic.** For every `list`, the compiler creates an index on its filter fields, then its order field, then `id`, so each page (including "Load more") is read straight from the index instead of scanning the table. Migrations add and remove these indexes as your endpoints change.
+**Indexes are automatic.** For every `list`, the compiler creates an index on its `=` filter fields, then its `<`/`>` fields, then its order field, then `id`, so each page (including "Load more") is read straight from the index instead of scanning the table. Migrations add and remove these indexes as your endpoints change. `contains` and `!=` can't use such an index, so on a large table combine them with an `=` filter, such as `author = me`.
 
 **Values** on the right of `=`:
 - `me`: the logged-in user. It only works with a link to the auth model, and is not allowed in public endpoints.
@@ -966,8 +976,9 @@ statement  = "public" | "requires" "login" | "requires" "role" NAME { "," NAME }
            | "requires" "owner" NAME [ "or" "role" NAME { "," NAME } ] | "return" query ;
 query      = "db" "." NAME "." ACTION "(" [ arg { "," arg } ] ")" ;
 ACTION     = "find" | "list" | "create" | "update" | "delete" ;
-arg        = NAME | NAME "=" value | "order" NAME [ "asc" | "desc" ] | "limit" INT ;
-value      = NAME | INT | "true" | "false" ;
+arg        = NAME | NAME OP value | "order" NAME [ "asc" | "desc" ] | "limit" INT ;
+OP         = "=" | "!=" | "<" | "<=" | ">" | ">=" | "contains" ;
+value      = NAME | "?" NAME | INT | "true" | "false" ;
 NAME       = LETTER { LETTER | DIGIT } ;
 INT        = [ "-" ] DIGIT { DIGIT } ;
 page       = "page" PATH "{" { pageline NEWLINE } "}" ;
@@ -984,5 +995,4 @@ comment    = "//" { any character except newline } ;
 
 These are **not** part of the language yet. Using them is an error.
 
-- Filters other than `=`.
 - Custom page layouts and styling.

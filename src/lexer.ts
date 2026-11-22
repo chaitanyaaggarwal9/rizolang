@@ -14,6 +14,10 @@ export type TokenKind =
   | "dot"
   | "equals"
   | "arrow"
+  /** A comparison in a list filter: != < <= > >= */
+  | "compare"
+  /** `?name`: a query parameter in a list filter. `text` is the name without "?". */
+  | "query"
   | "eof";
 
 export interface Token {
@@ -47,9 +51,7 @@ const CHARACTER_FIXES: Readonly<Record<string, string>> = {
   "#": "Comments start with two slashes: `// like this`.",
   "&": "Combine filters with commas: `db.Post.list(author = me, published = true)`.",
   "|": "Rizo Lang has no `or`. Write separate api blocks instead.",
-  "!": "Rizo Lang has no `!=`. Filters compare with `=` only.",
-  "<": "Only `=` comparisons are supported in filters.",
-  ">": "Only `=` comparisons are supported in filters. The return arrow is written `->`.",
+  "!": "To filter for a different value, write `!=`, for example `status != 0`.",
   "-": "A minus sign must be followed by a digit (-5), and the return arrow is written `->`.",
 };
 
@@ -173,6 +175,16 @@ export function lex(rawSource: string, file: string): LexResult {
           "Use a number between -2147483648 and 2147483647.");
       }
       push("int", text, Number(text));
+    } else if ((c === "!" || c === "<" || c === ">") && src[i + 1] === "=") {
+      push("compare", `${c}=`);
+    } else if (c === "<" || c === ">") {
+      push("compare", c);
+    } else if (c === "?" && isLetter(src[i + 1])) {
+      let j = i + 1;
+      while (isAlnum(src[j])) j++;
+      tokens.push({ kind: "query", text: src.slice(i + 1, j), value: 0, span: { line, col, length: j - i } });
+      col += j - i;
+      i = j;
     } else if (c !== undefined && SINGLE[c] !== undefined) {
       push(SINGLE[c], c);
     } else {

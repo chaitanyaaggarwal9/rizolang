@@ -355,7 +355,7 @@ api <METHOD> <path> -> Model.public {
 | Action | Method | Example |
 |--------|--------|---------|
 | `find` | GET | `db.Post.find(id)` |
-| `list` | GET | `db.Post.list(author = me, order title desc, limit 20)`, which returns pages: `{ "items": [...], "next": "<cursor>" }` |
+| `list` | GET | `db.Post.list(author = me, order title desc, limit 20)`, which returns pages: `{ "items": [...], "next": "<cursor>" }`. Filters can also use `!=`, `<`, `>`, `contains` and optional query parameters: `db.Post.list(title contains ?q, views >= ?minViews)` |
 | `create` | POST | `db.Post.create(body, author = me)` |
 | `update` | PUT / PATCH | `db.Post.update(id, body)` |
 | `delete` | DELETE | `db.Post.delete(id)` |

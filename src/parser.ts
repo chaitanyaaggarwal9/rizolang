@@ -1,4 +1,5 @@
 import {
+  type CompareOp,
   type PrivacyDecl,
   type KeepDecl,
   HTTP_METHODS,
@@ -638,12 +639,14 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
     const t = peek();
     if (t.kind !== "ident") {
       fail("RZ0217", t.span, `Unexpected ${describe(t)} in query arguments.`,
-        "Arguments are a path parameter (id), body, `field = value`, `order field desc` or `limit 20`, separated by commas.");
+        "Arguments are a path parameter (id), body, `field = value` (in lists also !=, <, <=, >, >= or contains), `order field desc` or `limit 20`, separated by commas.");
     }
     next();
-    if (peek().kind === "equals") {
+    const opTok = peek();
+    if (opTok.kind === "equals" || opTok.kind === "compare" || (isWord(opTok, "contains") && t.text !== "order")) {
       next();
-      return { kind: "assign", field: t.text, fieldSpan: t.span, value: parseValue(), span: t.span };
+      const op = (opTok.kind === "equals" ? "=" : opTok.text) as CompareOp;
+      return { kind: "assign", field: t.text, fieldSpan: t.span, op, opSpan: opTok.span, value: parseValue(op), span: t.span };
     }
     if (t.text === "order" && peek().kind === "ident") {
       const field = next();
@@ -662,8 +665,12 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
     return { kind: "name", name: t.text, span: t.span };
   }
 
-  function parseValue(): Value {
+  function parseValue(op: CompareOp): Value {
     const t = peek();
+    if (t.kind === "query") {
+      next();
+      return { kind: "query", name: t.text, span: t.span };
+    }
     if (t.kind === "int") {
       next();
       return { kind: "int", value: t.value, span: t.span };
@@ -673,8 +680,8 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
       if (t.text === "true" || t.text === "false") return { kind: "bool", value: t.text === "true", span: t.span };
       return { kind: "name", name: t.text, span: t.span };
     }
-    return fail("RZ0217", t.span, `Expected a value after "=" but found ${describe(t)}.`,
-      "A value is `me`, a path parameter such as `userId`, a whole number, `true` or `false`.");
+    return fail("RZ0217", t.span, `Expected a value after "${op}" but found ${describe(t)}.`,
+      "A value is `me`, a path parameter such as `userId`, a query parameter such as `?q`, a whole number, `true` or `false`.");
   }
 
   try {

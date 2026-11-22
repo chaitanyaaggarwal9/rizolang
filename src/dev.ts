@@ -9,7 +9,7 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
+import { readFileSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { dirname, join, resolve } from "node:path";
@@ -53,10 +53,15 @@ export function devSettings(
 /** Read the local encryption key, creating it the first time. */
 function localKey(distDir: string): string {
   const file = join(distDir, ".dev-encryption-key");
-  if (existsSync(file)) return readFileSync(file, "utf8").trim();
   const key = randomBytes(32).toString("base64");
-  writeFileSync(file, `${key}\n`, { mode: 0o600 });
-  return key;
+  try {
+    // "wx": create it only if it doesn't exist, so a key is never replaced.
+    writeFileSync(file, `${key}\n`, { mode: 0o600, flag: "wx" });
+    return key;
+  } catch (e) {
+    if ((e as { code?: unknown }).code !== "EEXIST") throw e;
+    return readFileSync(file, "utf8").trim();
+  }
 }
 
 /** Wait until the server accepts connections. False if it exits first, or after 15 seconds. */

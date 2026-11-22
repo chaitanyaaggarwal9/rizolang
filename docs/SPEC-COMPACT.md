@@ -83,7 +83,7 @@ Roles: `auth User by email roles admin, editor` (must include admin). Admins ass
 
 ## privacy
 
-`privacy for EU, UK, IN, US-CA, BR` (one top-level line, needs auth) names the regions the app serves. In a model, a line `keep 2 years` (or days, months) deletes its records that long after creation; not on the auth model. Use keep for data that shouldn't be kept forever, such as messages or logs.
+`privacy for EU, UK, IN, US-CA, BR` (one top-level line, needs auth) names the regions the app serves. It needs `RIZO_PRIVACY_CONTACT` and publishes a /privacy page. In a model, a line `keep 2 years` (or days, months) deletes its records that long after creation; not on the auth model. Use keep for data that shouldn't be kept forever, such as messages or logs.
 
 ## api
 
@@ -130,12 +130,12 @@ page /posts/:id {
 ```
 
 - Pages are generated from endpoints. Never write HTML. Quoted text is only allowed in pages: one line, at most 200 characters.
-- Put endpoints under `/api`. A page can't share a path with an endpoint. `/login`, `/signup`, `/account`, `/verify-email` and `/reset-password` are reserved.
+- Put endpoints under `/api`. A page can't share a path with an endpoint. `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password` and `/privacy` are reserved.
 - `show` takes one GET endpoint from the file. Page `:params` fill the endpoint's params by name, and every page param must be used.
 - A page must be at least as strict as what it shows: use `requires login` if the endpoint does.
 - Lists link to a page that shows one record of the same model.
 - `form POST /api/posts` (or PUT or PATCH) builds a form from the endpoint's body. `button "Delete" DELETE /api/posts/:id` deletes. Each page has at most one form or button, followed by `then go /path` (`:id` can be the saved record).
-- With an auth line, `/login`, `/signup`, `/account` (passkeys, devices, API tokens, data download, account deletion), `/verify-email`, `/reset-password` and a log-in/log-out menu are built in. Don't write login, passkey or email pages.
+- With an auth line, `/login`, `/signup`, `/account` (passkeys, devices, API tokens, data download, account deletion), `/verify-email`, `/reset-password`, `/privacy` (with privacy for) and a log-in/log-out menu are built in. Don't write login, passkey or email pages.
 
 ## Migrations
 

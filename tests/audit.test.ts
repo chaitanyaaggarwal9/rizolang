@@ -43,10 +43,17 @@ const findings = (source: string) => {
 };
 
 describe("rizolang audit", () => {
-  it("finds nothing in the example blog", () => {
+  it("finds no warnings in the example blog, only a note that posts are kept forever", () => {
     const r = findings(readFileSync(new URL("../examples/blog.rz", import.meta.url), "utf8"));
-    expect(r.findings).toEqual([]);
-    expect(r.summary).toEqual({ endpoints: 10, public: 4, login: 6, withRoles: 2, warnings: 0, notes: 0 });
+    expect(r.findings.map((f) => [f.level, f.code, f.message])).toEqual([["note", "RA08", "Post records belong to accounts and are kept until someone deletes them."]]);
+    expect(r.summary).toEqual({ endpoints: 10, public: 4, login: 6, withRoles: 2, warnings: 0, notes: 1 });
+  });
+
+  it("notes models that belong to accounts but have no keep, only with privacy rules", () => {
+    const base = "auth User by email\nmodel User {\n  email: Email unique private\n  password: Password\n}\nmodel Message {\n  sender: User\n  body: Text\n}\napi GET /api/messages -> list Message.public {\n  requires login\n  return db.Message.list(sender = me)\n}\n";
+    expect(findings(base).findings).toEqual([]);
+    expect(findings(`privacy for EU\n${base}`).findings.map((f) => f.code)).toEqual(["RA08"]);
+    expect(findings(`privacy for EU\n${base.replace("  body: Text\n", "  body: Text\n  keep 1 year\n")}`).findings).toEqual([]);
   });
 
   it("points at each risky choice, in file order, with a fix", () => {

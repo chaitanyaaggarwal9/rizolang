@@ -224,6 +224,8 @@ export type PageItemSpec =
   | { readonly kind: "tokens" }
   /** Download your data, and delete your account (built-in account page). */
   | { readonly kind: "yourData" }
+  /** The privacy notice, read from GET /auth/privacy (built-in /privacy page). */
+  | { readonly kind: "privacy" }
   /** Confirms the email when the page was opened from the emailed link (built-in /verify-email). */
   | { readonly kind: "verifyEmail" }
   /** Asks for a new password when the page was opened from the emailed link (built-in /reset-password). */
@@ -237,6 +239,26 @@ export interface PageRoute {
   readonly roles: readonly string[];
   readonly title: string;
   readonly items: readonly PageItemSpec[];
+}
+
+/** What the privacy notice (`GET /auth/privacy`, the /privacy page) says the app stores. */
+export interface PrivacySpec {
+  /** Region codes from `privacy for`, e.g. "EU" or "US-CA". */
+  readonly regions: readonly string[];
+  readonly models: readonly {
+    readonly name: string;
+    /** True for the auth model (people's accounts). */
+    readonly account: boolean;
+    readonly fields: readonly {
+      readonly label: string;
+      /** The field type, or "link to <Model>". */
+      readonly kind: string;
+      /** How the value is kept and shown. */
+      readonly stored: "public" | "private" | "encrypted" | "hashed";
+    }[];
+    /** From `keep`, or null when records are kept until deleted. */
+    readonly keep: { readonly amount: number; readonly unit: string } | null;
+  }[];
 }
 
 /** A model whose records are deleted some time after they were created (`keep 2 years`). */
@@ -253,8 +275,8 @@ export interface App {
   readonly pages: readonly PageRoute[];
   /** Models with `keep`. Absent means none. */
   readonly retention?: readonly RetentionSpec[];
-  /** The regions named by `privacy for`. Absent without that line. */
-  readonly privacy?: readonly string[];
+  /** From `privacy for`: the regions, and what the app stores. Absent without that line. */
+  readonly privacy?: PrivacySpec;
   /** Every encrypted column the app writes. Absent means none. */
   readonly encrypted?: readonly EncryptedColumn[];
 }

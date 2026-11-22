@@ -125,7 +125,9 @@ jobs:
           cd examples/dist
           if node server.ts > refused.log 2>&1; then echo "::error::The server started without email settings"; exit 1; fi
           grep -q "RIZO_PUBLIC_URL is not set" refused.log
-          RIZO_PUBLIC_URL=http://localhost:3999 RIZO_EMAIL_DEV=1 node server.ts > server.log 2>&1 &
+          RIZO_PUBLIC_URL=http://localhost:3999 RIZO_EMAIL_DEV=1 node server.ts > refused2.log 2>&1 || true
+          grep -q "RIZO_PRIVACY_CONTACT is not set" refused2.log
+          RIZO_PUBLIC_URL=http://localhost:3999 RIZO_EMAIL_DEV=1 RIZO_PRIVACY_CONTACT=privacy@example.com node server.ts > server.log 2>&1 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:3999/api/posts > /dev/null && break; sleep 0.5; done
           test "$(curl -s http://127.0.0.1:3999/api/posts)" = '{"items":[],"next":null}'
           test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:3999/api/posts?limit=0')" = "400"
@@ -138,5 +140,6 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://127.0.0.1:3999/admin)" = "302 http://127.0.0.1:3999/login?next=%2Fadmin"
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3999/auth/signup -H 'Content-Type: application/json' -d '{"email":"ci@example.com","password":"a long ci password","name":"CI"}')" = "202"
           grep -q "localhost:3999/verify-email#token=" server.log
+          curl -s http://127.0.0.1:3999/auth/privacy | grep -q '"contact":"privacy@example.com"'
           kill %1
           cat server.log

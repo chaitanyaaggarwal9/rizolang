@@ -71,6 +71,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `keep 2 years` (days, months or years) in a model deletes its records that long after they were created: every 10 minutes, at most 1,000 at a time, recorded in the audit log, skipping records that others still need. It adds a hidden, indexed `_created_at` column by migration.
   - New errors RZ0223, RZ0341 and RZ0342.
 
+- Milestone 8, part 3: the privacy notice.
+  - With `privacy for`, the app publishes a privacy notice generated from its models, with fixed wording: `GET /auth/privacy` and, in apps with pages, a built-in `/privacy` page linked from every page's menu. It lists what is stored and how (public, private, encrypted, hashed), how long records are kept, cookies (one login cookie, so no banner), Resend for emails, that data isn't sold or shared, security and log retention, people's rights, and each region's law and where to complain.
+  - `RIZO_PRIVACY_CONTACT` is required with `privacy for`; the server refuses to start without it. `/privacy` is now a reserved page path.
+  - New audit note RA08: with `privacy for`, a model whose records belong to accounts but have no `keep`.
+
 ### Fixed
 
 - Signup SQL no longer crashes the compiler when the auth model has a camelCase field, such as `displayName` (introduced earlier in this release cycle).

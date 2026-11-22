@@ -100,7 +100,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     await admin.end();
     pool = new pg.Pool({ connectionString: DATABASE_URL, options: `-c search_path="${schema}",public` });
     await pool.query(result.output.sql);
-    app = buildApp(result.apis, result.auth, result.pages);
+    app = buildApp(result.apis, result.auth, result.pages, result.models, result.privacy);
     const handler = createRequestHandler(app, {
       db: { query: (sql, values) => pool.query(sql, values) },
       log: (line) => logs.push(line),
@@ -109,6 +109,8 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       },
       publicUrl: "https://blog.example",
       openapi: result.output.server?.openapi ?? "",
+      privacyContact: "privacy@blog.example",
+      auditRetentionDays: 365,
       // Lets a test act from its own address (X-Forwarded-For), so the per-address limits of other tests don't add up.
       trustProxy: true,
     });
@@ -790,6 +792,30 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     for (const row of listed) expect(Object.keys(row).sort()).toEqual(Object.keys(post?.properties ?? {}).sort());
     const user = doc.components.schemas["UserPublic"];
     expect(Object.keys((await call("GET", `/api/users/${aliceId}`)).body as object).sort()).toEqual(Object.keys(user?.properties ?? {}).sort());
+  });
+
+  it("serves a privacy notice built from the models, and a /privacy page linked from every page", async () => {
+    const r = await call("GET", "/auth/privacy");
+    expect(r.status).toBe(200);
+    const notice = r.body as {
+      regions: { code: string; law: string; complaint: string }[]; contact: string; cookies: string; sharing: string[];
+      data: { name: string; account: boolean; fields: { label: string; stored: string }[]; kept: string }[]; securityLog: string;
+    };
+    expect(notice.regions.map((x) => x.code)).toEqual(["EU", "UK", "IN", "US-CA", "BR"]);
+    expect(notice.regions.find((x) => x.code === "BR")?.law).toContain("LGPD");
+    expect(notice.contact).toBe("privacy@blog.example");
+    const user = notice.data.find((m) => m.name === "User");
+    expect(user?.account).toBe(true);
+    expect(user?.fields).toEqual(expect.arrayContaining([{ label: "Email", kind: "Email", stored: "private" }, { label: "Password", kind: "Password", stored: "hashed" }]));
+    expect(notice.data.find((m) => m.name === "Comment")?.kept).toBe("Deleted 5 years after it is created.");
+    expect(notice.cookies).toContain("rizo_session");
+    expect(notice.sharing.join(" ")).toContain("Resend");
+    expect(notice.securityLog).toContain("365 days");
+    const page = await fetch(`${base}/privacy`);
+    expect(page.status).toBe(200);
+    const data = JSON.parse(/id="rizo-page">([^<]*)</.exec(await page.text())?.[1] ?? "{}") as { privacy: boolean; items: { kind: string }[] };
+    expect(data.privacy).toBe(true);
+    expect(data.items).toEqual([{ kind: "privacy" }]);
   });
 
   describe("API tokens", () => {

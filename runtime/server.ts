@@ -18,7 +18,7 @@ import { type Keys, decryptValue, encryptValue, parseKeys } from "./encryption.t
 import { EMAIL_SQL, type Mailer, MESSAGES, RESET_SECONDS, type TokenPurpose, VERIFY_SECONDS, emailConfig, emailTokenHash, newEmailToken, readEmailToken } from "./email.ts";
 import { Limits, limitKey } from "./limits.ts";
 import { CHALLENGE_SECONDS, MAX_PASSKEYS, PASSKEY_SQL, challengeHash, challengeOf, newChallenge } from "./passkeys.ts";
-import { EXPORT_LIMIT, GHOST_SQL, expireRecords, ghostValues } from "./privacy.ts";
+import { EXPORT_LIMIT, GHOST_SQL, expireRecords, ghostValues, privacyNotice } from "./privacy.ts";
 import { MAX_TOKENS, MAX_TOKEN_DAYS, TOKEN_SQL, agentTokenHash, newAgentToken, parseEndpoints, readBearer } from "./tokens.ts";
 import { PasskeyError, SUPPORTED_ALGORITHMS, verifyAssertion, verifyRegistration } from "./webauthn.ts";
 import { IDLE_SECONDS, MAX_SECONDS, SQL, clearedCookie, deviceLabel, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
@@ -51,8 +51,14 @@ export interface ServerOptions {
   readonly mailer?: Mailer;
   /** The app's public address, used in links in emails, e.g. "https://blog.example". */
   readonly publicUrl?: string;
+  /** RIZO_PRIVACY_CONTACT, shown in the privacy notice. Required for apps with `privacy for`. */
+  readonly privacyContact?: string;
+  /** How long audit entries are kept, for the privacy notice. */
+  readonly auditRetentionDays?: number;
   /** The app's OpenAPI document (dist/openapi.json), served at /_rizo/openapi.json. */
   readonly openapi?: string;
+  /** "Resend", or "development" when emails are only printed (RIZO_EMAIL_DEV=1). */
+  readonly emailService?: "Resend" | "development";
   /** Keys for encrypted fields (from RIZO_ENCRYPTION_KEYS). Required when the app has any. */
   readonly encryptionKeys?: Keys;
 }
@@ -102,6 +108,7 @@ const AUTH_ROUTES: readonly AuthRoute[] = [
   { path: "/auth/password", methods: ["POST"] },
   { path: "/auth/me", methods: ["GET", "PATCH", "DELETE"] },
   { path: "/auth/me/export", methods: ["GET"] },
+  { path: "/auth/privacy", methods: ["GET"] },
   { path: "/auth/audit", methods: ["GET"] },
   { path: "/auth/sessions", methods: ["GET"] },
   { path: "/auth/tokens", methods: ["GET", "POST"] },
@@ -365,7 +372,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         return html(403, renderMessage("Not allowed", "You don't have permission to see this page."));
       }
     }
-    return html(200, renderPage(page, params, me !== undefined, app.auth !== null));
+    return html(200, renderPage(page, params, me !== undefined, app.auth !== null, app.privacy !== undefined));
   }
 
   function match(method: string, pathname: string): Matched {
@@ -1231,6 +1238,16 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       return 204;
     }
 
+    if (path === "/auth/privacy") {
+      // The privacy notice: public, generated from the app's models and fixed text.
+      if (app.privacy === undefined) throw new HttpError(404, "not_found", "This app has no privacy line.");
+      return send(res, 200, privacyNotice(app.privacy, {
+        contact: options.privacyContact ?? "",
+        auditRetentionDays: options.auditRetentionDays ?? DEFAULT_AUDIT_RETENTION_DAYS,
+        emailService: options.mailer === undefined || options.emailService === "development" ? "development" : "Resend",
+      }));
+    }
+
     if (path === "/auth/me/export") {
       // Everything stored about you, except your password hash. Not for API tokens: /auth/* needs the session cookie.
       const me = await requireUser(req);
@@ -1386,6 +1403,18 @@ export function startServer(app: App): void {
     }
     if (email.dev) process.stderr.write("rizo: WARNING: RIZO_EMAIL_DEV=1, so emails are printed here instead of sent. Use this only for local development.\n");
   }
+  let privacyContact: string | undefined;
+  if (app.privacy !== undefined) {
+    const contact = validateValue({ key: "RIZO_PRIVACY_CONTACT", kind: "Email" }, process.env["RIZO_PRIVACY_CONTACT"] ?? "");
+    if (!("value" in contact)) {
+      process.stderr.write(
+        "rizo: RIZO_PRIVACY_CONTACT is not set to an email address, but this app declares privacy rules.\n" +
+          "  fix: Set RIZO_PRIVACY_CONTACT to the address people should write to about their data, e.g. RIZO_PRIVACY_CONTACT=privacy@blog.example. It is shown on the privacy page.\n",
+      );
+      process.exit(1);
+    }
+    privacyContact = String(contact.value);
+  }
   let encryptionKeys: Keys | undefined;
   if ((app.encrypted ?? []).length > 0) {
     try {
@@ -1405,6 +1434,9 @@ export function startServer(app: App): void {
   const handler = createRequestHandler(app, {
     ...(openapi === undefined ? {} : { openapi }),
     ...(encryptionKeys === undefined ? {} : { encryptionKeys }),
+    ...(privacyContact === undefined ? {} : { privacyContact }),
+    ...(email === undefined ? {} : { emailService: email.dev ? "development" as const : "Resend" as const }),
+    auditRetentionDays: Number(process.env["RIZO_AUDIT_RETENTION_DAYS"] ?? String(DEFAULT_AUDIT_RETENTION_DAYS)),
     ...(email === undefined ? {} : { mailer: email.mailer, publicUrl: email.publicUrl }),
     db: { query: (sql, vals) => pool.query(sql, vals) },
     secureCookies: !insecure,

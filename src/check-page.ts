@@ -62,7 +62,7 @@ export interface ResolvedPage {
 }
 
 /** Page paths the built-in login and signup pages will use (part 2). */
-const RESERVED_PAGES: readonly string[] = ["/login", "/signup", "/account", "/verify-email", "/reset-password"];
+const RESERVED_PAGES: readonly string[] = ["/login", "/signup", "/account", "/verify-email", "/reset-password", "/privacy"];
 
 /** "publishedAt" → "Published at". */
 export function labelFor(name: string): string {

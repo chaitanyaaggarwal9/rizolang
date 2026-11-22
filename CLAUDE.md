@@ -55,6 +55,7 @@ Rizo Lang is a secure, simple, full-stack web language for the AI era. Source fi
 - `npm run build`: compile the compiler to `build/`
 - `node build/src/bin.js build examples/blog.rz`: try it out (`--json` for JSON output)
 - `node build/src/bin.js audit examples/blog.rz`: review a file for risky choices
+- `DATABASE_URL=... node build/src/bin.js dev examples/blog.rz`: run it locally, rebuilding on save (`src/dev.ts`)
 
 ## Current milestone
 

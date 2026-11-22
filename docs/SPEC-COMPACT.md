@@ -133,7 +133,7 @@ page /posts/:id {
 
 ## Migrations
 
-`rizolang build` writes `migrations/NNNN_*.sql` when models change. Removing a model or field, changing a type, or removing a role is refused (RZ0904). Never rename a field; add a new one. Run `rizolang audit app.rz` and fix every warning.
+`rizolang build` writes `migrations/NNNN_*.sql` when models change. Removing a model or field, changing a type, or removing a role is refused (RZ0904). Never rename a field; add a new one. Run `rizolang audit app.rz` and fix every warning. `rizolang dev app.rz` runs the app locally.
 
 ## Errors
 

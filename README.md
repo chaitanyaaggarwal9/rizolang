@@ -382,6 +382,7 @@ The compiler enforces these rules:
 | Bots, scrapers and brute force | Every endpoint is rate-limited (120/min by default, `limit 10 per minute` to tighten), with counters shared across servers in PostgreSQL. Login, signup and password checks have stricter limits, and password hashing is queued so a login flood can't stall the server. |
 | Phishing and stolen passwords | Built-in passkeys (fingerprint, face or device PIN) on every app with a login. A passkey only works on the site that created it, and the server keeps only the public key. |
 | Over-powered AI agents | API tokens are limited to the endpoints you pick, expire within 90 days, can be revoked, never work on account endpoints, and every use is in the audit log. |
+| Keeping data forever | Declare the regions you serve (`privacy for EU, UK, IN, US-CA, BR`), and add `keep 2 years` to a model to delete its records automatically after that long. |
 | Privacy rights requests | Every app lets people download all their data and delete their account from the `/account` page, with no code to write. Deleted accounts leave no personal data behind. |
 | Stolen databases and backups | Mark sensitive fields `encrypted`: the server encrypts them with AES-256-GCM before they reach the database, and keys can be rotated with `node reencrypt.ts`. |
 | Account enumeration | Identical responses and timing for an unknown account and a wrong password. Signup and password reset answer the same whether or not the email has an account; the owner gets an email instead. |

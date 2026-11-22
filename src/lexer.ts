@@ -143,6 +143,8 @@ export function lex(rawSource: string, file: string): LexResult {
     } else if (isLetter(c)) {
       let j = i;
       while (isAlnum(src[j])) j++;
+      // A region code such as US-CA (in `privacy for ...`) is one word.
+      if (/^[A-Z]{2}-[A-Z]{2}\b/.test(src.slice(i, i + 6)) && j === i + 2 && !isAlnum(src[i + 5])) j = i + 5;
       push("ident", src.slice(i, j));
     } else if (c === "-" && src[i + 1] === ">") {
       push("arrow", "->");

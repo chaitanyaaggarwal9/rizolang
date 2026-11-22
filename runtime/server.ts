@@ -18,7 +18,7 @@ import { type Keys, decryptValue, encryptValue, parseKeys } from "./encryption.t
 import { EMAIL_SQL, type Mailer, MESSAGES, RESET_SECONDS, type TokenPurpose, VERIFY_SECONDS, emailConfig, emailTokenHash, newEmailToken, readEmailToken } from "./email.ts";
 import { Limits, limitKey } from "./limits.ts";
 import { CHALLENGE_SECONDS, MAX_PASSKEYS, PASSKEY_SQL, challengeHash, challengeOf, newChallenge } from "./passkeys.ts";
-import { EXPORT_LIMIT, GHOST_SQL, ghostValues } from "./privacy.ts";
+import { EXPORT_LIMIT, GHOST_SQL, expireRecords, ghostValues } from "./privacy.ts";
 import { MAX_TOKENS, MAX_TOKEN_DAYS, TOKEN_SQL, agentTokenHash, newAgentToken, parseEndpoints, readBearer } from "./tokens.ts";
 import { PasskeyError, SUPPORTED_ALGORITHMS, verifyAssertion, verifyRegistration } from "./webauthn.ts";
 import { IDLE_SECONDS, MAX_SECONDS, SQL, clearedCookie, deviceLabel, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
@@ -1430,6 +1430,11 @@ export function startServer(app: App): void {
       void pool.query(TOKEN_SQL.sweep).catch(() => undefined);
     }
     void auditLog.sweep(retention).catch(() => undefined);
+    // Records past their model's `keep`, each batch recorded in the audit log.
+    void expireRecords(app, { query: (sql, vals) => pool.query(sql, vals) }).then(
+      (done) => Promise.all(done.map((d) => auditLog.record({ action: "records_expired", detail: `${d.model}: ${d.deleted}` }))),
+      (e: unknown) => process.stderr.write(`rizo: could not delete expired records: ${describeError(e)}\n`),
+    );
   };
   setInterval(sweep, 10 * 60_000).unref();
   server.requestTimeout = 30_000;

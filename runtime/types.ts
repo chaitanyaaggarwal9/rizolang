@@ -239,10 +239,22 @@ export interface PageRoute {
   readonly items: readonly PageItemSpec[];
 }
 
+/** A model whose records are deleted some time after they were created (`keep 2 years`). */
+export interface RetentionSpec {
+  readonly model: string;
+  /** Deletes up to 1,000 expired records ($1 is the amount of time), skipping any that other records still need. */
+  readonly sql: string;
+  readonly amount: number;
+}
+
 export interface App {
   readonly routes: readonly Route[];
   readonly auth: AuthSpec | null;
   readonly pages: readonly PageRoute[];
+  /** Models with `keep`. Absent means none. */
+  readonly retention?: readonly RetentionSpec[];
+  /** The regions named by `privacy for`. Absent without that line. */
+  readonly privacy?: readonly string[];
   /** Every encrypted column the app writes. Absent means none. */
   readonly encrypted?: readonly EncryptedColumn[];
 }

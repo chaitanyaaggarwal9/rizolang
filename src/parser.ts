@@ -1,4 +1,6 @@
 import {
+  type PrivacyDecl,
+  type KeepDecl,
   HTTP_METHODS,
   MODIFIER_NAMES,
   type ApiDecl,
@@ -89,9 +91,12 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
     const auths: AuthDecl[] = [];
     const apis: ApiDecl[] = [];
     const pages: PageDecl[] = [];
+    const privacy: PrivacyDecl[] = [];
     while (peek().kind !== "eof") {
       const t = peek();
-      if (isWord(t, "model")) {
+      if (isWord(t, "privacy")) {
+        privacy.push(parsePrivacy());
+      } else if (isWord(t, "model")) {
         models.push(parseModel());
       } else if (isWord(t, "auth")) {
         auths.push(parseAuth());
@@ -113,7 +118,33 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
           t.kind === "string" ? "Quoted text belongs inside a page block, for example `title \"Posts\"`." : "Every top-level block starts with model, auth, api or page.");
       }
     }
-    return { models, auths, apis, pages };
+    return { models, auths, apis, pages, privacy };
+  }
+
+  // --------------------------------------------------------------- privacy
+
+  function parsePrivacy(): PrivacyDecl {
+    const kw = next(); // `privacy`
+    const usage = "Write the countries and regions the app serves, for example `privacy for EU, UK, IN, US-CA, BR`.";
+    const forTok = peek();
+    if (!isWord(forTok, "for") || forTok.span.line !== kw.span.line) {
+      fail("RZ0223", forTok.span.line === kw.span.line ? forTok.span : kw.span, `Expected "for" after "privacy" but found ${describe(forTok)}.`, usage);
+    }
+    next();
+    const regions: { name: string; span: Span }[] = [];
+    for (;;) {
+      const r = peek();
+      if (r.kind !== "ident" || r.span.line !== kw.span.line) {
+        fail("RZ0223", r.span.line === kw.span.line ? r.span : forTok.span, `Expected a region code after "${regions.length === 0 ? "for" : ","}" but found ${describe(r)}.`, usage);
+      }
+      next();
+      regions.push({ name: r.text, span: r.span });
+      const comma = peek();
+      if (comma.kind !== "comma" || comma.span.line !== kw.span.line) break;
+      next();
+    }
+    const last = regions[regions.length - 1]?.span ?? forTok.span;
+    return { span: { line: kw.span.line, col: kw.span.col, length: last.col + last.length - kw.span.col }, regions };
   }
 
   // ---------------------------------------------------------------- models
@@ -134,6 +165,7 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
     next();
 
     const fields: FieldDecl[] = [];
+    const keep: KeepDecl[] = [];
     let lastLine = -1;
     for (;;) {
       const t = peek();
@@ -142,6 +174,13 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
         break;
       }
       checkUnclosed(t, brace.span, `Model "${nameTok.text}"`, `the last field of ${nameTok.text}`);
+      // `keep 2 years` (a field named keep is followed by a colon instead).
+      if (isWord(t, "keep") && peek(1).kind !== "colon") {
+        if (t.span.line === lastLine) fail("RZ0209", t.span, `"keep" must start on a new line.`, "Put `keep` on its own line.");
+        keep.push(parseKeep());
+        lastLine = peek(-1).span.line;
+        continue;
+      }
       if (t.kind !== "ident") {
         fail("RZ0204", t.span, `Expected a field name or "}" in model "${nameTok.text}" but found ${describe(t)}.`,
           "Write one field per line as `name: Type`, and close the model with }.");
@@ -152,7 +191,26 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
       fields.push(parseField(nameTok.text));
       lastLine = peek(-1).span.line;
     }
-    return { name: nameTok.text, nameSpan: nameTok.span, fields };
+    return { name: nameTok.text, nameSpan: nameTok.span, fields, keep };
+  }
+
+  function parseKeep(): KeepDecl {
+    const kw = next(); // `keep`
+    const usage = "Write how long records are kept, for example `keep 2 years`, `keep 6 months` or `keep 30 days`.";
+    const amount = peek();
+    if (amount.kind !== "int" || amount.span.line !== kw.span.line) {
+      fail("RZ0223", amount.span.line === kw.span.line ? amount.span : kw.span, `Expected a number after "keep" but found ${describe(amount)}.`, usage);
+    }
+    next();
+    const unit = peek();
+    if (unit.kind !== "ident" || unit.span.line !== kw.span.line) {
+      fail("RZ0223", unit.span.line === kw.span.line ? unit.span : amount.span, `Expected days, months or years after "keep ${amount.value}".`, usage);
+    }
+    next();
+    return {
+      span: { line: kw.span.line, col: kw.span.col, length: unit.span.col + unit.span.length - kw.span.col },
+      amount: amount.value, amountSpan: amount.span, unit: unit.text, unitSpan: unit.span,
+    };
   }
 
   /** Report a missing `}` when the file ends or the next block starts. */

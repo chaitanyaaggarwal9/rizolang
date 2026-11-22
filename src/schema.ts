@@ -91,6 +91,9 @@ const idColumn: Column = {
   unique: null, check: null, values: null, comment: null,
 };
 
+/** Hidden column holding when a record was created, for models with `keep`. Fields can't start with "_", so it can't clash. */
+export const CREATED_COLUMN = "_created_at";
+
 /** Name of the table that holds rate-limit counters (apps with a server). */
 export const LIMITS_TABLE = "_rizo_rate_limits";
 
@@ -143,7 +146,15 @@ export function buildSchema(
         index: constraintName(model.table, f.column, "idx"),
       }];
     });
-    return { name: model.table, columns, foreignKeys, indexes: listIndexes(model, apis), comment: null };
+    const indexes = listIndexes(model, apis);
+    if (model.keep !== undefined) {
+      columns.push({
+        name: CREATED_COLUMN, type: "TIMESTAMPTZ", primaryKey: false, default: "now()", notNull: true, unique: null, check: null, values: null,
+        comment: `${CREATED_COLUMN}: when the record was created; records are deleted ${model.keep.amount} ${model.keep.unit} later (keep)`,
+      });
+      indexes.push({ name: constraintName(model.table, CREATED_COLUMN, "idx"), columns: [CREATED_COLUMN] });
+    }
+    return { name: model.table, columns, foreignKeys, indexes, comment: null };
   });
 
   if (auth !== undefined) {

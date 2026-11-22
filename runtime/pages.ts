@@ -8,7 +8,7 @@
  * stylesheet.
  */
 import { readFileSync } from "node:fs";
-import type { PageRoute } from "./types.ts";
+import type { PageRoute, SiteSpec } from "./types.ts";
 
 /** Pages may load only our own script and stylesheet, and talk only to this server. */
 export const PAGE_CSP = [
@@ -36,6 +36,10 @@ export const PAGE_HEADERS: Readonly<Record<string, string>> = {
 const ASSETS: Readonly<Record<string, { file: string; type: string }>> = {
   "/_rizo/client.js": { file: "./client/rizo-client.js", type: "text/javascript; charset=utf-8" },
   "/_rizo/styles.css": { file: "./client/styles.css", type: "text/css; charset=utf-8" },
+  // The logo from the site line, copied here by the build (absent otherwise).
+  "/_rizo/logo.png": { file: "./client/logo.png", type: "image/png" },
+  "/_rizo/logo.jpg": { file: "./client/logo.jpg", type: "image/jpeg" },
+  "/_rizo/logo.webp": { file: "./client/logo.webp", type: "image/webp" },
 };
 
 const assetCache = new Map<string, Buffer>();
@@ -46,7 +50,11 @@ export function asset(pathname: string): { body: Buffer; type: string } | undefi
   if (a === undefined) return undefined;
   let body = assetCache.get(pathname);
   if (body === undefined) {
-    body = readFileSync(new URL(a.file, import.meta.url));
+    try {
+      body = readFileSync(new URL(a.file, import.meta.url));
+    } catch {
+      return undefined;
+    }
     assetCache.set(pathname, body);
   }
   return { body, type: a.type };
@@ -71,25 +79,30 @@ export function jsonForHtml(value: unknown): string {
     .replace(/\u2029/g, "\\u2029");
 }
 
-function shell(title: string, body: string): string {
+/** The palette colors (a class on <body>, so no inline style is needed under the CSP). */
+const COLORS = new Set(["blue", "teal", "green", "purple", "pink", "red", "orange", "gray"]);
+
+function shell(title: string, body: string, site?: SiteSpec): string {
+  const color = site !== undefined && COLORS.has(site.color) ? ` class="rizo-color-${site.color}"` : "";
+  const fullTitle = site !== undefined && site.name !== title ? `${title} · ${site.name}` : title;
   return [
     "<!doctype html>",
     '<html lang="en">',
     "<head>",
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    `<title>${escapeHtml(title)}</title>`,
+    `<title>${escapeHtml(fullTitle)}</title>`,
     '<link rel="stylesheet" href="/_rizo/styles.css">',
     "</head>",
-    `<body>${body}</body>`,
+    `<body${color}>${body}</body>`,
     "</html>",
     "",
   ].join("\n");
 }
 
 /** A page: the client runtime renders it from the JSON data block. */
-export function renderPage(page: PageRoute, params: Readonly<Record<string, string>>, loggedIn: boolean, hasAuth: boolean, hasPrivacy = false): string {
-  const data = { title: page.title, items: page.items, params, loggedIn, auth: hasAuth, privacy: hasPrivacy };
+export function renderPage(page: PageRoute, params: Readonly<Record<string, string>>, loggedIn: boolean, hasAuth: boolean, hasPrivacy = false, site?: SiteSpec): string {
+  const data = { title: page.title, items: page.items, params, loggedIn, auth: hasAuth, privacy: hasPrivacy, ...(site !== undefined ? { site: { name: site.name, ...(site.logo !== undefined ? { logo: site.logo } : {}) } } : {}) };
   return shell(
     page.title,
     [
@@ -97,10 +110,11 @@ export function renderPage(page: PageRoute, params: Readonly<Record<string, stri
       `<script type="application/json" id="rizo-page">${jsonForHtml(data)}</script>`,
       '<script type="module" src="/_rizo/client.js"></script>',
     ].join("\n"),
+    site,
   );
 }
 
 /** A plain page for errors such as "not found" or "log in first". No script. */
-export function renderMessage(title: string, message: string): string {
-  return shell(title, `<main id="app" class="rizo-message"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p><p><a href="/">Go to the home page</a></p></main>`);
+export function renderMessage(title: string, message: string, site?: SiteSpec): string {
+  return shell(title, `<main id="app" class="rizo-message"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p><p><a href="/">Go to the home page</a></p></main>`, site);
 }

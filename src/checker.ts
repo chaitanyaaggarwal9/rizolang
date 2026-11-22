@@ -20,6 +20,17 @@ export interface Retention {
   readonly unit: "days" | "months" | "years";
 }
 
+/** Accent colors a `site` line may use. Each has a light and a dark variant in styles.css. */
+export const SITE_COLORS = ["blue", "teal", "green", "purple", "pink", "red", "orange", "gray"] as const;
+
+/** The site's branding, from the `site` line. */
+export interface ResolvedSite {
+  readonly name: string;
+  readonly color: (typeof SITE_COLORS)[number];
+  /** The logo file, relative to the .rz file; checked and copied by the build. */
+  readonly logo: string | undefined;
+}
+
 /** Regions a `privacy for` line may name. */
 export const PRIVACY_REGIONS = ["EU", "UK", "IN", "US-CA", "BR"] as const;
 export type PrivacyRegion = (typeof PRIVACY_REGIONS)[number];
@@ -56,6 +67,8 @@ export type CheckResult =
       readonly pages: readonly ResolvedPage[];
       /** The regions named by `privacy for`, or undefined without that line. */
       readonly privacy: readonly PrivacyRegion[] | undefined;
+      /** From the `site` line, or undefined without one. */
+      readonly site: ResolvedSite | undefined;
     }
   | { readonly ok: false; readonly diagnostics: readonly Diagnostic[] };
 
@@ -158,7 +171,34 @@ export function check(program: Program, file: string): CheckResult {
         "Remove the keep line. People delete their own accounts from the account page.");
     }
   }
-  return errors.length > 0 ? { ok: false, diagnostics: errors } : { ok: true, models, auth, apis, pages, privacy };
+  const site = checkSite();
+  return errors.length > 0 ? { ok: false, diagnostics: errors } : { ok: true, models, auth, apis, pages, privacy, site };
+
+  function checkSite(): ResolvedSite | undefined {
+    const [first, ...extra] = program.sites;
+    for (const s of extra) err("RZ0344", s.span, "Only one site line is allowed.", "Keep one `site \"...\"` line.");
+    if (first === undefined) return undefined;
+    const name = first.name.text.trim();
+    if (name.length === 0 || [...name].length > 60) {
+      err("RZ0344", first.name.span, "The site name must be 1 to 60 characters.", 'Write a short name, for example `site "Rizo Blog"`.');
+    }
+    const color = first.color === undefined ? "blue" : SITE_COLORS.find((c) => c === first.color?.name);
+    if (color === undefined && first.color !== undefined) {
+      err("RZ0344", first.color.span, `"${first.color.name}" is not a site color.`, `Use one of: ${SITE_COLORS.join(", ")}.`);
+    }
+    const logo = first.logo?.text;
+    if (first.logo !== undefined && logo !== undefined) {
+      const segments = logo.split("/");
+      if (/\.svg$/i.test(logo)) {
+        err("RZ0344", first.logo.span, "The logo can't be an SVG file, because SVG files can contain scripts.", "Use a PNG, JPEG or WebP image, for example `logo \"logo.png\"`.");
+      } else if (!/^[A-Za-z0-9][A-Za-z0-9_./-]*\.(png|jpe?g|webp)$/i.test(logo) || segments.some((x) => x === ".." || x === "." || x === "")) {
+        err("RZ0344", first.logo.span, `"${logo}" is not a logo file name Rizo Lang can use.`,
+          "Put a .png, .jpg or .webp file in the same folder as the .rz file (or a folder inside it) and write its path, such as `logo \"logo.png\"`.");
+      }
+    }
+    return color === undefined ? undefined : { name, color, logo };
+  }
+
 
   function checkKeep(model: ModelDecl): Retention | undefined {
     const [first, ...extra] = model.keep;

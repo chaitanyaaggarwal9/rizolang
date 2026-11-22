@@ -1,6 +1,6 @@
 import type { ResolvedApi, ResolvedAuth } from "./check-api.js";
 import type { ResolvedPage } from "./check-page.js";
-import { type PrivacyRegion, type ResolvedModel, check } from "./checker.js";
+import { type PrivacyRegion, type ResolvedModel, type ResolvedSite, check } from "./checker.js";
 import { type Diagnostic, diagnostic, sourceLines } from "./diagnostics.js";
 import { emitOpenApi } from "./emit/openapi.js";
 import { emitDockerfile, emitDockerignore, emitMigrate, emitPackageJson, emitReencrypt, emitRoutes, emitServer, emitTsconfig } from "./emit/routes.js";
@@ -46,6 +46,8 @@ export type CompileResult =
       readonly pages: readonly ResolvedPage[];
       /** Regions from `privacy for`, or undefined without that line. */
       readonly privacy: readonly PrivacyRegion[] | undefined;
+      /** From the `site` line, or undefined without one. */
+      readonly site: ResolvedSite | undefined;
       readonly output: CompileOutput;
     }
   | { readonly ok: false; readonly diagnostics: readonly Diagnostic[] };
@@ -71,7 +73,7 @@ export function compile(source: string, file: string): CompileResult {
 
   // The file name is echoed into generated comments; keep it to one printable line.
   const label = file.replace(/[^\x20-\x7e]/g, "?");
-  const { models, auth, apis, pages, privacy } = checked;
+  const { models, auth, apis, pages, privacy, site } = checked;
   const hasServer = auth !== undefined || apis.length > 0 || pages.length > 0;
   return {
     ok: true,
@@ -80,12 +82,13 @@ export function compile(source: string, file: string): CompileResult {
     apis,
     pages,
     privacy,
+    site,
     output: {
       sql: emitSql(models, auth, label, hasServer, apis),
       typescript: emitTypeScript(models, auth, label),
       server: hasServer
         ? {
-            routes: emitRoutes(apis, auth, pages, label, models, privacy),
+            routes: emitRoutes(apis, auth, pages, label, models, privacy, site),
             server: emitServer(label),
             packageJson: emitPackageJson(),
             tsconfig: emitTsconfig(),

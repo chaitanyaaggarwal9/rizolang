@@ -8,6 +8,15 @@ export interface Program {
   readonly apis: readonly ApiDecl[];
   readonly pages: readonly PageDecl[];
   readonly privacy: readonly PrivacyDecl[];
+  readonly sites: readonly SiteDecl[];
+}
+
+/** `site "Rizo Blog" color teal logo "logo.png"` */
+export interface SiteDecl {
+  readonly span: Span;
+  readonly name: TextRef;
+  readonly color: { readonly name: string; readonly span: Span } | undefined;
+  readonly logo: TextRef | undefined;
 }
 
 /** `privacy for EU, UK, IN, US-CA, BR` */

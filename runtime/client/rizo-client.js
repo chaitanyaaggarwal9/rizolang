@@ -28,12 +28,13 @@
  *   | { kind: "verifyEmail" }
  *   | { kind: "confirmEmail" }
  *   | { kind: "newPassword", field: FormField }} PageItem
- * @typedef {{ title: string, items: PageItem[], params: Record<string, string>, loggedIn: boolean, auth: boolean, privacy?: boolean }} PageData
+ * @typedef {{ title: string, items: PageItem[], params: Record<string, string>, loggedIn: boolean, auth: boolean, privacy?: boolean, site?: { name: string, logo?: string } }} PageData
  */
 
 const ALLOWED_ATTRIBUTES = new Set([
   "class", "href", "type", "role", "aria-live", "aria-busy", "aria-invalid", "aria-describedby",
   "for", "id", "name", "required", "minlength", "maxlength", "min", "max", "step", "autocomplete", "rows",
+  "src", "alt",
 ]);
 
 /**
@@ -48,6 +49,7 @@ export function el(tag, attrs, ...children) {
   for (const [name, value] of Object.entries(attrs)) {
     if (!ALLOWED_ATTRIBUTES.has(name)) throw new Error(`attribute not allowed: ${name}`);
     if (name === "href" && !isInternalPath(value)) throw new Error("links must stay on this site");
+    if (name === "src" && (tag !== "img" || !/^\/_rizo\/logo\.(png|jpg|webp)$/.test(value))) throw new Error("src is only for the site logo image");
     node.setAttribute(name, value);
   }
   for (const child of children) node.append(typeof child === "string" ? document.createTextNode(child) : child);
@@ -817,8 +819,12 @@ function sessionsItem() {
  * @param {PageData} data
  */
 function menu(data) {
-  const nav = el("nav", { class: "rizo-nav" }, el("a", { href: "/" }, "Home"));
+  const home = data.site === undefined
+    ? el("a", { href: "/" }, "Home")
+    : el("a", { href: "/", class: "rizo-brand" }, ...(data.site.logo !== undefined ? [el("img", { src: data.site.logo, alt: "" })] : []), data.site.name);
+  const nav = el("nav", { class: "rizo-nav" }, home);
   if (data.privacy) nav.append(el("a", { href: "/privacy" }, "Privacy"));
+  if (!data.auth) return nav;
   if (data.loggedIn) {
     nav.append(el("a", { href: "/account" }, "Account"));
     const logout = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-link" }, "Log out"));
@@ -838,7 +844,7 @@ function menu(data) {
 /** @param {PageData} data */
 export function renderPage(data) {
   const main = el("main", { class: "rizo-page" });
-  if (data.auth) main.append(menu(data));
+  if (data.auth || data.site !== undefined) main.append(menu(data));
   main.append(el("h1", {}, data.title));
   // Opened from an emailed link: show only what the link is for.
   const linkItem = data.items.find((item) => item.kind === "verifyEmail" || item.kind === "newPassword" || item.kind === "confirmEmail");

@@ -154,8 +154,19 @@ describe("el()", () => {
     expect(node.textContent).toBe(HOSTILE);
   });
 
-  it.each(["onclick", "onerror", "style", "src", "srcdoc", "formaction"])("refuses the %s attribute", (name) => {
+  it.each(["onclick", "onerror", "style", "srcdoc", "formaction"])("refuses the %s attribute", (name) => {
     expect(() => client.el("a", { [name]: "x" })).toThrow(/not allowed/);
+  });
+
+  it.each([
+    ["img", "https://evil.example/x.png"], ["img", "//evil.example/x.png"], ["img", "javascript:alert(1)"],
+    ["img", "data:image/png;base64,x"], ["img", "/_rizo/client.js"], ["script", "/_rizo/logo.png"], ["iframe", "/_rizo/logo.png"],
+  ])("refuses src on <%s> for %j: only the site logo image is allowed", (tag, src) => {
+    expect(() => client.el(tag, { src })).toThrow(/only for the site logo/);
+  });
+
+  it("allows the site logo image", () => {
+    expect((client.el("img", { src: "/_rizo/logo.png", alt: "" }) as unknown as FakeElement).attributes.get("src")).toBe("/_rizo/logo.png");
   });
 
   it.each(["https://evil.example", "//evil.example", "javascript:alert(1)", "data:text/html,x", "/\\evil.example", "/a\nb"])(
@@ -635,6 +646,18 @@ describe("linked records", () => {
     expect(client.fieldText({ author: { id: "u1" } }, f)).toBe("u1");
     expect(client.fieldText({ author: null }, f)).toBe("—");
     expect(client.fieldText({ author: "u1" }, { key: "author", label: "Author", type: "ID" })).toBe("u1");
+  });
+});
+
+describe("the site brand", () => {
+  it("shows the logo and site name as the home link, as text", () => {
+    const page = client.renderPage({ title: "Notes", params: {}, loggedIn: false, auth: false, site: { name: HOSTILE, logo: "/_rizo/logo.png" }, items: [] }) as unknown as FakeElement;
+    const brand = all(page).find((e) => e.attributes.get("class") === "rizo-brand");
+    expect(brand?.attributes.get("href")).toBe("/");
+    expect(brand?.textContent).toBe(HOSTILE);
+    expect(all(brand as FakeElement).find((e) => e.tagName === "img")?.attributes.get("src")).toBe("/_rizo/logo.png");
+    // No accounts: the menu is just the brand, with no log-in links.
+    expect(all(page).filter((e) => e.tagName === "a").map((e) => e.attributes.get("href"))).toEqual(["/"]);
   });
 });
 

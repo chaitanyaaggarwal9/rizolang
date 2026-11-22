@@ -346,6 +346,7 @@ page /posts/new {
 **How pages work:**
 - Pages are generated from your endpoints: lists with "Load more", single records, text and links.
 - **Forms** (`form POST`, `PUT` or `PATCH`) and **delete buttons** (`button "Delete" DELETE ...`) are built from the endpoint's body, with the same limits checked in the browser and on the server. Edit forms start with the current values.
+- Brand the pages with one line: `site "Rizo Blog" color teal logo "logo.png"`.
 - Apps with an `auth` line get `/login`, `/signup` and a log-in/log-out menu. Pages that need a login send visitors to log in and then bring them back.
 - You never write HTML or browser code. All text is inserted as plain text, and pages are served with a strict Content-Security-Policy.
 - A page is never more open than the data it shows: a page showing a `requires login` endpoint must also say `requires login`.

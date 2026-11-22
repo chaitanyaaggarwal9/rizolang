@@ -123,7 +123,8 @@ page /posts/:id {
 }
 ```
 
-- Pages are generated from endpoints. Never write HTML. Quoted text is only allowed in pages: one line, at most 200 characters.
+- Pages are generated from endpoints. Never write HTML. Quoted text is only allowed in pages and the site line: one line, at most 200 characters.
+- Optional top-level line: `site "My App" color teal logo "logo.png"` (colors: blue, teal, green, purple, pink, red, orange, gray; logo: PNG, JPEG or WebP, never SVG).
 - Put endpoints under `/api`. A page can't share a path with an endpoint.
 - `show` takes one GET endpoint from the file. Page `:params` fill the endpoint's params by name, and every page param must be used.
 - A page must be at least as strict as what it shows: use `requires login` if the endpoint does.

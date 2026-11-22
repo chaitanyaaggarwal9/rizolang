@@ -46,6 +46,8 @@ export const EMAIL_SQL = {
   createEmailChange: `INSERT INTO ${EMAIL_TOKENS} ("id", "user_id", "purpose", "expires_at", "new_email") VALUES ($1, $2, 'email', now() + make_interval(secs => $3), $4)`,
   useEmailChange: `DELETE FROM ${EMAIL_TOKENS} WHERE "id" = $1 AND "purpose" = 'email' AND "expires_at" > now() RETURNING "user_id", "new_email"`,
   sweepTokens: `DELETE FROM ${EMAIL_TOKENS} WHERE "expires_at" <= now()`,
+  /** Cancel every pending link of an account (after its email or password changes). */
+  deleteAllTokens: `DELETE FROM ${EMAIL_TOKENS} WHERE "user_id" = $1`,
 } as const;
 
 /** A new link token (sent by email) and its hash (stored). */

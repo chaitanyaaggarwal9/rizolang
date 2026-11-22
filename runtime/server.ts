@@ -381,6 +381,11 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       res.end(body);
       return status;
     };
+    const pageGate = await limited(() => limits.consume(limitKey(`page ${page.pattern}`, clientIp(req)), DEFAULT_RATE, 60));
+    if (!pageGate.allowed) {
+      res.setHeader("Retry-After", String(pageGate.retryAfter));
+      return html(429, renderMessage("Too many requests", `Please wait ${pageGate.retryAfter} seconds and try again.`, app.site));
+    }
     const params: Record<string, string> = {};
     for (let i = 0; i < page.path.length; i++) {
       const p = page.path[i];
@@ -524,8 +529,9 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     const filters = new Map<string, unknown>();
     for (const param of declared) {
       const raw = search.get(param.name);
-      if (raw === null) continue;
-      const v = validateQueryParam(param.name, param.kind, raw);
+      // Left out or empty (a search box sent with nothing in it): the filter is skipped.
+      if (raw === null || raw === "") continue;
+      const v = validateQueryParam(param.name, param.kind, raw, param.max);
       if (!("value" in v)) throw new HttpError(400, "invalid_parameter", v.error, param.name);
       filters.set(param.name, v.value);
     }
@@ -1083,6 +1089,15 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
   async function handleAuth(req: IncomingMessage, res: ServerResponse, path: string, method: string): Promise<number> {
     const auth = app.auth;
     if (auth === null) throw new HttpError(404, "not_found", "No endpoint matches this path.");
+    // Every account endpoint has the default limit per address, on top of its own stricter ones.
+    // The counter is per route (ids replaced by :id); unknown paths answer 404 without one.
+    const route = /^\/auth\/users\/[^/]+\/role$/.test(path) ? "/auth/users/:id/role"
+      : /^\/auth\/(tokens|sessions|passkeys)\/[^/]+$/.test(path) ? path.replace(/\/[^/]+$/, "/:id")
+      : AUTH_ROUTES.some((r) => r.path === path) || path === "/auth/passkeys" ? path
+      : undefined;
+    if (route === undefined) throw new HttpError(404, "not_found", "No endpoint matches this path.");
+    const authGate = await limited(() => limits.consume(limitKey(`auth ${method} ${route}`, clientIp(req)), DEFAULT_RATE, 60));
+    if (!authGate.allowed) throw tooMany(authGate.retryAfter, `Too many requests. Try again in ${authGate.retryAfter} seconds.`);
     if (path === "/auth/passkeys" || path.startsWith("/auth/passkeys/")) return passkeys(req, res, path, method);
     const tokenRoute = /^\/auth\/tokens\/([^/]+)$/.exec(path);
     if (tokenRoute !== null) return revokeToken(req, res, method, tokenRoute[1] ?? "");
@@ -1162,8 +1177,9 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       // whether or not the new address already has an account.
       const me = await requireUser(req);
       await emailGate(ip);
+      const loginSpec = auth.signup.body.find((f) => f.key === auth.loginKey);
       const v = validateBody(
-        [{ key: "newEmail", kind: "Email", required: true, nullable: false, max: 254 }, { key: "password", kind: "Text", required: true, nullable: false, max: 128 }],
+        [{ ...(loginSpec ?? { kind: "Email", max: 254 }), key: "newEmail", required: true, nullable: false }, { key: "password", kind: "Text", required: true, nullable: false, max: 128 }],
         await readJson(req),
       );
       if (!v.ok) throw new HttpError(400, "validation_failed", v.message, v.field || undefined);
@@ -1196,8 +1212,10 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         if (e instanceof HttpError && e.code === "already_exists") throw new HttpError(409, "already_exists", "Another account uses this email now. Choose a different one.");
         throw e;
       }
-      // The new address is proven to work, so the account counts as confirmed.
+      // The new address is proven to work, so the account counts as confirmed. Links sent to
+      // the old address (a password reset, say) stop working: that mailbox may not be the owner's.
       await db.query(EMAIL_SQL.markVerified, [userId]);
+      await db.query(EMAIL_SQL.deleteAllTokens, [userId]);
       await audit.record({ action: "email_changed", userId, ip });
       if (typeof old === "string") deliver(old, MESSAGES.emailChanged(publicUrl));
       res.writeHead(204, SECURITY_HEADERS).end();
@@ -1219,7 +1237,8 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       // proved the email works, so the account counts as confirmed.
       await db.query(SQL.deleteAll, [userId]);
       await db.query(TOKEN_SQL.removeAll, [userId]);
-      await db.query(EMAIL_SQL.deleteTokens, [userId, "reset"]);
+      // Every other pending link (another reset, or an email change someone else asked for) stops working.
+      await db.query(EMAIL_SQL.deleteAllTokens, [userId]);
       await db.query(EMAIL_SQL.markVerified, [userId]);
       await audit.record({ action: "password_reset", userId, ip });
       res.setHeader("Set-Cookie", clearedCookie(secure));
@@ -1283,6 +1302,8 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       await db.query(auth.account.setPasswordSql, [me, await hashPassword(String(v.values.get("newPassword")))]);
       // Everyone else using this account is logged out; this session stays.
       await db.query(SQL.deleteOthers, [me, hashToken(readToken(req.headers.cookie) ?? "")]);
+      // Pending emailed links (such as an email change) were asked for before the change: cancel them.
+      await db.query(EMAIL_SQL.deleteAllTokens, [me]);
       await audit.record({ action: "password_changed", userId: me, ip });
       res.writeHead(204, SECURITY_HEADERS).end();
       return 204;
@@ -1442,6 +1463,9 @@ export async function grantAdmins(app: App, db: Db, emails: readonly string[]): 
   const r = await db.query(auth.grantAdminSql, [list]);
   return r.rowCount ?? 0;
 }
+
+/** Requests a minute per address for account endpoints and pages (the same default as api endpoints). */
+const DEFAULT_RATE = 120;
 
 /** The health check's only query. */
 const HEALTH_SQL = "SELECT 1";

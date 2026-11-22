@@ -89,9 +89,10 @@ describe.skipIf(DATABASE_URL === undefined || !existsSync(BIN))("rizolang dev wi
         s.close(() => done(p));
       });
     });
-    mkdirSync(dir);
-    writeFileSync(join(dir, "app.rz"), "model Note {\n  title: Text\n}\napi GET /api/notes -> list Note.public {\n  public\n  return db.Note.list()\n}\n");
-    child = spawn(process.execPath, [BIN, "dev", "app.rz", "--port", String(port)], { cwd: dir, env: { ...process.env, DATABASE_URL: dbUrl } });
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "app.rz"), "model Note {\n  title: Text\n}\napi GET /api/notes -> list Note.public {\n  public\n  return db.Note.list()\n}\n");
+    // The .rz file is in a subfolder: dev must use dist/ in the current folder, as build does.
+    child = spawn(process.execPath, [BIN, "dev", "src/app.rz", "--port", String(port)], { cwd: dir, env: { ...process.env, DATABASE_URL: dbUrl } });
     child.stdout?.on("data", (d) => (output += String(d)));
     child.stderr?.on("data", (d) => (output += String(d)));
   }, 30_000);
@@ -115,7 +116,7 @@ describe.skipIf(DATABASE_URL === undefined || !existsSync(BIN))("rizolang dev wi
   }, 30_000);
 
   it("rebuilds, migrates and restarts when the file is saved", async () => {
-    writeFileSync(join(dir, "app.rz"), "model Note {\n  title: Text\n  body: Text optional\n}\napi GET /api/notes -> list Note.public {\n  public\n  return db.Note.list()\n}\napi POST /api/notes -> Note.public {\n  public\n  return db.Note.create(body)\n}\n");
+    writeFileSync(join(dir, "src", "app.rz"), "model Note {\n  title: Text\n  body: Text optional\n}\napi GET /api/notes -> list Note.public {\n  public\n  return db.Note.list()\n}\napi POST /api/notes -> Note.public {\n  public\n  return db.Note.create(body)\n}\n");
     await waitFor("running at", 2);
     const r = await fetch(`http://127.0.0.1:${port}/api/notes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "a", body: "b" }) });
     expect(r.status).toBe(201);
@@ -123,7 +124,7 @@ describe.skipIf(DATABASE_URL === undefined || !existsSync(BIN))("rizolang dev wi
   }, 30_000);
 
   it("keeps the running server when the saved file has errors", async () => {
-    writeFileSync(join(dir, "app.rz"), "model Note {\n  title: String\n}\n");
+    writeFileSync(join(dir, "src", "app.rz"), "model Note {\n  title: String\n}\n");
     await waitFor("the running server is unchanged");
     expect(output).toContain("error RZ0301");
     expect((await fetch(`http://127.0.0.1:${port}/api/notes`)).status).toBe(200);

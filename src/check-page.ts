@@ -81,6 +81,7 @@ export function checkPages(
   auth: ResolvedAuth | undefined,
   apis: readonly ResolvedApi[],
   authDeclared: boolean,
+  privacyDeclared: boolean,
   err: Err,
 ): ResolvedPage[] {
   const apiShapes = new Set(apis.map((a) => pathShape(a.segments)));
@@ -204,7 +205,8 @@ export function checkPages(
         const target = parseRoutePath(s.path, s.pathSpan, err);
         if (target === undefined) { ok = false; continue; }
         const exists = parsed.some((p) => pathShape(p.segments) === pathShape(target));
-        const builtIn = authDeclared && RESERVED_PAGES.includes(pathShape(target));
+        const shape = pathShape(target);
+        const builtIn = authDeclared && RESERVED_PAGES.includes(shape) && (shape !== "/privacy" || privacyDeclared);
         if (!exists && !builtIn) {
           ok = false;
           const guess = didYouMean(s.path, parsed.map((p) => p.decl.path));

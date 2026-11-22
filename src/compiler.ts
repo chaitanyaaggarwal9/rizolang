@@ -112,7 +112,7 @@ function findFutureBlock(source: string, file: string, upToLine: number): Diagno
     if (indent !== undefined && word !== undefined && FUTURE_BLOCKS.includes(word)) {
       return diagnostic("RZ0211", file, { line: i + 1, col: indent.length + 1, length: word.length },
         `"${word}" blocks are not available yet.`,
-        "This version of Rizo Lang supports model, auth and api blocks. Remove this block for now.");
+        "Rizo Lang supports model, auth, api, page, privacy and site. Remove this block for now.");
     }
   }
   return undefined;

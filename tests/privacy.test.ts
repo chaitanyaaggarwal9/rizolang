@@ -57,6 +57,14 @@ describe("privacy for", () => {
   });
 });
 
+describe("links to the privacy page", () => {
+  const PAGE = 'page / {\n  public\n  link "Privacy" /privacy\n}\n';
+  it("need a privacy line, since the page exists only with one", () => {
+    expect(firstError(`${ACCOUNTS}${PAGE}`).code).toBe("RZ0336");
+    expect(compileOk(`privacy for EU\n${ACCOUNTS}${PAGE}`).pages).toHaveLength(1);
+  });
+});
+
 describe("keep", () => {
   it("reads days, months and years, singular or plural", () => {
     for (const [text, keep] of [["keep 30 days", { amount: 30, unit: "days" }], ["keep 1 year", { amount: 1, unit: "years" }], ["keep 6 months", { amount: 6, unit: "months" }]] as const) {

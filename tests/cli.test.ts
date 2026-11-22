@@ -212,3 +212,28 @@ describe("rizolang build --json", () => {
     expect(parse()).toMatchObject({ ok: true, dataLoss: [expect.stringContaining('"notes.body"')] });
   });
 });
+
+describe("rizolang check", () => {
+  it("says the file is valid and writes nothing", () => {
+    writeFileSync(join(dir, "app.rz"), "model Note {\n  title: Text\n}\n");
+    expect(cli("check", "app.rz")).toBe(0);
+    expect(out).toContain("app.rz is valid: 1 model, 0 endpoints, 0 pages. Nothing was written.");
+    expect(readdirSync(dir)).toEqual(["app.rz"]);
+  });
+
+  it("reports errors like build, as text or JSON, and writes nothing", () => {
+    writeFileSync(join(dir, "bad.rz"), "model User {\n  name: String\n}\n");
+    expect(cli("check", "bad.rz")).toBe(1);
+    expect(err).toContain("bad.rz:2:9 error RZ0301");
+    out = "";
+    expect(cli("check", "bad.rz", "--json")).toBe(1);
+    expect(JSON.parse(out)).toMatchObject({ ok: false, errors: [{ code: "RZ0301", line: 2, column: 9 }] });
+    expect(readdirSync(dir)).toEqual(["bad.rz"]);
+  });
+
+  it("prints a JSON summary for a valid file", () => {
+    writeFileSync(join(dir, "app.rz"), "model Note {\n  title: Text\n}\napi GET /api/notes -> list Note.public {\n  public\n  return db.Note.list()\n}\n");
+    expect(cli("check", "app.rz", "--json")).toBe(0);
+    expect(JSON.parse(out)).toEqual({ rizolang: VERSION, ok: true, file: "app.rz", models: 1, endpoints: 1, pages: 0, auth: false });
+  });
+});

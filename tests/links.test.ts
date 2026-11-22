@@ -31,8 +31,8 @@ describe("returning linked records (with)", () => {
     const route = buildApp(r.apis, r.auth).routes[0];
     expect(route?.sql).toBe(
       'SELECT "posts"."id", ' +
-        '(SELECT json_build_object(\'id\', "l1"."id", \'name\', "l1"."name", \'phone\', "l1"."phone") FROM "persons" AS "l1" WHERE "l1"."id" = "posts"."author_id") AS "author", ' +
-        '(SELECT json_build_object(\'id\', "l2"."id", \'name\', "l2"."name", \'phone\', "l2"."phone") FROM "persons" AS "l2" WHERE "l2"."id" = "posts"."editor_id") AS "editor", ' +
+        '(SELECT jsonb_build_object(\'id\', "l1"."id", \'name\', "l1"."name", \'phone\', "l1"."phone") FROM "persons" AS "l1" WHERE "l1"."id" = "posts"."author_id") AS "author", ' +
+        '(SELECT jsonb_build_object(\'id\', "l2"."id", \'name\', "l2"."name", \'phone\', "l2"."phone") FROM "persons" AS "l2" WHERE "l2"."id" = "posts"."editor_id") AS "editor", ' +
         '"posts"."title" AS "title", "title"::text AS "_cursor" FROM "posts" WHERE ($1 IS NOT TRUE OR ("title", "id") > ($2::text, $3::uuid)) ORDER BY "title" ASC, "id" ASC LIMIT $4',
     );
     expect(route?.sql).not.toContain('"email"');
@@ -40,6 +40,15 @@ describe("returning linked records (with)", () => {
       { key: "author", publicKeys: ["id", "name", "phone"], encrypted: [{ key: "phone", aad: "persons.phone" }] },
       { key: "editor", publicKeys: ["id", "name", "phone"], encrypted: [{ key: "phone", aad: "persons.phone" }] },
     ]);
+  });
+
+  it("formats linked dates like top-level ones, and builds large records in parts", () => {
+    const many = Array.from({ length: 60 }, (_, i) => `  f${i}: Text optional`).join("\n");
+    const r = compileOk(`model Big {\n  born: Date\n${many}\n}\nmodel Ref {\n  big: Big\n}\napi GET /api/refs -> list Ref.public with big {\n  public\n  return db.Ref.list()\n}\n`);
+    const sql = buildApp(r.apis, r.auth).routes[0]?.sql ?? "";
+    expect(sql).toContain(`to_char("l1"."born" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`);
+    expect(sql.match(/jsonb_build_object\(/g)?.length).toBe(2);
+    for (const part of sql.split("jsonb_build_object(").slice(1)) expect(part.split(")")[0]?.split(", ").length ?? 0).toBeLessThanOrEqual(100);
   });
 
   it("leaves endpoints without with exactly as before", () => {

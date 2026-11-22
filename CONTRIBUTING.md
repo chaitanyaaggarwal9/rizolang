@@ -40,8 +40,13 @@ RIZO_TEST_DATABASE_URL=postgres://user:pass@localhost:5432/dev npm test
 | `src/parser.ts`          | Hand-written recursive-descent parser that builds the AST (`src/ast.ts`) |
 | `src/checker.ts`         | Validates models: names, types, modifiers and links                  |
 | `src/check-api.ts`       | Validates `auth` and `api` blocks: access, ownership, queries        |
+| `src/check-page.ts`      | Validates `page` blocks                                              |
+| `src/schema.ts`, `src/migrations.ts` | The database schema (with list indexes) and migration planning |
+| `src/compiler.ts`        | Runs the pipeline: lex, parse, check, emit                           |
+| `src/audit.ts`           | The `rizolang audit` rules (RA01–RA08)                               |
+| `src/dev.ts`             | `rizolang dev`: build, migrate and run, rebuilding on save           |
 | `src/types.ts`           | The single source of truth for field types and their mappings       |
-| `src/emit/`              | Generates PostgreSQL (`sql.ts`), types (`typescript.ts`) and routes (`routes.ts`) |
+| `src/emit/`              | Generates PostgreSQL (`sql.ts`), types (`typescript.ts`), routes and app files (`routes.ts`) and OpenAPI (`openapi.ts`) |
 | `runtime/`               | Copied into every generated app: validation, sessions, passwords, HTTP server |
 | `src/diagnostics.ts`     | The error format: code, location, message and fix                   |
 | `src/cli.ts`, `src/bin.ts` | The `rizolang` command                                            |

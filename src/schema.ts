@@ -327,11 +327,18 @@ function listIndexes(model: ResolvedModel, apis: readonly ResolvedApi[]): Index[
     if (q.action !== "list" || q.model !== model) continue;
     // Equality first, then ranges, then the sort column: the order a B-tree index can use them in.
     // contains and != can't use a plain index, so they are left out.
-    const equal = [...new Set(q.filters.filter((f) => f.op === "=").map((f) => f.field.column))].sort();
-    const ranges = [...new Set(q.filters.filter((f) => ["<", "<=", ">", ">="].includes(f.op)).map((f) => f.field.column))].sort()
+    // A btree index row holds at most about 2.7 KB, so text that may be longer than 600
+    // characters (up to 4 bytes each) is left out rather than risk failing inserts.
+    const indexable = (f: ResolvedField) => !((f.type === "Text" || f.type === "Email") && (f.max ?? 10_000) > 600);
+    const equal = [...new Set(q.filters.filter((f) => f.op === "=" && indexable(f.field)).map((f) => f.field.column))].sort();
+    const ranges = [...new Set(q.filters.filter((f) => ["<", "<=", ">", ">="].includes(f.op) && indexable(f.field)).map((f) => f.field.column))].sort()
       .filter((c) => !equal.includes(c));
-    const order = q.order.field === undefined ? [] : [q.order.field.column].filter((c) => !equal.includes(c) && !ranges.includes(c));
-    const columns = [...equal, ...ranges, ...order, "id"];
+    // With a sort field, a range on another column would stop the index from giving the order,
+    // so only the sort column follows the = columns; without one, the range columns do.
+    const sort = q.order.field !== undefined && indexable(q.order.field) ? q.order.field.column : undefined;
+    const columns = sort === undefined
+      ? [...equal, ...ranges, "id"]
+      : [...equal, ...(equal.includes(sort) ? [] : [sort]), "id"];
     if (columns.length === 1) continue; // only id: the primary key already covers it
     const key = columns.join(",");
     if (!out.has(key)) out.set(key, { name: constraintName(model.table, columns.join("_"), "idx"), columns });

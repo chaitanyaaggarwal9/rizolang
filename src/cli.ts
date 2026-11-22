@@ -24,11 +24,14 @@ const USAGE = `rizolang ${VERSION}
 
 Usage:
   rizolang build <file.rz> [--allow-data-loss] [--json]
-      Compile to ${OUT_DIR}/ (schema.sql, types.ts and, with auth or api blocks, a Node.js server),
+      Compile to ${OUT_DIR}/ (schema.sql, types.ts and, with auth, api or page blocks, a Node.js server),
       and write a migration to ${MIGRATIONS_DIR}/ when the models changed. Changes that would
       delete data are refused unless --allow-data-loss is given.
       --json prints one JSON object (the result, or every error with its code, line, column
       and fix) instead of text, for editors and AI agents.
+  rizolang check <file.rz> [--json]
+      Check that the file compiles (and that its logo is a valid image), without writing
+      anything. Exits with 0 when it does, 1 otherwise. For editors and AI agents.
   rizolang audit <file.rz> [--json]
       Review the file for risky choices (public writes, personal data that isn't private,
       loose rate limits...) and print each with its location and a fix. Writes nothing.
@@ -95,11 +98,12 @@ export function run(argv: readonly string[], io: CliIo): number {
     io.stdout(`${VERSION}\n`);
     return 0;
   }
-  if (command !== "build" && command !== "audit") {
+  if (command !== "build" && command !== "audit" && command !== "check") {
     return usageError("RZ0903", `Unknown command "${command}".`,
-      "Run `rizolang build <file.rz>`, `rizolang audit <file.rz>` or `rizolang dev <file.rz>`.");
+      "Run `rizolang build <file.rz>`, `rizolang check <file.rz>`, `rizolang audit <file.rz>` or `rizolang dev <file.rz>`.");
   }
   if (command === "audit") return runAudit(io, files, flags, json, usageError);
+  if (command === "check") return runCheck(io, files, flags, json, usageError);
   const unknownFlag = flags.find((f) => f !== "--allow-data-loss" && f !== "--json");
   if (unknownFlag !== undefined) {
     return usageError("RZ0903", `Unknown option "${unknownFlag}".`, "The options are --allow-data-loss and --json.");
@@ -334,4 +338,41 @@ export function readLogo(path: string): { bytes: Buffer; ext: string } | { error
     return { error: "The logo file's content doesn't match its name: it isn't a real PNG, JPEG or WebP image.", fix: "Export the logo again as a PNG, JPEG or WebP file." };
   }
   return { bytes, ext: /\.png$/i.test(path) ? "png" : /\.webp$/i.test(path) ? "webp" : "jpg" };
+}
+
+/** `rizolang check <file.rz>`: compile and validate, write nothing. */
+function runCheck(
+  io: CliIo,
+  files: readonly string[],
+  flags: readonly string[],
+  json: boolean,
+  usageError: (code: string, message: string, fix: string, file?: string | null) => number,
+): number {
+  const unknownFlag = flags.find((f) => f !== "--json");
+  if (unknownFlag !== undefined) return usageError("RZ0903", `Unknown option "${unknownFlag}".`, "The only option of check is --json.");
+  const file = files[0];
+  if (files.length !== 1 || file === undefined) {
+    return usageError("RZ0903", "The check command needs exactly one .rz file.", "Run `rizolang check <file.rz>`, for example `rizolang check app.rz`.");
+  }
+  if (!file.endsWith(".rz")) return usageError("RZ0902", `"${file}" is not a Rizo Lang file.`, "Rizo Lang source files must end in .rz, for example app.rz.");
+  let source: string;
+  try {
+    source = readFileSync(resolve(io.cwd, file), "utf8");
+  } catch {
+    return usageError("RZ0901", `Cannot read file "${file}".`, "Check that the file exists and that the path is correct.");
+  }
+  const result = compile(source, file);
+  if (!result.ok) {
+    if (json) printJson(io, { ok: false, errors: result.diagnostics.map(jsonError) });
+    else io.stderr(`${result.diagnostics.map((d) => formatDiagnostic(d, source)).join("\n\n")}\n\n${file} has ${result.diagnostics.length} error${result.diagnostics.length === 1 ? "" : "s"}.\n`);
+    return 1;
+  }
+  if (result.site?.logo !== undefined && result.output.server !== undefined) {
+    const logo = readLogo(join(dirname(resolve(io.cwd, file)), result.site.logo));
+    if ("error" in logo) return usageError("RZ0908", logo.error, logo.fix, file);
+  }
+  const summary = { models: result.models.length, endpoints: result.apis.length, pages: result.pages.length, auth: result.auth !== undefined };
+  if (json) printJson(io, { ok: true, file, ...summary });
+  else io.stdout(`${file} is valid: ${summary.models} model${summary.models === 1 ? "" : "s"}, ${summary.endpoints} endpoint${summary.endpoints === 1 ? "" : "s"}, ${summary.pages} page${summary.pages === 1 ? "" : "s"}. Nothing was written.\n`);
+  return 0;
 }

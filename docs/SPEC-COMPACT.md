@@ -1,6 +1,6 @@
 # Rizo Lang (compact spec, v0.6)
 
-You are writing Rizo Lang (`.rz` files). Follow these rules exactly. A file contains `model` blocks, at most one `auth` line, at most one `privacy` line, `api` blocks and `page` blocks. Never write SQL, HTML or JavaScript.
+You are writing Rizo Lang (`.rz` files). Follow these rules exactly. A file contains `model` blocks, at most one each of the `auth`, `privacy` and `site` lines, `api` blocks and `page` blocks. Never write SQL, HTML or JavaScript.
 
 ## Example
 
@@ -21,23 +21,23 @@ model Post {
   published: Bool
 }
 
-api GET /posts -> list Post.public {
+api GET /api/posts -> list Post.public {
   public
   return db.Post.list(published = true, order title, limit 20)
 }
 
-api POST /posts -> Post.public {
+api POST /api/posts -> Post.public {
   requires login
   return db.Post.create(body, author = me)
 }
 
-api PATCH /posts/:id -> Post.public {
+api PATCH /api/posts/:id -> Post.public {
   requires login
   requires owner author
   return db.Post.update(id, body)
 }
 
-api DELETE /posts/:id {
+api DELETE /api/posts/:id {
   requires login
   requires owner author
   return db.Post.delete(id)
@@ -71,13 +71,13 @@ A field named `password` (or ending in `Password`) must have the type `Password`
 
 ## auth
 
-`auth User by email` turns on accounts. User needs `email: Email unique` and one `Password` field. Everything account-related is built in under `/auth`: signup with email confirmation, login, logout, password reset, profile (`PATCH /auth/me`), email and password changes, sessions and devices, data export and account deletion. Never write your own login or account endpoints. Scripts and AI agents use API tokens (`Authorization: Bearer rzt_...`) limited to chosen endpoints.
+`auth User by email` turns on accounts. User needs `email: Email unique` and one required `Password` field; a link from User to User must be optional. Everything account-related is built in under `/auth`: signup with email confirmation, login, logout, password reset, profile (`PATCH /auth/me`), email and password changes, sessions and devices, data export and account deletion. Never write your own login or account endpoints. Scripts and AI agents use API tokens (`Authorization: Bearer rzt_...`) limited to chosen endpoints.
 
 Roles: `auth User by email roles admin, editor` (must include admin). Admins assign roles with `PUT /auth/users/:id/role`. Never add a `role` field yourself; it is hidden and never comes from request bodies.
 
 ## privacy
 
-`privacy for EU, UK, IN, US-CA, BR` (one line, needs auth) names the regions served and publishes a /privacy page. In a model, a line `keep 2 years` (or days, months) deletes records that long after creation; not on the auth model. Use it for data such as messages or logs.
+`privacy for EU, UK, IN, US-CA, BR` (one line, needs auth) names the regions served and publishes a /privacy page. In a model, a line `keep 2 years` (or days, months) deletes records that long after creation; not on the auth model, and the file needs auth, api or page. Use it for data such as messages or logs.
 
 ## api
 
@@ -93,7 +93,7 @@ api METHOD /path/:param -> Model.public {
 - Every endpoint has **exactly one** of `public` or `requires login`.
 - `requires role admin` gives 403 to users without that role.
 - Endpoints allow 120 requests a minute by default. Add `limit 10 per minute` (second, minute, hour, day) where a tighter limit fits, such as comments.
-- `requires owner author` lets only the record's owner act (others get 404). It works with find, update and delete, and is **required** on update and delete of a model that links to the auth model.
+- `requires owner author` lets only the record's owner act (others get 404). It works with find, update and delete (on list, filter with `author = me`), and is **required** on update and delete of a model that links to the auth model, unless the endpoint has `requires role`.
 - The return type is `-> Model.public` or `-> list Model.public`, and there is none for delete. Only `.public` can be returned. On find and list, `-> list Post.public with author` also returns each linked author's public fields.
 - Paths use lowercase segments and `:camelCase` parameters. Every parameter must be used. `/auth` is reserved.
 
@@ -105,10 +105,10 @@ api METHOD /path/:param -> Model.public {
 | `db.M.update(id, body)`         | PUT or PATCH | changed record or 404 |
 | `db.M.delete(id)`               | DELETE       | 204 or 404         |
 
-- Filters are `field = value`, also `!=`, `<`, `<=`, `>`, `>=` (Number, Date) and `contains` (Text). A value is `me`, a path parameter, a number, `true`, `false` or `?name`, an optional query parameter: `title contains ?q` reads `?q=...` and is skipped when left out.
+- Filters are `field = value`, also `!=`, `<`, `<=`, `>`, `>=` (Number, Date) and `contains` (Text, Email). A value is `me`, a path parameter, a number, `true`, `false` or `?name`, an optional query parameter (never `?limit` or `?after`): `title contains ?q` reads `?q=...` and is skipped when left out. `contains` takes only `?name` or a path parameter. Private and Password fields can't be filtered or ordered.
 - `body` is the validated JSON request body.
 - `list` returns pages: clients call `?limit=10`, then `?after=<next>`. You can't order by an optional field.
-- A link to the auth model must be set with `= me` in create, and is never taken from body.
+- `create(body, published = false)` sets fields the client can't; a link to the auth model must be set this way with `= me`, never from body.
 - You cannot create, update or delete the auth model through `api`.
 
 ## page
@@ -127,14 +127,14 @@ page /posts/:id {
 - Optional top-level line: `site "My App" color teal logo "logo.png"` (colors: blue, teal, green, purple, pink, red, orange, gray; logo: PNG, JPEG or WebP, never SVG).
 - Put endpoints under `/api`. A page can't share a path with an endpoint.
 - `show` takes one GET endpoint from the file. Page `:params` fill the endpoint's params by name, and every page param must be used.
-- A page must be at least as strict as what it shows: use `requires login` if the endpoint does.
+- A page must be at least as strict as what it shows: use `requires login` if the endpoint does, and one of its roles if it has `requires role`.
 - Lists link to a page that shows one record of the same model.
 - `form POST /api/posts` (or PUT or PATCH) builds a form from the endpoint's body. `button "Delete" DELETE /api/posts/:id` deletes. Each page has at most one form or button, followed by `then go /path` (`:id` can be the saved record).
 - With an auth line, `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password`, `/confirm-email`, `/privacy` (with privacy) and a menu are built in and reserved. Never write login, account or email pages.
 
 ## Migrations
 
-`rizolang build` writes `migrations/NNNN_*.sql` when models change. Removing a model or field, changing a type, or removing a role is refused (RZ0904). Never rename a field; add a new one. Run `rizolang audit app.rz` and fix every warning. `rizolang dev app.rz` runs the app locally.
+`rizolang build` writes `migrations/NNNN_*.sql` when models change. Removing a model or field, changing a type, adding or removing `encrypted`, or removing a role is refused (RZ0904). Never rename a field; add a new one, `optional` on existing models. `rizolang check app.rz` checks without writing; run `rizolang audit app.rz` and fix every warning. `rizolang dev app.rz` runs the app locally.
 
 ## Errors
 
@@ -160,11 +160,11 @@ password: Password min 4   →  password: Password min 8
 price: Number min 0.5      →  priceCents: Number min 50
 ```
 
-In api blocks: write `-> Post.public`, not `-> Post`, and `api DELETE /posts/:id`, not `api GET /posts/:id/delete`.
+In api blocks: write `-> Post.public`, not `-> Post`, and `api DELETE /api/posts/:id`, not `api GET /api/posts/:id/delete`.
 
 ## Checklist before answering
 
-1. Only `model`, `auth`, `privacy`, `api` and `page`, with one item per line.
+1. Only `model`, `auth`, `privacy`, `site`, `api` and `page`, with one item per line.
 2. Every type is Text, Number, Bool, Email, Password, Date, ID or a model name.
 3. Model names are PascalCase, field names are camelCase, and no field is named `id`.
 4. Every endpoint has `public` or `requires login`, a matching method and one `return` line.

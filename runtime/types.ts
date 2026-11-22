@@ -82,7 +82,12 @@ export interface Route {
   /** Requests allowed per window, per account (logged in) or IP address (logged out). */
   readonly rateLimit: { readonly max: number; readonly windowSeconds: number };
   /** Optional query parameters of a list endpoint (`?q`), and the type each value must have. Absent means none. */
-  readonly query?: readonly { readonly name: string; readonly kind: "ID" | "Number" | "Bool" | "Text" | "Email" | "Date" }[];
+  readonly query?: readonly {
+    readonly name: string;
+    readonly kind: "ID" | "Number" | "Bool" | "Text" | "Email" | "Date";
+    /** Longest text value: 200 for contains, the field's own max for =. Absent: 200. */
+    readonly max?: number;
+  }[];
   /** For list endpoints: the largest page size, and the type of the sort column (null when sorted by id). */
   readonly page: { readonly max: number; readonly order: FieldKind | null } | null;
   /** The only keys ever copied into a response. */

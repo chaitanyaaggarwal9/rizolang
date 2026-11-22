@@ -818,6 +818,56 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect(data.items).toEqual([{ kind: "privacy" }]);
   });
 
+  describe("emailed links after account changes", () => {
+    const at = { "X-Forwarded-For": "198.51.100.70" };
+
+    it("a reset link sent to the old address stops working once the email changes", async () => {
+      const nia = { email: "nia@example.com", password: "nias long password", name: "Nia" };
+      const cookie = (await join(nia, "198.51.100.70")).cookie;
+      await call("POST", "/auth/password-reset", { headers: at, body: { email: nia.email } });
+      const reset = linkToken(nia.email, "/reset-password");
+      await call("POST", "/auth/email", { cookie, headers: at, body: { newEmail: "nia.new@example.com", password: nia.password } });
+      expect((await call("POST", "/auth/email/confirm", { headers: at, body: { token: linkToken("nia.new@example.com", "/confirm-email") } })).status).toBe(204);
+      const late = await call("POST", "/auth/password-reset/confirm", { headers: at, body: { token: reset, newPassword: "someone elses password" } });
+      expect(late).toMatchObject({ status: 400, body: { error: { code: "invalid_link" } } });
+      expect((await call("POST", "/auth/login", { headers: at, body: { email: "nia.new@example.com", password: nia.password } })).status).toBe(200);
+    });
+
+    it("a pending email change stops working after a password reset, or a password change", async () => {
+      const oto = { email: "oto@example.com", password: "otos long password", name: "Oto" };
+      const cookie = (await join(oto, "198.51.100.70")).cookie;
+      await call("POST", "/auth/email", { cookie, headers: at, body: { newEmail: "intruder@example.com", password: oto.password } });
+      const change = linkToken("intruder@example.com", "/confirm-email");
+      await call("POST", "/auth/password-reset", { headers: at, body: { email: oto.email } });
+      expect((await call("POST", "/auth/password-reset/confirm", { headers: at, body: { token: linkToken(oto.email, "/reset-password"), newPassword: "otos new password" } })).status).toBe(204);
+      expect((await call("POST", "/auth/email/confirm", { headers: at, body: { token: change } })).status).toBe(400);
+
+      // A fresh account (each account gets at most 3 emails an hour), for a password change.
+      const pia = { email: "pia@example.com", password: "pias long password", name: "Pia" };
+      const fresh = (await join(pia, "198.51.100.71")).cookie;
+      await call("POST", "/auth/email", { cookie: fresh, headers: at, body: { newEmail: "intruder2@example.com", password: pia.password } });
+      const second = linkToken("intruder2@example.com", "/confirm-email");
+      expect((await call("POST", "/auth/password", { cookie: fresh, headers: at, body: { currentPassword: pia.password, newPassword: "pias new password" } })).status).toBe(204);
+      expect((await call("POST", "/auth/email/confirm", { headers: at, body: { token: second } })).status).toBe(400);
+    });
+  });
+
+  describe("rate limits on account endpoints and pages", () => {
+    it("answer 429 after 120 requests a minute from one address", async () => {
+      const headers = { "X-Forwarded-For": "198.51.100.80" };
+      for (let i = 0; i < 120; i++) await call("GET", "/auth/privacy", { headers });
+      const limited = await call("GET", "/auth/privacy", { headers });
+      expect(limited.status).toBe(429);
+      expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
+      for (let i = 0; i < 120; i++) await fetch(`${base}/login`, { headers });
+      const page = await fetch(`${base}/login`, { headers });
+      expect(page.status).toBe(429);
+      expect(page.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      // Other addresses are not affected.
+      expect((await call("GET", "/auth/privacy", { headers: { "X-Forwarded-For": "198.51.100.81" } })).status).toBe(200);
+    }, 30_000);
+  });
+
   describe("changing the login email", () => {
     const MAY = { email: "may@example.com", password: "mays long password", name: "May" };
     const at = { "X-Forwarded-For": "198.51.100.60" };
@@ -851,7 +901,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       expect((await call("POST", "/auth/login", { headers: at, body: { email: MAY.email, password: MAY.password } })).status).toBe(401);
       expect((await call("POST", "/auth/login", { headers: at, body: { email: "may.new@example.com", password: MAY.password } })).status).toBe(200);
       expect((await call("GET", "/auth/me", { cookie: may })).status).toBe(200);
-      const audit = (await pool.query(`SELECT count(*)::int AS "n" FROM "_rizo_audit" WHERE "action" = 'email_changed'`)).rows[0].n;
+      const audit = (await pool.query(`SELECT count(*)::int AS "n" FROM "_rizo_audit" WHERE "action" = 'email_changed' AND "user_id" = (SELECT "id" FROM "users" WHERE "email" = 'may.new@example.com')`)).rows[0].n;
       expect(audit).toBe(1);
     });
   });

@@ -1,12 +1,12 @@
 # Rizo Lang Specification
 
-Version 0.6 · Milestones 1–9
+Version 0.6 · Milestones 1–9 (Milestone 10 in progress: `with` and the `site` line are on `main`, not yet released)
 
-Rizo Lang is a secure, simple, full-stack web language. Source files end in `.rz`. The compiler, `rizolang`, turns Rizo Lang into existing technology: a PostgreSQL schema, TypeScript types and a Node.js server. HTML and TypeScript frontends come later.
+Rizo Lang is a secure, simple, full-stack web language. Source files end in `.rz`. The compiler, `rizolang`, turns Rizo Lang into existing technology: a PostgreSQL schema, TypeScript types, a Node.js server and web pages.
 
 This document is the complete language reference. It is written for people and for AI models alike. If something is not described here, it is not part of the language.
 
-> **Status:** `model`, `auth`, `api` and `page` blocks are available, including forms. Other blocks are not available, and using them is a compile error (RZ0211).
+> **Status:** `model`, `auth`, `api` and `page` blocks and the `privacy` and `site` lines are available. Other blocks are not available, and using them is a compile error (RZ0211).
 
 ---
 
@@ -25,10 +25,10 @@ This document is the complete language reference. It is written for people and f
 ## 2. Files and basic syntax
 
 - A source file is UTF-8 text with the extension `.rz`.
-- A file contains `model` blocks, at most one `auth` line, `api` blocks and `page` blocks, in any order.
+- A file contains `model` blocks, at most one `auth` line, at most one `privacy` line, at most one `site` line, `api` blocks and `page` blocks, in any order.
 - Comments start with `//` and run to the end of the line. A comment after a path needs a space before it.
 - Whitespace separates tokens. Indentation has no meaning, but two spaces are conventional.
-- **One item per line.** Each field, and each statement in an `api` block, goes on its own line. Commas appear only between query arguments.
+- **One item per line.** Each field, and each statement in an `api` block, goes on its own line. Commas appear only in lists: query arguments, roles (`roles`, `requires role`), `privacy for` regions and `with` links.
 - Names contain only ASCII letters and digits and start with a letter. Underscores and hyphens are not allowed in names.
 - Numbers are whole numbers, optionally negative: `100`, `0`, `-5`. Decimals are not allowed.
 - Quoted text (`"Latest posts"`) is allowed only in `page` blocks and the `site` line. It stays on one line, has at most 200 characters, and can only escape `\"` and `\\`.
@@ -63,12 +63,12 @@ model Post {
 
 | Type       | Meaning                                       | PostgreSQL    | TypeScript     | Modifiers allowed                    |
 |------------|-----------------------------------------------|---------------|----------------|--------------------------------------|
-| `Text`     | Text. At most 10,000 characters by default.   | `TEXT`        | `string`       | unique, optional, private, min, max  |
-| `Number`   | Whole number, −2147483648 to 2147483647.      | `INTEGER`     | `number`       | unique, optional, private, min, max  |
+| `Text`     | Text. At most 10,000 characters by default.   | `TEXT`        | `string`       | unique, optional, private, encrypted, min, max |
+| `Number`   | Whole number, −2147483648 to 2147483647.      | `INTEGER`     | `number`       | unique, optional, private, encrypted, min, max |
 | `Bool`     | `true` or `false`.                            | `BOOLEAN`     | `boolean`      | optional, private                    |
-| `Email`    | Email address, 3–254 chars, stored lowercase. | `TEXT`        | `string`       | unique, optional, private, min, max  |
+| `Email`    | Email address, 3–254 chars, stored lowercase. | `TEXT`        | `string`       | unique, optional, private, encrypted, min, max |
 | `Password` | Stored only as a salted hash.                 | `TEXT` (`<name>_hash`) | `PasswordHash` | optional, min, max          |
-| `Date`     | Date and time, in UTC.                        | `TIMESTAMPTZ` | `Date`         | unique, optional, private            |
+| `Date`     | Date and time, in UTC.                        | `TIMESTAMPTZ` | `Date`         | unique, optional, private, encrypted |
 | `ID`       | A UUID.                                       | `UUID`        | `string`       | unique, optional, private            |
 | *Model*    | A link to a record of that model.             | `UUID` (`<name>_id`) + foreign key | `string` | unique, optional, private |
 
@@ -178,31 +178,32 @@ It adds these endpoints. Paths under `/auth` are reserved.
 | `GET /auth/me/export` | none                            | Login required (cookie). 200 with everything stored about you, as a `my-data.json` download. At most 5 times an hour |
 | `GET /auth/audit`   | `?account=<id>&limit=<1–500>` (optional) | Admins only (needs `roles admin`): the newest security audit entries, `{ "items": [...] }` |
 | `POST /auth/passkeys/register-options` | none | Login required. 200 with WebAuthn creation options for this account |
-| `POST /auth/passkeys` | `{ "name": ..., "credential": ... }` | Login required. 201 `{ "id", "name", "createdAt", "lastUsedAt" }`. 409 if the passkey is already added or the account has 20 |
+| `POST /auth/passkeys` | `{ "name": ..., "credential": ... }` | Login required. 201 `{ "id", "name" }`. 409 if the passkey is already added or the account has 20 |
 | `GET /auth/passkeys` | none | Login required. 200 `{ "items": [...] }`, this account's passkeys |
 | `DELETE /auth/passkeys/:id` | none | Login required. 204, or 404 if it isn't one of your passkeys |
 | `POST /auth/passkeys/login-options` | none | 200 with WebAuthn request options |
-| `POST /auth/passkeys/login` | `{ "credential": ... }` | 200 with `User.public`, or 401. Counts toward the login limits |
+| `POST /auth/passkeys/login` | `{ "credential": ... }` | 200 with `User.public`, or 401; 403 `email_not_verified` until the email is confirmed. Counts toward the login limits |
 
 **How login works**
 - Passwords are hashed with scrypt (N=2^15, r=8, p=3) and a random salt.
 - A wrong password and an unknown email give the same 401 response, in about the same time.
 - After 5 failed logins for an account, or 20 from one address, within 15 minutes, login answers 429. Signups are limited to 10 per hour per address.
+- Every `/auth` endpoint also has the default limit of 120 requests a minute per address. Opening emailed links (`/auth/verify-email`, `/auth/email/confirm`, `/auth/password-reset/confirm`) is limited to 30 an hour per address, and passkey login options to 30 a minute.
 
 **Email.** Accounts must confirm their email address before they can log in.
 - **Signup doesn't reveal who has an account.** It answers the same 202 whether or not the email is taken. A new email gets a confirmation link. If the email already has an account, nothing is created or changed, and the owner gets an email saying someone tried to sign up, with links to log in or reset the password. Other unique fields still answer 409.
-- **Links** are `RIZO_PUBLIC_URL/verify-email#token=…` (works for 24 hours) and `RIZO_PUBLIC_URL/reset-password#token=…` (1 hour). Each works once, and sending a new one cancels the old one. Only SHA-256 hashes of tokens are stored. The token is after `#`, so it never reaches a server log, and link scanners in mail systems can't use it up: the page sends it with a POST. Apps without pages must handle these two paths in their own frontend.
+- **Links** are `RIZO_PUBLIC_URL/verify-email#token=…` (works for 24 hours), `RIZO_PUBLIC_URL/reset-password#token=…` (1 hour) and `RIZO_PUBLIC_URL/confirm-email#token=…` (a new login email, 1 hour). Each works once, and sending a new one cancels the old one. Changing the login email or the password, or resetting the password, cancels every pending link of the account. Only SHA-256 hashes of tokens are stored. The token is after `#`, so it never reaches a server log, and link scanners in mail systems can't use it up: the page sends it with a POST. Apps without pages must handle these three paths in their own frontend.
 - **Limits:** at most 3 emails an hour go to one account, and requests that send email are limited to 10 an hour per address.
 - **Emails** are plain text, made of fixed sentences plus the link. Nothing from a request is put in them. They are sent through [Resend](https://resend.com) in the background, so the response never waits for them or depends on them, and failures are logged without the address.
 - Accounts that existed before email confirmation was added count as confirmed.
 
 **Your data.** Every app with an `auth` line lets people take and delete their data.
-- **Export:** `GET /auth/me/export` returns `account` (every stored field except the password hash, private and encrypted ones included, since it is the person's own data), `records` (each model's records that link to the account, up to 10,000 per model; `truncated` lists any model with more), `devices`, `passkeys`, `apiTokens` and `securityLog` (their audit entries). It is recorded in the audit log as `data_exported`.
+- **Export:** `GET /auth/me/export` returns `account` (every stored field except the password hash, private and encrypted ones included, since it is the person's own data), `records` (each model's records that link to the account, up to 10,000 per model; `truncated` lists any model with more), `devices`, `passkeys`, `apiTokens` and `securityLog` (their newest 500 audit entries). The role, if the app has roles, is part of `account`: it is the person's own data. It is recorded in the audit log as `data_exported`.
 - **Deletion:** `DELETE /auth/me` deletes the account with its sessions, devices, passkeys and API tokens. Optional links to it become empty. Records that must link to an account, such as posts, are given to one shared **"Deleted user"** account in the same statement, so they stay but nothing points back to the person.
 - The "Deleted user" account is created the first time it is needed. It holds only placeholders ("Deleted user", an address under the reserved `.invalid` domain) and has no password, so nobody can log in as it. If the auth model has a required link to another model, no placeholder can be made, and deletion answers 409 while such records exist.
 
 **API tokens.** Scripts and AI agents can call your endpoints with an API token instead of a session cookie: `Authorization: Bearer rzt_...`.
-- A token acts as the account that made it, but **only on the endpoints chosen** when it was made (any endpoint that needs a login). Other endpoints answer 403 `token_not_allowed`.
+- A token acts as the account that made it, but **only on the endpoints chosen** when it was made (any endpoint that needs a login). Other endpoints that need a login answer 403 `token_not_allowed`; public endpoints ignore the token.
 - It expires after at most 90 days, can be revoked at any time, and is deleted with the account. A password reset revokes all of the account's tokens.
 - Tokens never work on `/auth/*` endpoints, so a token can't make tokens, see sessions, change the password or delete the account. Those need a session cookie.
 - When an `Authorization` header is sent, it is used instead of the cookie. An unknown, malformed or expired token answers 401 `invalid_token`.
@@ -222,7 +223,7 @@ auth User by email roles admin, editor
 
 Each account has at most one role, or none.
 - **Storage:** the role is kept in a hidden `role` column that only accepts the declared names.
-- **Never from or to clients:** the role is never accepted in a request body and never appears in any response or public type.
+- **Never from or to clients:** the role is never accepted in a request body and never appears in a public type or in any response, except the person's own data export.
 - **Checked on every request:** a role change applies to existing sessions immediately.
 
 **Assigning roles.** Admins use a built-in endpoint:
@@ -235,18 +236,18 @@ Each account has at most one role, or none.
 
 **Sensitive changes:**
 - Changing the password and deleting the account need the current password.
-- A wrong password gets 403 and counts toward the same lockout as login.
+- A wrong password gets 403. After 5 wrong passwords in 15 minutes, these changes answer 429 (a lockout of its own, separate from login's).
 - New passwords follow the Password field's `min` and `max`.
-- Changing the login email isn't available yet, because it needs email verification.
+- Changing the login email needs the password and a link sent to the new address (`POST /auth/email`, above).
 
 **Security audit log.** Every app with a server records security events in the `_rizo_audit` table:
-- **Events:** sign-ups; logins, failed logins (with the account when it exists) and blocked logins; logouts; password changes and wrong password checks; account deletions; role changes; admins granted at startup; and every record deleted through an endpoint.
+- **Events:** sign-ups; email confirmations and changes; logins, failed logins (with the account when it exists) and blocked logins; logouts and "log out everywhere"; devices logged out; password changes, wrong password checks, reset requests and resets; passkeys added and removed; API tokens created, used and revoked; data exports; account deletions; role changes; admins granted at startup; every record deleted through an endpoint; and records deleted by `keep`.
 - **What each entry holds:** the time, the action, who did it, who or what was affected, the IP address, and a short fixed detail. Never a password, a token or a request body.
 - **Retention:** entries are kept for `RIZO_AUDIT_RETENTION_DAYS` (365 by default), then deleted automatically.
 - **Availability:** if an entry can't be written, the action still succeeds and the failure is logged.
 
 **How sessions work**
-- The session is a random 256-bit token in the `rizo_session` cookie: `HttpOnly; Secure; SameSite=Lax; Path=/`.
+- The session is a random 256-bit token in the `rizo_session` cookie: `HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000` (30 days).
 - The database stores only a SHA-256 hash of the token, in the table `_rizo_sessions`.
 - A session ends after **7 days without use**, and **30 days after login** however much it is used. Using it moves the 7-day deadline forward (at most once a minute).
 - Each session has a public id and a device label such as "Chrome on macOS", made only from fixed browser and system names. The raw User-Agent and the IP address are not stored.
@@ -286,7 +287,7 @@ model Message {
 **`keep N days|months|years`**, on its own line in a model, deletes records that long after they were created (`day`, `month` and `year` work too).
 - From 1 day to 100 years. At most one per model. Not on the auth model: people delete their own accounts (RZ0342).
 - It adds a hidden `_created_at` column (with an index). Records that already exist when `keep` is added count from the time of that migration.
-- The server deletes expired records every 10 minutes, at most 1,000 at a time, and records each batch in the audit log as `records_expired`.
+- Every 10 minutes the server deletes expired records, 1,000 at a time and at most 20,000 per model, and writes one `records_expired` audit entry per model with the number deleted.
 - A record that another record must link to (a required link) is kept until that record is gone.
 - It needs a server, so the file must have an `auth` line, `api` or `page` blocks (RZ0342).
 
@@ -335,7 +336,7 @@ Every endpoint must contain **exactly one** of these lines (RZ0318):
 There is no default, so an endpoint can never be left open by accident. `requires login` needs an `auth` line.
 
 `requires owner <field>` adds an ownership check (RZ0329):
-- It needs `requires login`.
+- It needs `requires login` (RZ0318).
 - `<field>` must be a link to the auth model, for example `author`.
 - It works with `find`, `update` and `delete`.
 - The check is part of the SQL `WHERE` clause. A record owned by someone else behaves exactly like a missing one (404), so callers can't tell that it exists.
@@ -343,13 +344,13 @@ There is no default, so an endpoint can never be left open by accident. `require
 - `requires owner author or role admin` also lets the listed roles act on records they don't own. This check is part of the `WHERE` clause too.
 
 `requires role admin, editor` only lets users with one of the listed roles call the endpoint; anyone else gets 403.
-- It needs `requires login`, and the roles must be declared on the `auth` line (RZ0332).
+- It needs `requires login` (RZ0318), and the roles must be declared on the `auth` line (RZ0332).
 - With `update` or `delete`, it lets those roles change any record.
 - A public endpoint can't update or delete such a model either: `requires owner` needs `requires login`.
 
 ### Rate limits
 
-Every endpoint is rate-limited. The default is **120 requests per minute**, counted per account for logged-in callers and per IP address otherwise. You can set your own limit:
+Every endpoint is rate-limited. The default is **120 requests per minute**, counted per account for logged-in callers and per IP address otherwise. Built-in `/auth` endpoints and pages also get 120 per minute per address. Only the page runtime's files (`/_rizo/…`) and the health check have no limit. You can set your own limit:
 
 ```rizo
 api POST /api/drafts -> Post.public {
@@ -360,7 +361,7 @@ api POST /api/drafts -> Post.public {
 ```
 
 - The number is 1 to 100,000, and the unit is `second`, `minute`, `hour` or `day`. One `limit` line per endpoint (RZ0222, RZ0339). There's no way to turn limits off.
-- Over the limit, the response is 429 with a `Retry-After` header. Every request counts, including rejected ones.
+- Over the limit, the response is 429 with a `Retry-After` header. On `api` endpoints, requests already refused as cross-site (403), with invalid query parameters (400) or without a needed login (401) don't count. On `/auth` endpoints and pages, every request to a known path counts.
 - Limits use a sliding window: requests from the previous window still count as they fade out, so there's no burst allowed at window edges.
 - Counters live in PostgreSQL (`_rizo_rate_limits`), so the limits hold when the app runs on several servers.
 - The table stores only hashes of IP addresses and account ids, never the values themselves, and old counters are deleted automatically.
@@ -381,11 +382,11 @@ The return line is `return db.<Model>.<action>(...)`. There are five actions. Ea
 - `field OP value`: filters, combined with AND.
   - `=` and `!=` work on every field type.
   - `<`, `<=`, `>` and `>=` work on Number and Date fields.
-  - `contains` works on Text and Email fields: a case-insensitive "includes" (`%` and `_` are plain characters). Its value comes from the request: `?q` or a path parameter.
+  - `contains` works on Text and Email fields: a case-insensitive "includes" (`%` and `_` are plain characters). Its value comes from the request: `?q` or a path parameter (read as plain text, not a full email address).
   - A value is `me`, a path parameter, a number, `true`, `false`, or a **query parameter** such as `?q`.
 - **Query parameters** (`?name`) let clients filter: `db.Post.list(title contains ?q, views >= ?minViews)` reads `/api/posts?q=rizo&minViews=10`.
-  - Each one is optional: when it is left out, its filter is skipped.
-  - Its value must fit the field's type (text up to 200 characters for `contains`), or the request answers 400 before any query runs. Unknown parameters also answer 400.
+  - Each one is optional: when it is left out or empty (`?q=`), its filter is skipped.
+  - Its value must fit the field's type (text up to 200 characters, or the field's own maximum when compared with `=`), or the request answers 400 before any query runs. Unknown parameters also answer 400.
   - A name can't be `limit` or `after`, can't also be a path parameter, and keeps one type wherever it is used.
   - When asking for the next page, send the same filters along with `after`.
   - Query parameters only filter lists, and `create` sets fields only with `=` (RZ0325).
@@ -400,7 +401,7 @@ Hidden fields (Password or `private`) cannot be used in filters or ordering.
 - Pages show the linked record's first public Text or Email field ("Ann") instead of its id.
 - Only public link fields of the returned model can be listed, each once, and only on `find` and `list` (RZ0343).
 
-**Indexes are automatic.** For every `list`, the compiler creates an index on its `=` filter fields, then its `<`/`>` fields, then its order field, then `id`, so each page (including "Load more") is read straight from the index instead of scanning the table. Migrations add and remove these indexes as your endpoints change. `contains` and `!=` can't use such an index, so on a large table combine them with an `=` filter, such as `author = me`.
+**Indexes are automatic.** For every `list`, the compiler creates an index on its `=` filter fields, then its order field (or, without one, its `<`/`>` fields), then `id`. Each page (including "Load more") is then read in order from the index instead of scanning the table; `<`/`>` filters on another field than the order narrow the rows as they are read. Migrations add and remove these indexes as your endpoints change. `contains` and `!=` can't use such an index, so on a large table combine them with an `=` filter, such as `author = me`. Text and Email fields that may be longer than 600 characters are not indexed (a longer value could overflow an index row), so give fields you filter or sort by a `max` of 600 or less.
 
 **Values** on the right of `=`:
 - `me`: the logged-in user. It only works with a link to the auth model, and is not allowed in public endpoints.
@@ -437,7 +438,7 @@ GET /posts?limit=10&after=WyJI...  →  { "items": [ ...the next posts... ], "ne
 - `after` is the `next` value from the previous page. `next` is `null` on the last page.
 - Pages continue exactly after the last record of the previous page, ordered by the sort field and then by `id`. Records added between requests can't cause records to be skipped or repeated.
 - Cursors are opaque. Clients must not build or change them. An invalid cursor is rejected with 400.
-- Endpoints accept no other query parameters. Any unknown or repeated parameter gets 400, on every endpoint.
+- Endpoints accept no other query parameters than `limit`, `after` and a list's own `?name` filters. Any unknown or repeated parameter gets 400, on every endpoint.
 
 ### 5.5 A complete example
 
@@ -505,7 +506,7 @@ page /posts/:id {
 | `public` or `requires login` | Who may see the page. Exactly one is required (RZ0333). `requires role admin` can be added after `requires login` |
 | `title "..."` | The page heading and browser title. The default comes from the path (`/blog-posts` → "Blog posts", `/` → "Home") |
 | `text "..."` | A paragraph |
-| `link "..." /path` | A link to another page in the file (or `/login` and `/signup` when there is an auth line) |
+| `link "..." /path` | A link to another page in the file, or to a built-in page (`/login`, `/signup`, `/account` and the others) when there is an auth line; `/privacy` also needs a `privacy for` line |
 | `show GET /api/...` | The data to show, from a GET endpoint in the file. At most one per page |
 | `form POST /api/...` | A form that creates a record (POST), or changes one (PUT or PATCH) |
 | `button "..." DELETE /api/...` | A button that deletes a record, after asking "are you sure?" |
@@ -538,7 +539,7 @@ page /posts/:id/delete {
 ```
 
 **Rules:**
-- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password`, `/confirm-email` and `/privacy` are reserved for the built-in pages.
+- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. With an auth line, `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password`, `/confirm-email` and `/privacy` are reserved for the built-in pages.
 - **Parameters:** a page's `:parameters` fill in the parameters of the endpoint it shows, by name. Every page parameter must be used (RZ0323).
 - **Never more open than its data (RZ0335):**
   - A page that uses (shows, or has a form or button for) a `requires login` endpoint must also `requires login`.
@@ -585,11 +586,11 @@ site "Rizo Blog" color teal logo "logo.png"
 - Pages contain no HTML and no code.
 - All text, both written in the file and coming from the database, is inserted as text and never interpreted as HTML. The runtime never uses `innerHTML`.
 - Links, redirects after a form, and `?next=` can only point to this site.
-- Pages are sent with a strict Content-Security-Policy that allows only the site's own script and stylesheet, and no inline scripts.
+- Pages are sent with a strict Content-Security-Policy that allows only the site's own script, stylesheet and images (the logo), and no inline scripts.
 
 ## 6. What the compiler generates
 
-`rizolang build app.rz` writes everything to `dist/`.
+`rizolang build app.rz` writes everything to `dist/` in the current folder (and migrations to `migrations/` there). `rizolang check app.rz` only checks the file, including its logo, and writes nothing.
 
 | File                 | Contents                                                                     |
 |----------------------|------------------------------------------------------------------------------|
@@ -605,7 +606,7 @@ site "Rizo Blog" color teal logo "logo.png"
 | `runtime/`           | The Rizo runtime: validation, sessions, password hashing and the HTTP server |
 | `package.json`, `tsconfig.json` | To install `pg` and type-check the app                            |
 
-`routes.ts`, `server.ts`, `runtime/`, `package.json` and `tsconfig.json` are written only when the file has an `auth` line or `api` blocks.
+Everything except `schema.sql` and `types.ts` (`routes.ts`, `server.ts`, `migrate.ts` and `migrations/`, `openapi.json`, `Dockerfile` and `.dockerignore`, `runtime/`, `package.json` and `tsconfig.json`) is written only when the file has an `auth` line, `api` blocks or `page` blocks.
 
 The three types:
 - `User` is the stored record. It is for server use only, and holds a `PasswordHash`.
@@ -614,8 +615,8 @@ The three types:
 
 ### openapi.json
 
-Every build writes `openapi.json`, generated from the same route data the server uses, and the server also serves it at `GET /_rizo/openapi.json`. Agents and tools can read it to call the API correctly the first time.
-- **Each endpoint:** its path parameters (`{id}`), `limit` and `after` for lists, the exact request body (with limits; unknown fields are refused), the response (`<Model>Public`: public fields only), and every error status with the `Error` shape.
+Every build of an app with a server writes `openapi.json`, generated from the same route data the server uses, and the server also serves it at `GET /_rizo/openapi.json`. Agents and tools can read it to call the API correctly the first time.
+- **Each endpoint:** its path parameters (`{id}`), `limit`, `after` and the `?name` filters for lists, the exact request body (with limits; unknown fields are refused), the response (`<Model>Public`: public fields only), and every error status with the `Error` shape.
 - **Security:** endpoints that need a login accept the `session` cookie or a `token` (bearer API token).
 - **Extensions:** `x-rizo-access` (`public` or `login`), `x-rizo-roles`, `x-rizo-owner` (`{ "field": "author", "orRoles": [...] }`) and `x-rizo-rate-limit` (`{ "requests", "perSeconds" }`).
 - Account endpoints under `/auth` are described in §4, not in `openapi.json`.
@@ -678,7 +679,7 @@ To start a brand-new database, `psql "$DATABASE_URL" -f schema.sql` works too. T
 | `RIZO_ALLOWED_ORIGINS`      | none        | Comma-separated extra origins allowed to send POST, PUT, PATCH or DELETE requests |
 | `RIZO_TRUST_PROXY`          | off         | `1` to read the client IP from `X-Forwarded-For` (only behind a trusted proxy) |
 | `RIZO_DEV_INSECURE_COOKIES` | off         | `1` to drop the `Secure` cookie flag for local http. **Never in production.** |
-| `RIZO_DB_POOL_SIZE`         | `10`        | Maximum number of database connections                     |
+| `RIZO_DB_POOL_SIZE`         | `10`        | Maximum number of database connections (1–1000)            |
 | `RIZO_DB_STATEMENT_TIMEOUT_MS` | `5000`   | Longest time one query may run (100–600000). Slower queries are cancelled and answered with 503 |
 | `RIZO_AUDIT_RETENTION_DAYS` | `365`       | How long security audit entries are kept (1–3650 days)     |
 | `RIZO_ADMIN_EMAILS`         | none        | Comma-separated emails of **existing** accounts to make admins at startup (§4.1) |
@@ -701,13 +702,14 @@ An app with an `auth` line refuses to start when the email settings are missing 
 ### HTTP behaviour
 
 - **Requests:**
-  - Only `list` endpoints accept query parameters (`limit` and `after`, §5.4). Any other query parameter gets 400.
+  - Only `list` endpoints accept query parameters: `limit`, `after` (§5.4) and their own `?name` filters (§5.3). Any other query parameter gets 400.
   - Bodies must be JSON (`Content-Type: application/json`) and at most 1 MB. Endpoints without `body` reject a request body.
   - Path parameters are validated by type. An invalid id gets 400 before any query runs.
 - **Responses** are JSON:
   - Errors look like `{ "error": { "code": "...", "message": "...", "field": "..." } }`.
-  - Status codes: 400 invalid input, 401 not logged in, 403 cross-site request or missing role, 429 too many requests (`Retry-After`), 503 server busy or query too slow (`Retry-After`), 404 not found, 405 wrong method, 409 duplicate or still in use, 413 too large, 415 not JSON, 429 too many attempts, 500 internal error (with a request id).
-  - Every response carries `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and a `Content-Security-Policy` that allows nothing.
+  - Status codes: 400 invalid input, 401 not logged in, 403 cross-site request or missing role, 429 too many requests or attempts (`Retry-After`), 503 server busy or query too slow (`Retry-After`), 404 not found, 405 wrong method, 409 duplicate or still in use, 413 too large, 415 not JSON, 500 internal error (with a request id).
+  - Every JSON response carries `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin` and a `Content-Security-Policy` that allows nothing (`openapi.json` uses `Cache-Control: no-cache`).
+  - Pages carry the page Content-Security-Policy (§5.6), the same `nosniff`, `X-Frame-Options`, `Referrer-Policy` and `no-store`, and `Cross-Origin-Opener-Policy: same-origin`. The runtime's files under `/_rizo/` are served with `nosniff`, `Cross-Origin-Resource-Policy: same-origin` and `Cache-Control: public, max-age=3600`.
 - **Cross-site requests:** POST, PUT, PATCH and DELETE requests are rejected with 403 when the browser marks them as coming from another site (`Sec-Fetch-Site` is not `same-origin` or `none`), or when their `Origin` is another site. `RIZO_ALLOWED_ORIGINS` lists exceptions.
 - **Password hashing** runs at most two at a time. If too many are waiting (a login flood), new requests get 503 with `Retry-After`, instead of slowing down every other request.
 - **Logs:** one line per request: the method, the route pattern (such as `/posts/:id`), the status, the time and a request id. Logs never contain URLs with values, bodies, cookies or passwords.
@@ -716,7 +718,7 @@ An app with an `auth` line refuses to start when the email settings are missing 
 
 ## 7. Security guarantees
 
-These are enforced by the compiler and the runtime, and covered by `tests/security.test.ts` and `tests/e2e.test.ts`:
+These are enforced by the compiler and the runtime, and each is covered by `tests/security.test.ts` (and, against a real database, `tests/e2e.test.ts`):
 
 1. A Password or `private` field never appears in a `.public` type or in any response.
 2. A Password is never stored in plain text.
@@ -725,7 +727,7 @@ These are enforced by the compiler and the runtime, and covered by `tests/securi
 5. A record's owner is always the logged-in user, and a user's role is only ever set by an admin. Neither is taken from the request body.
 6. All input is validated against the model before it reaches the database, and unknown fields are rejected.
 7. `GET` endpoints never change data. Cross-site writes are rejected.
-8. Every endpoint is rate-limited, with counters shared by all server processes. Login, signup and password checks have their own stricter limits. No database query runs longer than the statement timeout (5 seconds by default). Security events are recorded in an audit log that never contains secrets.
+8. Every endpoint, account endpoint and page is rate-limited, with counters shared by all server processes. Login, signup and password checks have their own stricter limits. No database query runs longer than the statement timeout (5 seconds by default). Security events are recorded in an audit log that never contains secrets.
 9. When there is any compile error, or a change would delete data without `--allow-data-loss`, no output is written.
 10. Pages contain no HTML or code. All text is inserted as text, links stay on the site, and pages are served with a strict Content-Security-Policy. A page is never more open than the data it shows.
 11. A passkey works only on the site that created it, only once per challenge, and only with the user verified. The server never stores a private key, and a copied passkey (counter going backwards) is refused.
@@ -748,6 +750,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 - The first line is always `<file>:<line>:<column> error <code>: <message>`. The `fix:` line says exactly what to change.
 - Syntax errors (RZ01xx, RZ02xx) stop at the first error. Checking errors (RZ03xx) are all reported together.
 - `rizolang` exits with 0 on success and 1 on any error.
+- **`rizolang check app.rz`** reports the same errors without writing anything, and exits with 0 when the file is valid. With `--json` it prints `{ "rizolang", "ok": true, "file", "models", "endpoints", "pages", "auth" }`, or the errors as below.
 - **`--json`** (`rizolang build app.rz --json`) prints one line of JSON to stdout instead, and nothing to stderr, for editors and AI agents. The exit codes are the same.
   - On failure: `{ "rizolang": "<version>", "ok": false, "errors": [{ "code", "message", "fix", "file", "line", "column", "length" }] }`. `line`, `column` and `length` are null for errors that aren't about a line of the file (such as a missing file). A refused data-loss build (RZ0904) also lists `dataLoss`.
   - On success: `{ "rizolang", "ok": true, "file", "models", "endpoints", "pages", "auth", "written": [...], "migration": { "file", "changes": [...] } or null, "dataLoss": [...] }`.
@@ -757,7 +760,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0101 | Unexpected character (semicolon, underscore, quote…)                    |
 | RZ0102 | Invalid number (decimal, too large, letters attached)                   |
 | RZ0103 | Invalid quoted text (not closed, bad escape, control character, too long) |
-| RZ0201 | Expected `model`, `auth` or `api` at the top level                      |
+| RZ0201 | Expected `model`, `auth`, `api`, `page`, `privacy` or `site` at the top level |
 | RZ0202 | Missing model name                                                      |
 | RZ0203 | Missing `{`                                                             |
 | RZ0204 | Expected a field name or `}`                                            |
@@ -828,7 +831,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0902 | Input file does not end in `.rz`                                        |
 | RZ0903 | Wrong command-line usage                                                |
 | RZ0904 | The change would delete data (needs `--allow-data-loss`)                |
-| RZ0905 | `migrations/rizo-schema.json` is missing or damaged                     |
+| RZ0905 | `migrations/rizo-schema.json` is missing or damaged, or a new migration file already exists |
 | RZ0906 | `rizolang dev` has no database (`DATABASE_URL` is not set), or can't install `pg` |
 | RZ0907 | `rizolang dev` was given a file with no server to run                   |
 | RZ0908 | The logo file can't be read, isn't a real PNG, JPEG or WebP image, or is over 256 KB |
@@ -998,7 +1001,7 @@ page /posts {
 
 ```ebnf
 file       = { model | auth | api | page | privacy | site } ;
-site       = "site" TEXT [ "color" NAME ] [ "logo" TEXT ] NEWLINE ;
+site       = "site" TEXT [ "color" NAME ] [ "logo" TEXT ] NEWLINE ;   (color and logo in either order)
 model      = "model" NAME "{" { field | keep } "}" ;
 keep       = "keep" INT ( "day" | "days" | "month" | "months" | "year" | "years" ) NEWLINE ;
 privacy    = "privacy" "for" REGION { "," REGION } NEWLINE ;
@@ -1010,7 +1013,8 @@ auth       = "auth" NAME "by" NAME [ "roles" NAME { "," NAME } ] NEWLINE ;
 api        = "api" METHOD PATH [ "->" rettype ] "{" { statement NEWLINE } "}" ;
 METHOD     = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" ;
 PATH       = "/" [ segment { "/" segment } ] ;
-segment    = LOWER { LOWER | DIGIT | "-" } | ":" NAME ;
+segment    = word { "-" word } | ":" NAME ;
+word       = ( LOWER | DIGIT ) { LOWER | DIGIT } ;
 rettype    = [ "list" ] NAME "." "public" [ "with" NAME { "," NAME } ] ;
 statement  = "public" | "requires" "login" | "requires" "role" NAME { "," NAME }
            | "limit" INT "per" ( "second" | "minute" | "hour" | "day" )

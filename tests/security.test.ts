@@ -521,3 +521,13 @@ model Like {
     expect(a?.account.deleteSql).toBe('DELETE FROM "users" WHERE "id" = $1');
   });
 });
+
+describe("security: list filters from query parameters", () => {
+  it("never puts a searched value into SQL, and searches without LIKE wildcards", () => {
+    const r = compileOk("model Note {\n  title: Text\n  n: Number\n}\napi GET /api/notes -> list Note.public {\n  public\n  return db.Note.list(title contains ?q, n >= ?min)\n}\n");
+    const route = buildApp(r.apis, r.auth).routes[0];
+    expect(route?.sql).toContain('strpos(lower("title"), lower($1::text)) > 0');
+    expect(route?.sql).not.toMatch(/LIKE|'%/i);
+    expect(route?.values.slice(0, 2)).toEqual([{ from: "query", name: "q" }, { from: "query", name: "min" }]);
+  });
+});

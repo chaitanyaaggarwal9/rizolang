@@ -123,6 +123,14 @@ function operation(api: ResolvedApi, route: Route, operationId: string): Record<
 
   const parameters: unknown[] = route.path.flatMap((part) =>
     "param" in part ? [{ name: part.param, in: "path", required: true, schema: paramSchema(part.kind) }] : []);
+  for (const qp of route.query ?? []) {
+    const uses = api.query.action === "list" ? api.query.filters.filter((f) => f.value.kind === "query" && f.value.name === qp.name) : [];
+    parameters.push({
+      name: qp.name, in: "query", required: false,
+      description: `Optional filter: ${uses.map((f) => `${f.field.name} ${f.op} ${qp.name}`).join(", ")}. Left out, the filter is skipped.`,
+      schema: qp.kind === "Text" ? { type: "string", minLength: 1, maxLength: 200 } : kindSchema(qp.kind, false),
+    });
+  }
   if (route.page !== null) {
     parameters.push(
       { name: "limit", in: "query", required: false, description: `Page size (default and maximum ${route.page.max}).`, schema: { type: "integer", minimum: 1, maximum: route.page.max } },

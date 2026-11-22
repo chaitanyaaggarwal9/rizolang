@@ -24,7 +24,7 @@ import { PasskeyError, SUPPORTED_ALGORITHMS, verifyAssertion, verifyRegistration
 import { IDLE_SECONDS, MAX_SECONDS, SQL, clearedCookie, deviceLabel, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
 import { PAGE_HEADERS, asset, renderMessage, renderPage } from "./pages.ts";
 import type { App, EncryptedField, FieldKind, FieldSpec, PageRoute, PathPart, Route, ValueSource } from "./types.ts";
-import { validateBody, validatePathParam, validateValue } from "./validate.ts";
+import { validateBody, validatePathParam, validateQueryParam, validateValue } from "./validate.ts";
 
 export interface QueryResult {
   readonly rows: readonly Record<string, unknown>[];
@@ -124,6 +124,8 @@ const AUTH_ROUTES: readonly AuthRoute[] = [
 const CHECK_EMAIL = { message: "Check your email for a link." };
 
 interface Page {
+  /** Validated query parameters of the list's filters (`?q`); missing ones are absent. */
+  readonly filters: ReadonlyMap<string, unknown>;
   readonly limit: number;
   readonly cursor?: { readonly value?: string; readonly id: string };
 }
@@ -479,16 +481,25 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
    * `limit` and `after`; anything else is rejected.
    */
   function readPage(route: Route, search: URLSearchParams): Page | undefined {
-    const allowed = route.page === null ? [] : ["limit", "after"];
+    const declared = route.query ?? [];
+    const allowed = route.page === null ? [] : ["limit", "after", ...declared.map((x) => x.name)];
     for (const key of new Set(search.keys())) {
       const shown = key.length > 50 ? `${key.slice(0, 50)}…` : key;
       if (!allowed.includes(key)) {
         throw new HttpError(400, "unknown_parameter",
-          allowed.length > 0 ? `Unknown query parameter "${shown}". Allowed: limit, after.` : `This endpoint takes no query parameters (got "${shown}").`, shown);
+          allowed.length > 0 ? `Unknown query parameter "${shown}". Allowed: ${allowed.join(", ")}.` : `This endpoint takes no query parameters (got "${shown}").`, shown);
       }
       if (search.getAll(key).length > 1) throw new HttpError(400, "unknown_parameter", `Query parameter "${key}" appears more than once.`, key);
     }
     if (route.page === null) return undefined;
+    const filters = new Map<string, unknown>();
+    for (const param of declared) {
+      const raw = search.get(param.name);
+      if (raw === null) continue;
+      const v = validateQueryParam(param.name, param.kind, raw);
+      if (!("value" in v)) throw new HttpError(400, "invalid_parameter", v.error, param.name);
+      filters.set(param.name, v.value);
+    }
     const max = route.page.max;
     const rawLimit = search.get("limit");
     let limit = max;
@@ -497,10 +508,10 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       if (limit < 1 || limit > max) throw new HttpError(400, "invalid_parameter", `limit must be a whole number from 1 to ${max}.`, "limit");
     }
     const rawAfter = search.get("after");
-    if (rawAfter === null) return { limit };
+    if (rawAfter === null) return { limit, filters };
     const cursor = decodeCursor(rawAfter, route.page.order);
     if (cursor === undefined) throw new HttpError(400, "invalid_parameter", "after is not a valid cursor. Use the next value from the previous page.", "after");
-    return { limit, cursor };
+    return { limit, cursor, filters };
   }
 
   /** The role of a user, or null. Read from the database on every request, so changes apply at once. */
@@ -560,6 +571,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         case "cursorValue": return page?.cursor?.value ?? null;
         case "cursorId": return page?.cursor?.id ?? null;
         case "pageLimit": return (page?.limit ?? 0) + 1;
+        case "query": return page?.filters.get(s.name) ?? null;
       }
     });
   }

@@ -119,15 +119,20 @@ export interface Query {
 export type QueryArg =
   /** A bare name: a path parameter (`id`) or `body`. */
   | { readonly kind: "name"; readonly name: string; readonly span: Span }
-  /** `field = value` */
-  | { readonly kind: "assign"; readonly field: string; readonly fieldSpan: Span; readonly value: Value; readonly span: Span }
+  /** `field = value`, or in a list `field > value`, `field contains ?q` and so on */
+  | { readonly kind: "assign"; readonly field: string; readonly fieldSpan: Span; readonly op: CompareOp; readonly opSpan: Span; readonly value: Value; readonly span: Span }
   /** `order field` or `order field desc` */
   | { readonly kind: "order"; readonly field: string; readonly fieldSpan: Span; readonly descending: boolean; readonly span: Span }
   /** `limit 20` */
   | { readonly kind: "limit"; readonly value: number; readonly valueSpan: Span; readonly span: Span };
 
+/** How a list filter compares a field with a value. */
+export type CompareOp = "=" | "!=" | "<" | "<=" | ">" | ">=" | "contains";
+
 export type Value =
   | { readonly kind: "name"; readonly name: string; readonly span: Span }
+  /** `?q`: an optional query parameter of a list endpoint (`/api/posts?q=...`). */
+  | { readonly kind: "query"; readonly name: string; readonly span: Span }
   | { readonly kind: "int"; readonly value: number; readonly span: Span }
   | { readonly kind: "bool"; readonly value: boolean; readonly span: Span };
 

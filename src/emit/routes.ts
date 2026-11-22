@@ -377,6 +377,22 @@ const CURSOR_CAST: Readonly<Record<FieldTypeName, string>> = {
   Text: "text", Email: "text", Number: "integer", Bool: "boolean", Date: "timestamptz", ID: "uuid", Password: "text",
 };
 
+/**
+ * One list filter. A query parameter (`?q`) is optional: when it is missing
+ * (null), the filter is skipped. `contains` uses strpos, so % and _ in the
+ * search are plain characters.
+ */
+function filterSql(fv: FieldValue, p: Params): string {
+  const col = q(fv.field.column);
+  const ref = fv.value.kind === "query"
+    ? `${p.add({ from: "query", name: fv.value.name })}::${fv.op === "contains" ? "text" : CURSOR_CAST[fv.field.type]}`
+    : p.value(fv.value);
+  const test = fv.op === "contains"
+    ? `strpos(lower(${col}), lower(${ref})) > 0`
+    : fv.op === "!=" ? `${col} IS DISTINCT FROM ${ref}` : `${col} ${fv.op} ${ref}`;
+  return fv.value.kind === "query" ? `(${ref} IS NULL OR ${test})` : test;
+}
+
 class Params {
   readonly values: ValueSource[] = [];
   add(source: ValueSource): string {
@@ -387,6 +403,7 @@ class Params {
     switch (v.kind) {
       case "me": return this.add({ from: "me" });
       case "param": return this.add({ from: "path", name: v.name });
+      case "query": return this.add({ from: "query", name: v.name });
       default: return this.add({ from: "const", value: v.value });
     }
   }
@@ -420,6 +437,7 @@ function route(api: ResolvedApi): Route {
   let sql: string;
   let body: FieldSpec[] | null = null;
   let page: Route["page"] = null;
+  let queryList: Route["query"] | undefined;
   let result: Route["result"];
   switch (query.action) {
     case "find":
@@ -433,7 +451,7 @@ function route(api: ResolvedApi): Route {
     case "list": {
       // Keyset pagination: rows come in a fixed order (sort column, then id),
       // and `?after=<cursor>` continues after the last row of the previous page.
-      const where = query.filters.map((fv: FieldValue) => `${q(fv.field.column)} = ${p.value(fv.value)}`);
+      const where = query.filters.map((fv: FieldValue) => filterSql(fv, p));
       const of = query.order.field;
       const dir = query.order.descending ? "DESC" : "ASC";
       const cmp = query.order.descending ? "<" : ">";
@@ -453,6 +471,7 @@ function route(api: ResolvedApi): Route {
       }
       sql = `SELECT ${select.sql}${cursorSelect} FROM ${table} WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ${p.add({ from: "pageLimit" })}`;
       page = { max: query.limit, order: of === undefined ? null : of.type };
+      if (query.queryParams.length > 0) queryList = query.queryParams.map((x) => ({ name: x.name, kind: x.type }));
       result = "list";
       break;
     }
@@ -499,6 +518,7 @@ function route(api: ResolvedApi): Route {
     page,
     publicKeys: select.keys,
     model: model.name,
+    ...(queryList !== undefined ? { query: queryList } : {}),
     ...(encryptedFields(model).length > 0 ? { encrypted: encryptedFields(model) } : {}),
   };
 }

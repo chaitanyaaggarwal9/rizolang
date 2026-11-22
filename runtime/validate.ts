@@ -131,3 +131,21 @@ export function validatePathParam(part: Extract<PathPart, { param: string }>, ra
       return validateValue({ key, kind: part.kind }, raw);
   }
 }
+
+/** Longest value of a text query parameter (a search). */
+export const MAX_QUERY_TEXT = 200;
+
+/** Validate an optional query parameter of a list endpoint (`?q=...`). */
+export function validateQueryParam(name: string, kind: "ID" | "Number" | "Bool" | "Text" | "Email" | "Date", raw: string): { value: unknown } | { error: string } {
+  switch (kind) {
+    case "Number":
+      if (!/^-?\d{1,10}$/.test(raw)) return { error: `${name} must be a whole number.` };
+      return validateValue({ key: name, kind: "Number" }, Number(raw));
+    case "Bool":
+      return raw === "true" || raw === "false" ? { value: raw === "true" } : { error: `${name} must be true or false.` };
+    case "Text":
+      return validateValue({ key: name, kind: "Text", min: 1, max: MAX_QUERY_TEXT }, raw);
+    default:
+      return validateValue({ key: name, kind }, raw);
+  }
+}

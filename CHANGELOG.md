@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Edit forms (PATCH) now send only the fields that changed, so a private field that isn't shown is never cleared. Built-in edit forms stay on the page after saving, with a "saved" message.
   - `/confirm-email` is now a reserved page path.
 
+- Milestone 9, part 3: more list filters.
+  - Besides `=`, list filters can use `!=`, `<`, `<=`, `>`, `>=` (Number and Date fields) and `contains` (Text and Email: case-insensitive, with `%` and `_` as plain characters).
+  - `?name` is an optional query parameter: `db.Post.list(title contains ?q, views >= ?minViews)` reads `/api/posts?q=...&minViews=...`, skipping each filter that is left out. Values are validated against the field's type before any query runs, and are always SQL parameters. `openapi.json` lists them.
+  - Automatic indexes put `=` columns first, then range columns, then the sort column.
+
 ### Changed
 
 - The compact spec is shorter (about 1,300 words instead of 1,480), with the same rules, so there is room for new features under its 1,500-word limit.

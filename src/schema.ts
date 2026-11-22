@@ -325,8 +325,13 @@ function listIndexes(model: ResolvedModel, apis: readonly ResolvedApi[]): Index[
   for (const api of apis) {
     const q = api.query;
     if (q.action !== "list" || q.model !== model) continue;
-    const filters = q.filters.map((f) => f.field.column).sort();
-    const columns = [...filters, ...(q.order.field === undefined ? [] : [q.order.field.column]), "id"];
+    // Equality first, then ranges, then the sort column: the order a B-tree index can use them in.
+    // contains and != can't use a plain index, so they are left out.
+    const equal = [...new Set(q.filters.filter((f) => f.op === "=").map((f) => f.field.column))].sort();
+    const ranges = [...new Set(q.filters.filter((f) => ["<", "<=", ">", ">="].includes(f.op)).map((f) => f.field.column))].sort()
+      .filter((c) => !equal.includes(c));
+    const order = q.order.field === undefined ? [] : [q.order.field.column].filter((c) => !equal.includes(c) && !ranges.includes(c));
+    const columns = [...equal, ...ranges, ...order, "id"];
     if (columns.length === 1) continue; // only id: the primary key already covers it
     const key = columns.join(",");
     if (!out.has(key)) out.set(key, { name: constraintName(model.table, columns.join("_"), "idx"), columns });

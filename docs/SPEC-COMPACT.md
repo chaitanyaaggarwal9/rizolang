@@ -105,7 +105,7 @@ api METHOD /path/:param -> Model.public {
 | `db.M.update(id, body)`         | PUT or PATCH | changed record or 404 |
 | `db.M.delete(id)`               | DELETE       | 204 or 404         |
 
-- Filters are `field = value`. A value is `me`, a path parameter, a number, `true` or `false`.
+- Filters are `field = value`, also `!=`, `<`, `<=`, `>`, `>=` (Number, Date) and `contains` (Text). A value is `me`, a path parameter, a number, `true`, `false` or `?name`, an optional query parameter: `title contains ?q` reads `?q=...` and is skipped when left out.
 - `body` is the validated JSON request body.
 - `list` returns pages: clients call `?limit=10`, then `?after=<next>`. You can't order by an optional field.
 - A link to the auth model must be set with `= me` in create, and is never taken from body.

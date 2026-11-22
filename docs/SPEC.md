@@ -582,6 +582,7 @@ page /posts/:id/delete {
 | `runtime/pages.ts`, `runtime/client/` | Serves pages, plus the browser runtime and default styles (§5.6) |
 | `migrate.ts`, `migrations/` | Applies the migrations from your project's `migrations/` folder (§6, Migrations) |
 | `server.ts`          | The entry point                                                              |
+| `Dockerfile`, `.dockerignore` | A container image for the app (see "Deploying") |
 | `openapi.json`       | OpenAPI 3.1 description of every endpoint, also served at `/_rizo/openapi.json` (see below) |
 | `reencrypt.ts`       | Only with `encrypted` fields: moves stored values to the current key (§3.2) |
 | `runtime/`           | The Rizo runtime: validation, sessions, password hashing and the HTTP server |
@@ -672,6 +673,13 @@ To start a brand-new database, `psql "$DATABASE_URL" -f schema.sql` works too. T
 | `RIZO_EMAIL_DEV`            | off         | `1` to print emails to the console instead of sending them (then the key and sender aren't needed). **Never in production** |
 
 An app with an `auth` line refuses to start when the email settings are missing or invalid, and says which one to fix.
+
+### Deploying
+
+- **Docker:** `docker build -t my-app dist` builds an image from the generated `Dockerfile`: Node.js 24 on Alpine, only `pg` installed, running as the non-root `node` user, listening on `0.0.0.0:3000`. Apply migrations with `docker run --rm -e DATABASE_URL=... my-app node migrate.ts`, then run it with the settings above. `.dockerignore` keeps `node_modules` and local secrets out.
+- **Health check:** `GET /_rizo/health` answers `{"status":"ok"}` when the database answers within 2 seconds, and 503 `{"status":"unavailable"}` otherwise or while shutting down. It says nothing else about the app. The Dockerfile's `HEALTHCHECK` uses it; point your platform's health check at it too.
+- **Graceful shutdown:** on SIGTERM or SIGINT (for example `docker stop`), the server stops taking connections, lets requests in progress finish for up to 10 seconds, closes the database pool and exits.
+- Behind a proxy or load balancer, set `RIZO_TRUST_PROXY=1` so rate limits and logs see the real client address.
 
 ### HTTP behaviour
 

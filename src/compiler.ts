@@ -3,7 +3,7 @@ import type { ResolvedPage } from "./check-page.js";
 import { type PrivacyRegion, type ResolvedModel, check } from "./checker.js";
 import { type Diagnostic, diagnostic, sourceLines } from "./diagnostics.js";
 import { emitOpenApi } from "./emit/openapi.js";
-import { emitMigrate, emitPackageJson, emitReencrypt, emitRoutes, emitServer, emitTsconfig } from "./emit/routes.js";
+import { emitDockerfile, emitDockerignore, emitMigrate, emitPackageJson, emitReencrypt, emitRoutes, emitServer, emitTsconfig } from "./emit/routes.js";
 import { emitSql } from "./emit/sql.js";
 import { emitTypeScript } from "./emit/typescript.js";
 import { lex } from "./lexer.js";
@@ -23,6 +23,8 @@ export interface ServerOutput {
   readonly migrate: string;
   /** OpenAPI 3.1 description of the endpoints. */
   readonly openapi: string;
+  readonly dockerfile: string;
+  readonly dockerignore: string;
   /** Only for apps with encrypted fields. */
   readonly reencrypt?: string;
 }
@@ -87,6 +89,8 @@ export function compile(source: string, file: string): CompileResult {
             server: emitServer(label),
             packageJson: emitPackageJson(),
             tsconfig: emitTsconfig(),
+            dockerfile: emitDockerfile(label),
+            dockerignore: emitDockerignore(),
             migrate: emitMigrate(label),
             openapi: emitOpenApi(apis, auth, label),
             ...(models.some((m) => m.fields.some((f) => f.encrypted)) ? { reencrypt: emitReencrypt(label) } : {}),

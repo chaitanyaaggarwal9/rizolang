@@ -24,6 +24,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Saving the `.rz` file rebuilds, migrates and restarts. If the file has errors, they are printed and the running server keeps going. It announces the address only once the server accepts connections. Data-loss changes still need `--allow-data-loss`. Ctrl+C stops everything.
   - New CLI errors RZ0906 (no `DATABASE_URL`) and RZ0907 (nothing to run).
 
+- Milestone 9, part 5: deployment basics.
+  - `GET /_rizo/health` answers `{"status":"ok"}` when the database answers within 2 seconds, and 503 otherwise or while shutting down, without revealing anything else.
+  - Graceful shutdown: on SIGTERM or SIGINT, the server stops taking connections, lets requests in progress finish for up to 10 seconds, closes the database pool and exits.
+  - Every build writes `dist/Dockerfile` and `.dockerignore`: Node.js 24 on Alpine, only `pg` installed, a non-root user, `0.0.0.0:3000`, and a `HEALTHCHECK` on `/_rizo/health`.
+
 ### Changed
 
 - The compact spec is shorter (about 1,300 words instead of 1,480), with the same rules, so there is room for new features under its 1,500-word limit.

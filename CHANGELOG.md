@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- The compact spec is shorter (about 1,300 words instead of 1,480), with the same rules, so there is room for new features under its 1,500-word limit.
+
 ## [0.5.0] - 2026-11-21
 
 Milestones 5 to 8: hardening, accounts, tools for AI agents, and privacy rules for the regions you declare.

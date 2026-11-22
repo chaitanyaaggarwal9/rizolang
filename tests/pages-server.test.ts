@@ -41,10 +41,10 @@ page /mine {
   requires login
   title "Mine"
 }
-page /admin {
+page /staff {
   requires login
   requires role admin
-  title "Admin"
+  title "Staff"
 }
 `;
 
@@ -131,10 +131,10 @@ describe("serving pages", () => {
     expect(r.status).toBe(302);
     expect(r.headers.get("location")).toBe("/login?next=%2Fmine");
     expect((await fetch(`${base}/mine`, loggedIn)).status).toBe(200);
-    expect((await fetch(`${base}/admin`, loggedIn)).status).toBe(403);
+    expect((await fetch(`${base}/staff`, loggedIn)).status).toBe(403);
     server?.close();
     const adminBase = await start("admin");
-    expect((await fetch(`${adminBase}/admin`, loggedIn)).status).toBe(200);
+    expect((await fetch(`${adminBase}/staff`, loggedIn)).status).toBe(200);
   });
 
   it("adds the built-in login and signup pages, with their forms", async () => {

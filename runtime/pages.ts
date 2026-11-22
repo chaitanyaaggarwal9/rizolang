@@ -101,8 +101,8 @@ function shell(title: string, body: string, site?: SiteSpec): string {
 }
 
 /** A page: the client runtime renders it from the JSON data block. */
-export function renderPage(page: PageRoute, params: Readonly<Record<string, string>>, loggedIn: boolean, hasAuth: boolean, hasPrivacy = false, site?: SiteSpec): string {
-  const data = { title: page.title, items: page.items, params, loggedIn, auth: hasAuth, privacy: hasPrivacy, ...(site !== undefined ? { site: { name: site.name, ...(site.logo !== undefined ? { logo: site.logo } : {}) } } : {}) };
+export function renderPage(page: PageRoute, params: Readonly<Record<string, string>>, loggedIn: boolean, hasAuth: boolean, hasPrivacy = false, site?: SiteSpec, admin = false): string {
+  const data = { title: page.title, items: page.items, params, loggedIn, auth: hasAuth, privacy: hasPrivacy, ...(admin ? { admin: true } : {}), ...(site !== undefined ? { site: { name: site.name, ...(site.logo !== undefined ? { logo: site.logo } : {}) } } : {}) };
   return shell(
     page.title,
     [

@@ -323,6 +323,45 @@ api GET /users/:id -> User.public {
   });
 });
 
+describe("security: built-in admin pages", () => {
+  const source = `auth User by email roles admin
+model User {
+  email: Email unique private
+  password: Password
+  name: Text
+  phone: Text optional encrypted
+}
+model Post {
+  author: User
+  title: Text
+  secretNote: Text private
+}`;
+  const r = compileOk(source);
+  const app = buildApp(r.apis, r.auth, r.pages, r.models);
+
+  it("never selects or returns password or private fields (SPEC §7.1), and searches neither them nor encrypted ones", () => {
+    expect(app.admin).toHaveLength(2);
+    for (const m of app.admin ?? []) {
+      const selected = m.listSql.split(" FROM ")[0] ?? "";
+      expect(selected).not.toMatch(/password_hash|"email"|secret_note/);
+      expect(m.publicKeys).not.toContain("password");
+      expect(m.publicKeys).not.toContain("email");
+      expect(m.publicKeys).not.toContain("secretNote");
+      expect(m.listSql).not.toMatch(/lower\("(email|secret_note|phone|password_hash)"\)/);
+      // Values are only parameters: the search text, the cursor and the page size.
+      expect(m.listSql.match(/\$\d/g)?.every((p) => ["$1", "$2", "$3"].includes(p))).toBe(true);
+      expect(m.deleteSql).toMatch(/^DELETE FROM "[a-z_]+" WHERE "id" = \$1$/);
+    }
+  });
+
+  it("are admins only, and are served under /auth, which API tokens can never use (SPEC §7.14)", () => {
+    const withPages = compileOk(`${source}\napi GET /api/posts -> list Post.public {\n  public\n  return db.Post.list()\n}\npage / {\n  public\n  show GET /api/posts\n}`);
+    const pages = buildApp(withPages.apis, withPages.auth, withPages.pages, withPages.models).pages.filter((p) => p.pattern.startsWith("/admin"));
+    expect(pages.length).toBe(3);
+    for (const p of pages) expect(p).toMatchObject({ access: "login", roles: ["admin"] });
+  });
+});
+
 describe("security: passkeys", () => {
   const SITE = { rpId: "blog.example", origin: "https://blog.example" };
   const fresh = () => Buffer.from(randomBytes(32)).toString("base64url");

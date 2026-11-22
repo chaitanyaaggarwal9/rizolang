@@ -23,7 +23,7 @@ import { MAX_TOKENS, MAX_TOKEN_DAYS, TOKEN_SQL, agentTokenHash, newAgentToken, p
 import { PasskeyError, SUPPORTED_ALGORITHMS, verifyAssertion, verifyRegistration } from "./webauthn.ts";
 import { IDLE_SECONDS, MAX_SECONDS, SQL, clearedCookie, deviceLabel, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
 import { PAGE_HEADERS, asset, renderMessage, renderPage } from "./pages.ts";
-import type { App, EncryptedField, FieldKind, FieldSpec, PageRoute, PathPart, Route, ValueSource } from "./types.ts";
+import type { AdminModel, App, EncryptedField, FieldKind, FieldSpec, PageRoute, PathPart, Route, ValueSource } from "./types.ts";
 import { validateBody, validatePathParam, validateQueryParam, validateValue } from "./validate.ts";
 
 export interface QueryResult {
@@ -131,6 +131,9 @@ interface Page {
   readonly limit: number;
   readonly cursor?: { readonly value?: string; readonly id: string };
 }
+
+/** Records per page on the admin pages. */
+const ADMIN_PAGE = 50;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_CURSOR = 2048;
@@ -404,13 +407,13 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       }
       return html(401, renderMessage("Please log in", "You need to log in to see this page.", app.site));
     }
-    if (page.roles.length > 0) {
-      const role = me === undefined ? null : await roleOf(me);
-      if (role === null || !page.roles.includes(role)) {
-        return html(403, renderMessage("Not allowed", "You don't have permission to see this page.", app.site));
-      }
+    const role = me !== undefined && (page.roles.length > 0 || app.admin !== undefined) ? await roleOf(me) : null;
+    if (page.roles.length > 0 && (role === null || !page.roles.includes(role))) {
+      return html(403, renderMessage("Not allowed", "You don't have permission to see this page.", app.site));
     }
-    return html(200, renderPage(page, params, me !== undefined, app.auth !== null, app.privacy !== undefined, app.site));
+    // Admins see a link to the admin pages in the menu.
+    const admin = app.admin !== undefined && role === "admin" && app.pages.some((p) => p.pattern === "/admin");
+    return html(200, renderPage(page, params, me !== undefined, app.auth !== null, app.privacy !== undefined, app.site, admin));
   }
 
   function match(method: string, pathname: string): Matched {
@@ -1038,6 +1041,81 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     throw new HttpError(404, "not_found", "No endpoint matches this path.");
   }
 
+  /**
+   * The built-in admin endpoints, admins only (session cookie, never API tokens):
+   * GET /auth/admin/<slug>?q=&after= lists records (public fields, 50 at a time),
+   * and DELETE /auth/admin/<slug>/:id deletes one. Deleting an account works as
+   * DELETE /auth/me does, but never your own account or another admin's.
+   */
+  async function adminRecords(req: IncomingMessage, res: ServerResponse, method: string, model: AdminModel, rawId: string | undefined): Promise<number> {
+    const auth = app.auth;
+    if (auth === null) throw new HttpError(404, "not_found", "No endpoint matches this path.");
+    const allowed = rawId === undefined ? "GET" : "DELETE";
+    if (method !== allowed) throw new HttpError(405, "method_not_allowed", `This path does not support ${method}.`, undefined, { Allow: allowed });
+    checkOrigin(req, method);
+    const me = await requireUser(req);
+    if ((await roleOf(me)) !== "admin") throw new HttpError(403, "forbidden", "You do not have permission to do this.");
+    if (hasBody(req)) throw new HttpError(400, "unexpected_body", "This endpoint does not accept a request body.");
+
+    if (rawId === undefined) {
+      const search = new URL(req.url ?? "/", "http://localhost").searchParams;
+      for (const key of new Set(search.keys())) {
+        if (key !== "q" && key !== "after") throw new HttpError(400, "unknown_parameter", "Allowed query parameters: q, after.", key.slice(0, 50));
+        if (search.getAll(key).length > 1) throw new HttpError(400, "unknown_parameter", `Query parameter "${key}" appears more than once.`, key);
+      }
+      const rawQ = search.get("q");
+      let q: unknown = null;
+      if (rawQ !== null && rawQ !== "") {
+        const v = validateQueryParam("q", "Text", rawQ);
+        if (!("value" in v)) throw new HttpError(400, "invalid_parameter", v.error, "q");
+        q = v.value;
+      }
+      const rawAfter = search.get("after");
+      const after = rawAfter === null ? undefined : decodeCursor(rawAfter, null);
+      if (rawAfter !== null && after === undefined) throw new HttpError(400, "invalid_parameter", "after is not a valid cursor. Use the next value from the previous page.", "after");
+      const r = await run(model.listSql, [q, after?.id ?? null, ADMIN_PAGE + 1], model.name);
+      const rows = r.rows.slice(0, ADMIN_PAGE);
+      const last = rows[rows.length - 1];
+      const next = r.rows.length > ADMIN_PAGE && last !== undefined ? encodeCursor([String(last["id"])]) : null;
+      return send(res, 200, { items: rows.map((row) => reveal(row, model.publicKeys, model.encrypted)), next });
+    }
+
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(rawId);
+    } catch {
+      throw new HttpError(400, "bad_path", "The URL path is not valid.");
+    }
+    const parsed = validatePathParam({ param: "id", kind: "ID" }, decoded);
+    if ("error" in parsed) throw new HttpError(400, "invalid_parameter", parsed.error, "id");
+    const id = String(parsed.value);
+    const ip = clientIp(req);
+    if (!model.account) {
+      const r = await run(model.deleteSql, [id], model.name);
+      if ((r.rowCount ?? 0) === 0) throw new HttpError(404, "not_found", `${model.name} not found.`);
+      await audit.record({ action: "record_deleted", userId: me, targetId: id, ip, detail: model.name });
+    } else {
+      if (id === me) throw new HttpError(403, "forbidden", "You cannot delete your own account here. Use the account page.");
+      if ((await roleOf(id)) === "admin") throw new HttpError(403, "forbidden", "Admins can't be deleted here. Remove their admin role first.");
+      const ghost = auth.account.ghost === null ? undefined : await deletedUser();
+      if (ghost === id) throw new HttpError(409, "in_use", "This account can't be deleted.");
+      let r: QueryResult;
+      try {
+        // As with DELETE /auth/me: records that must have an owner go to "Deleted user" in the same statement.
+        r = await run(auth.account.deleteSql, ghost === undefined ? [id] : [id, ghost], auth.model);
+      } catch (e) {
+        if (e instanceof HttpError && e.code === "in_use") {
+          throw new HttpError(409, "in_use", "This account still owns records that can't be kept without it. Delete them first, then delete the account.");
+        }
+        throw e;
+      }
+      if ((r.rowCount ?? 0) === 0) throw new HttpError(404, "not_found", `${model.name} not found.`);
+      await audit.record({ action: "account_deleted", userId: me, targetId: id, ip, detail: "admin" });
+    }
+    res.writeHead(204, SECURITY_HEADERS).end();
+    return 204;
+  }
+
   /** PUT /auth/users/:id/role, admins only. Body: { "role": "<role>" } or { "role": null }. */
   async function setRole(req: IncomingMessage, res: ServerResponse, method: string, rawId: string): Promise<number> {
     const auth = app.auth;
@@ -1091,14 +1169,18 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     if (auth === null) throw new HttpError(404, "not_found", "No endpoint matches this path.");
     // Every account endpoint has the default limit per address, on top of its own stricter ones.
     // The counter is per route (ids replaced by :id); unknown paths answer 404 without one.
+    const adminPath = /^\/auth\/admin\/([a-z0-9-]+)(?:\/([^/]+))?$/.exec(path);
+    const adminModel = adminPath === null ? undefined : app.admin?.find((m) => m.slug === adminPath[1]);
     const route = /^\/auth\/users\/[^/]+\/role$/.test(path) ? "/auth/users/:id/role"
       : /^\/auth\/(tokens|sessions|passkeys)\/[^/]+$/.test(path) ? path.replace(/\/[^/]+$/, "/:id")
+      : adminModel !== undefined ? `/auth/admin/${adminModel.slug}${adminPath?.[2] !== undefined ? "/:id" : ""}`
       : AUTH_ROUTES.some((r) => r.path === path) || path === "/auth/passkeys" ? path
       : undefined;
     if (route === undefined) throw new HttpError(404, "not_found", "No endpoint matches this path.");
     const authGate = await limited(() => limits.consume(limitKey(`auth ${method} ${route}`, clientIp(req)), DEFAULT_RATE, 60));
     if (!authGate.allowed) throw tooMany(authGate.retryAfter, `Too many requests. Try again in ${authGate.retryAfter} seconds.`);
     if (path === "/auth/passkeys" || path.startsWith("/auth/passkeys/")) return passkeys(req, res, path, method);
+    if (adminModel !== undefined) return adminRecords(req, res, method, adminModel, adminPath?.[2]);
     const tokenRoute = /^\/auth\/tokens\/([^/]+)$/.exec(path);
     if (tokenRoute !== null) return revokeToken(req, res, method, tokenRoute[1] ?? "");
     const sessionRoute = /^\/auth\/sessions\/([^/]+)$/.exec(path);

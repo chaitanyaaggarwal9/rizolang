@@ -71,13 +71,13 @@ A field named `password` (or ending in `Password`) must have the type `Password`
 
 ## auth
 
-`auth User by email` turns on accounts. User needs `email: Email unique` and one required `Password` field; a link from User to User must be optional. Everything account-related is built in under `/auth`: signup with email confirmation, login, logout, password reset, profile (`PATCH /auth/me`), email and password changes, sessions and devices, data export and account deletion. Never write your own login or account endpoints. Scripts and AI agents use API tokens (`Authorization: Bearer rzt_...`) limited to chosen endpoints.
+`auth User by email` turns on accounts. User needs `email: Email unique` and one required `Password` field; a link from User to User must be optional. Everything account-related is built in under `/auth`: signup with email confirmation, login, logout, password reset, profile (`PATCH /auth/me`), email and password changes, devices, data export and deletion. Never write your own login or account endpoints. Scripts and AI agents use API tokens (`Authorization: Bearer rzt_...`) limited to chosen endpoints.
 
-Roles: `auth User by email roles admin, editor` (must include admin). Admins assign roles with `PUT /auth/users/:id/role`. Never add a `role` field yourself; it is hidden and never comes from request bodies.
+Roles: `auth User by email roles admin, editor` (must include admin). Admins assign roles with `PUT /auth/users/:id/role` and get built-in `/admin` pages; never use `/admin` paths. Never add a `role` field; it is hidden.
 
 ## privacy
 
-`privacy for EU, UK, IN, US-CA, BR` (one line, needs auth) names the regions served and publishes a /privacy page. In a model, a line `keep 2 years` (or days, months) deletes records that long after creation; not on the auth model, and the file needs auth, api or page. Use it for data such as messages or logs.
+`privacy for EU, UK, IN, US-CA, BR` (one line, needs auth) names the regions served and publishes a /privacy page. In a model, a line `keep 2 years` (or days, months) deletes records that long after creation; not on the auth model, and the file needs auth, api or page. Use it for messages or logs.
 
 ## api
 

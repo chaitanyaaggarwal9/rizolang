@@ -174,7 +174,8 @@ a.rizo-card:hover {
 }
 
 .rizo-form input:not([type="checkbox"]),
-.rizo-form textarea {
+.rizo-form textarea,
+.rizo-card select {
   font: inherit;
   padding: 0.6rem 0.75rem;
   border: 1px solid var(--line);
@@ -227,6 +228,10 @@ a.rizo-card:hover {
 
 .rizo-actions {
   margin: 1.5rem 0;
+}
+
+.rizo-card > .rizo-field {
+  margin-top: 0.75rem;
 }
 
 [hidden] {

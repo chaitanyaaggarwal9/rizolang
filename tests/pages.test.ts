@@ -102,7 +102,7 @@ page /posts/:id {
     const show = buildApp(apis, auth, pages).pages[0]?.items[0];
     expect(show).toMatchObject({ kind: "show", endpoint: "/api/posts", mode: "list", model: "Post" });
     expect(show?.kind === "show" && show.fields.map((f) => f.key)).toEqual(["id", "author", "title"]);
-    const users = compileOk(withPages("page /admin {\n  requires login\n  requires role admin\n  show GET /api/admin/users\n}"));
+    const users = compileOk(withPages("page /users {\n  requires login\n  requires role admin\n  show GET /api/admin/users\n}"));
     const userShow = buildApp(users.apis, users.auth, users.pages).pages[0]?.items[0];
     expect(userShow?.kind === "show" && userShow.fields.map((f) => f.key)).toEqual(["id", "name"]);
   });

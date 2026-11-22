@@ -248,6 +248,12 @@ export function checkApis(
   for (const api of apis) {
     const r = checkApi(api);
     if (r === undefined) continue;
+    const first = r.segments[0];
+    if (auth?.roles.includes("admin") === true && first?.kind === "static" && first.value === "admin") {
+      err("RZ0322", api.pathSpan, "Paths under /admin are reserved for the built-in admin pages, because the auth line has the admin role.",
+        `Choose a different first path segment, for example \`${api.method} /api${api.path}\`.`);
+      continue;
+    }
     const key = `${r.method} /${r.segments.map((s) => (s.kind === "param" ? ":" : s.value)).join("/")}`;
     const dup = routes.get(key);
     if (dup !== undefined) {

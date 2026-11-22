@@ -1,4 +1,4 @@
-# Rizo Lang (compact spec, v0.4)
+# Rizo Lang (compact spec, v0.5)
 
 You are writing Rizo Lang (`.rz` files). Follow these rules exactly. A file contains `model` blocks, at most one `auth` line, `api` blocks and `page` blocks. Never write SQL, HTML or JavaScript in `.rz` files.
 

@@ -420,7 +420,7 @@ Build failed with 2 errors. No files were written.
 For editors and AI agents, `rizolang build app.rz --json` prints the same errors as one line of JSON:
 
 ```json
-{"rizolang":"0.4.0","ok":false,"errors":[{"code":"RZ0318","message":"Endpoint \"GET /posts\" does not say who may call it.","fix":"Add `requires login` for logged-in users only, or `public` if anyone may call it.","file":"app.rz","line":14,"column":5,"length":3}]}
+{"rizolang":"0.5.0","ok":false,"errors":[{"code":"RZ0318","message":"Endpoint \"GET /posts\" does not say who may call it.","fix":"Add `requires login` for logged-in users only, or `public` if anyone may call it.","file":"app.rz","line":14,"column":5,"length":3}]}
 ```
 
 The full list of error codes is in the [spec](docs/SPEC.md#8-errors).
@@ -446,10 +446,11 @@ Rizo Lang is in **early development**, so expect the language to change before 1
 - [x] **Milestone 2:** `auth`, `api` endpoints, links, `private` fields and a generated Node.js server ([v0.2.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.2.0))
 - [x] **Milestone 3:** roles, pagination, account management and migrations ([v0.3.1](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.3.1))
 - [x] **Milestone 4:** pages, forms, delete buttons, and built-in login and signup pages ([v0.4.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.4.0))
-- [x] **Milestone 5:** hardening: rate limits on every endpoint, automatic indexes, query time limits, a security audit log
-- [x] **Milestone 6:** accounts: passkeys, email confirmation and password reset, `encrypted` fields, sessions and devices
-- [x] **Milestone 7:** AI agents: scoped API tokens, OpenAPI, `build --json`, `rizolang audit`
-- [ ] **Milestone 8:** privacy rules for the countries you declare, then the next release
+- [x] **Milestones 5–8** ([v0.5.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.5.0)):
+  - hardening: rate limits on every endpoint, automatic indexes, query time limits, a security audit log,
+  - accounts: passkeys, email confirmation and password reset, `encrypted` fields, sessions and devices,
+  - AI agents: scoped API tokens, OpenAPI, `build --json`, `rizolang audit`,
+  - privacy for the regions you declare (EU, UK, India, California, Brazil): data download and deletion, `keep` retention, a generated privacy page
 - [x] Publish the compiler to npm ([`rizolang`](https://www.npmjs.com/package/rizolang))
 - [ ] A VS Code extension with syntax highlighting
 

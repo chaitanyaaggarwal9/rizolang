@@ -205,6 +205,7 @@ RIZO_PUBLIC_URL=http://localhost:3000 RIZO_EMAIL_DEV=1 node server.ts
 ```
 
 - `npm install` installs `pg`, the only dependency.
+- To deploy with Docker: `docker build -t my-app dist`, then `docker run --rm -e DATABASE_URL=... my-app node migrate.ts` and `docker run -p 3000:3000 -e DATABASE_URL=... my-app` (with your other settings). Health checks go to `/_rizo/health`, and `docker stop` lets requests in progress finish.
 - `node migrate.ts` creates or updates the tables.
 - Apps that declare `privacy for` also need `RIZO_PRIVACY_CONTACT=privacy@yourdomain.com`, the address shown on the privacy page.
 - Apps with accounts send email (to confirm addresses and reset passwords). `RIZO_EMAIL_DEV=1` prints emails in the terminal instead, for local development. In production, set `RIZO_EMAIL_API_KEY` and `RIZO_EMAIL_FROM` for [Resend](https://resend.com) and your real `RIZO_PUBLIC_URL`.

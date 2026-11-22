@@ -41,7 +41,7 @@ Usage:
   rizolang --help            Print this help`;
 
 /** Files the build owns in dist/ besides schema.sql and types.ts. Removed before each build. */
-const SERVER_FILES = ["routes.ts", "server.ts", "migrate.ts", "reencrypt.ts", "openapi.json", "package.json", "tsconfig.json"];
+const SERVER_FILES = ["routes.ts", "server.ts", "migrate.ts", "reencrypt.ts", "openapi.json", "package.json", "tsconfig.json", "Dockerfile", ".dockerignore"];
 const RUNTIME_DIR = "runtime";
 
 /** Locate the runtime sources shipped with the compiler (works from src/ and build/src/). */
@@ -222,6 +222,8 @@ export function run(argv: readonly string[], io: CliIo): number {
     writeFileSync(join(outDir, "server.ts"), output.server.server);
     writeFileSync(join(outDir, "package.json"), output.server.packageJson);
     writeFileSync(join(outDir, "tsconfig.json"), output.server.tsconfig);
+    writeFileSync(join(outDir, "Dockerfile"), output.server.dockerfile);
+    writeFileSync(join(outDir, ".dockerignore"), output.server.dockerignore);
     writeFileSync(join(outDir, "openapi.json"), output.server.openapi);
     const src = runtimeSourceDir();
     mkdirSync(join(outDir, RUNTIME_DIR));
@@ -233,7 +235,7 @@ export function run(argv: readonly string[], io: CliIo): number {
     for (const f of ["rizo-client.js", "styles.css"]) {
       writeFileSync(join(outDir, RUNTIME_DIR, "client", f), readFileSync(join(src, "client", f)));
     }
-    written.push(`${OUT_DIR}/server.ts`, `${OUT_DIR}/routes.ts`, `${OUT_DIR}/openapi.json`, `${OUT_DIR}/runtime/`);
+    written.push(`${OUT_DIR}/server.ts`, `${OUT_DIR}/routes.ts`, `${OUT_DIR}/openapi.json`, `${OUT_DIR}/Dockerfile`, `${OUT_DIR}/runtime/`);
   }
   if (output.server !== undefined) {
     writeFileSync(join(outDir, "migrate.ts"), output.server.migrate);

@@ -143,3 +143,18 @@ jobs:
           curl -s http://127.0.0.1:3999/auth/privacy | grep -q '"contact":"privacy@example.com"'
           kill %1
           cat server.log
+      - name: Build and run the generated Docker image
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE dockerdb"
+          DB=postgres://rizo:rizo@localhost:5432/dockerdb
+          docker build -t rizo-blog examples/dist
+          docker run --rm --network host -e DATABASE_URL=$DB rizo-blog node migrate.ts
+          docker run -d --name blog --network host -e DATABASE_URL=$DB -e PORT=3998 -e RIZO_PUBLIC_URL=http://localhost:3998 -e RIZO_EMAIL_DEV=1 -e RIZO_PRIVACY_CONTACT=privacy@example.com rizo-blog
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:3998/_rizo/health > /dev/null && break; sleep 1; done
+          test "$(curl -s http://127.0.0.1:3998/_rizo/health)" = '{"status":"ok"}'
+          test "$(curl -s http://127.0.0.1:3998/api/posts)" = '{"items":[],"next":null}'
+          test "$(docker exec blog whoami)" = "node"
+          docker stop blog
+          docker logs blog
+          docker logs blog | grep -q "rizo: stopped"
+          test "$(docker inspect blog --format '{{.State.ExitCode}}')" = "0"

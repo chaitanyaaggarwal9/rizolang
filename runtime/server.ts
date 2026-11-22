@@ -55,6 +55,8 @@ export interface ServerOptions {
   readonly privacyContact?: string;
   /** How long audit entries are kept, for the privacy notice. */
   readonly auditRetentionDays?: number;
+  /** True once the server is shutting down: the health check then answers 503. */
+  readonly shuttingDown?: () => boolean;
   /** The app's OpenAPI document (dist/openapi.json), served at /_rizo/openapi.json. */
   readonly openapi?: string;
   /** "Resend", or "development" when emails are only printed (RIZO_EMAIL_DEV=1). */
@@ -245,6 +247,9 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       if (auth !== null && url.pathname.startsWith("/auth/")) {
         pattern = url.pathname;
         status = await handleAuth(req, res, url.pathname, method);
+      } else if (method === "GET" && url.pathname === "/_rizo/health") {
+        pattern = url.pathname;
+        status = await health(res);
       } else if (method === "GET" && url.pathname.startsWith("/_rizo/")) {
         pattern = url.pathname;
         status = serveAsset(res, url.pathname);
@@ -325,6 +330,21 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       if (s !== undefined && s >= best.score) return undefined;
     }
     return { page: best.page, parts };
+  }
+
+  /**
+   * For hosting platforms and load balancers: 200 when the database answers
+   * within 2 seconds, 503 otherwise or while shutting down. It says nothing
+   * else about the app.
+   */
+  async function health(res: ServerResponse): Promise<number> {
+    const unavailable = (): number => send(res, 503, { status: "unavailable" }, { "Retry-After": "5" });
+    if (options.shuttingDown?.() === true) return unavailable();
+    const ok = await Promise.race([
+      db.query(HEALTH_SQL, []).then(() => true, () => false),
+      new Promise<boolean>((done) => setTimeout(() => done(false), 2000).unref()),
+    ]);
+    return ok ? send(res, 200, { status: "ok" }) : unavailable();
   }
 
   function serveAsset(res: ServerResponse, pathname: string): number {
@@ -1414,6 +1434,12 @@ export async function grantAdmins(app: App, db: Db, emails: readonly string[]): 
   return r.rowCount ?? 0;
 }
 
+/** The health check's only query. */
+const HEALTH_SQL = "SELECT 1";
+
+/** How long requests in flight get to finish after SIGTERM, before the process exits anyway. */
+export const SHUTDOWN_SECONDS = 10;
+
 /** Default limit for one database query, in milliseconds. */
 export const DEFAULT_STATEMENT_TIMEOUT_MS = 5000;
 
@@ -1493,7 +1519,9 @@ export function startServer(app: App): void {
     openapi = undefined;
   }
   const pool = new pg.Pool(config);
+  let shuttingDown = false;
   const handler = createRequestHandler(app, {
+    shuttingDown: () => shuttingDown,
     ...(openapi === undefined ? {} : { openapi }),
     ...(encryptionKeys === undefined ? {} : { encryptionKeys }),
     ...(privacyContact === undefined ? {} : { privacyContact }),
@@ -1550,8 +1578,25 @@ export function startServer(app: App): void {
     }
   }
   server.listen(port, host, () => process.stdout.write(`rizo: listening on http://${host}:${port}\n`));
+  // Graceful shutdown: stop taking connections (the health check now says 503),
+  // let requests in flight finish, then close the database pool. If they take
+  // longer than SHUTDOWN_SECONDS, exit anyway.
   const stop = (): void => {
-    server.close(() => void pool.end());
+    if (shuttingDown) return;
+    shuttingDown = true;
+    process.stdout.write("rizo: shutting down, finishing requests in progress...\n");
+    const force = setTimeout(() => {
+      process.stderr.write(`rizo: requests still running after ${SHUTDOWN_SECONDS} seconds; stopping anyway\n`);
+      process.exit(1);
+    }, SHUTDOWN_SECONDS * 1000);
+    force.unref();
+    server.close(() => {
+      void pool.end().finally(() => {
+        process.stdout.write("rizo: stopped\n");
+        process.exit(0);
+      });
+    });
+    server.closeIdleConnections();
   };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);

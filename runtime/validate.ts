@@ -32,8 +32,12 @@ function describeKind(kind: FieldKind): string {
     case "Bool": return "true or false";
     case "Date": return "an ISO 8601 date such as 2026-01-31T12:00:00Z";
     case "ID": return "an ID (UUID)";
+    case "File": return "the address of a file you uploaded, such as /_rizo/files/<name>.png";
   }
 }
+
+/** The address of an uploaded file: /_rizo/files/<128 random bits as hex>.<extension>. */
+export const FILE_ADDRESS = /^\/_rizo\/files\/([0-9a-f]{32})\.(png|jpg|webp|gif|pdf)$/;
 
 /** Validate one value. Returns the value to store, or an error message. */
 export function validateValue(spec: Omit<FieldSpec, "required" | "nullable">, raw: unknown): { value: unknown } | { error: string } {
@@ -47,6 +51,13 @@ export function validateValue(spec: Omit<FieldSpec, "required" | "nullable">, ra
       const n = length(raw);
       if (spec.min !== undefined && n < spec.min) return { error: `${key} must be at least ${spec.min} characters.` };
       if (spec.max !== undefined && n > spec.max) return { error: `${key} must be at most ${spec.max} characters.` };
+      return { value: raw };
+    }
+    case "File": {
+      if (typeof raw !== "string") return bad();
+      const ext = FILE_ADDRESS.exec(raw)?.[2];
+      if (ext === undefined) return bad();
+      if (spec.accept !== undefined && !spec.accept.includes(ext)) return { error: `${key} must be one of these file types: ${spec.accept.join(", ")}.` };
       return { value: raw };
     }
     case "Email": {

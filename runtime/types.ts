@@ -6,7 +6,7 @@
  * text. It only supplies values for $1, $2, ... parameters.
  */
 
-export type FieldKind = "Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID";
+export type FieldKind = "Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID" | "File";
 
 /** How to validate one JSON body field. */
 export interface FieldSpec {
@@ -17,9 +17,40 @@ export interface FieldSpec {
   readonly required: boolean;
   /** The value may be null. */
   readonly nullable: boolean;
-  /** Length in characters (Text, Email, Password) or value (Number). */
+  /** Length in characters (Text, Email, Password), value (Number) or, for File, size in bytes. */
   readonly min?: number;
   readonly max?: number;
+  /** File: the extensions allowed, such as ["png", "jpg"]. */
+  readonly accept?: readonly string[];
+  /** File: where to upload it first, e.g. "/_rizo/uploads/posts/photo". */
+  readonly upload?: string;
+}
+
+/**
+ * A File field in a request body. Its value must be a file the caller uploaded
+ * for this field, or (on update) the record's current file.
+ */
+export interface FileField {
+  readonly key: string;
+  /** "<table>.<column>": what the upload was made for. */
+  readonly field: string;
+  /** On update: `SELECT 1 FROM <table> WHERE id = $1 AND <column> = $2`, with the id from `id`. */
+  readonly current?: { readonly sql: string; readonly id: ValueSource };
+}
+
+/** Where people upload files for one File field: POST /_rizo/uploads/<path>. */
+export interface UploadSpec {
+  /** "<model slug>/<field>", e.g. "posts/photo". */
+  readonly path: string;
+  /** "<table>.<column>". */
+  readonly field: string;
+  readonly accept: readonly string[];
+  /** Largest size in bytes. */
+  readonly max: number;
+  /** Roles that may upload; empty means any logged-in user. */
+  readonly roles: readonly string[];
+  /** Endpoints that take the field, e.g. "POST /api/posts": an API token may upload only if it is allowed one of them. */
+  readonly endpoints: readonly string[];
 }
 
 /** A field stored encrypted: its JSON key, and the "table.column" its ciphertext is bound to. */
@@ -96,6 +127,8 @@ export interface Route {
   readonly model: string;
   /** Fields encrypted before they are written and decrypted after they are read. Absent means none. */
   readonly encrypted?: readonly EncryptedField[];
+  /** File fields of the body, checked before the query runs. Absent means none. */
+  readonly files?: readonly FileField[];
   /** `with author`: link fields returned as the linked record's public fields. Absent means none. */
   readonly expanded?: readonly {
     readonly key: string;
@@ -154,7 +187,7 @@ export interface AuthSpec {
     /** How to create the shared "Deleted user" account, or null when no records need one. */
     readonly ghost: GhostSpec | null;
     /** Updating your own profile, or null when there is nothing a user may change. */
-    readonly profile: { readonly body: readonly FieldSpec[]; readonly sql: string; readonly values: readonly ValueSource[] } | null;
+    readonly profile: { readonly body: readonly FieldSpec[]; readonly sql: string; readonly values: readonly ValueSource[]; readonly files?: readonly FileField[] } | null;
   };
 }
 
@@ -345,6 +378,12 @@ export interface App {
   readonly site?: SiteSpec;
   /** Every encrypted column the app writes. Absent means none. */
   readonly encrypted?: readonly EncryptedColumn[];
+  /** With File fields: where to upload, and the SQL that deletes files no record uses. Absent otherwise. */
+  readonly files?: {
+    readonly uploads: readonly UploadSpec[];
+    /** Deletes up to 100 files that are a day old and used by no record, returning their addresses. */
+    readonly sweepSql: string;
+  };
   /** With the admin role: every model, for the built-in admin endpoints and pages. Absent otherwise. */
   readonly admin?: readonly AdminModel[];
 }

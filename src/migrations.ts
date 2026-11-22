@@ -154,11 +154,13 @@ function columnChanges(pt: Table, nt: Table, statements: string[], summary: stri
       dataLoss.push(`column "${nt.name}.${c.name}" ${change}; its values would be deleted. To keep them, add a new field instead and copy the values over through your API`);
       continue;
     }
-    if (old.type !== c.type || old.primaryKey !== c.primaryKey) {
+    if (old.type !== c.type || old.primaryKey !== c.primaryKey || (old.file ?? false) !== (c.file ?? false)) {
       // A type change cannot keep the values safely: replace the column.
       statements.push(`ALTER TABLE ${t} DROP COLUMN ${q(c.name)};`, `ALTER TABLE ${t} ADD COLUMN ${columnDefinition(c)};`);
-      summary.push(`change type of ${nt.name}.${c.name} from ${old.type} to ${c.type}`);
-      dataLoss.push(`column "${nt.name}.${c.name}" changes type from ${old.type} to ${c.type}; its values would be deleted`);
+      const from = old.file ? "File" : old.type;
+      const to = c.file ? "File" : c.type;
+      summary.push(`change type of ${nt.name}.${c.name} from ${from} to ${to}`);
+      dataLoss.push(`column "${nt.name}.${c.name}" changes type from ${from} to ${to}; its values would be deleted`);
       continue;
     }
     const removedValues = (old.values ?? []).filter((v) => !(c.values ?? []).includes(v));
@@ -235,7 +237,7 @@ export function parseSnapshot(text: string): { schema: Schema } | { error: strin
     const roleOk = (v: unknown): boolean => typeof v === "string" && /^[a-z][A-Za-z0-9]*$/.test(v);
     for (const c of t.columns) {
       if (typeof c?.name !== "string" || typeof c.type !== "string" || !/^[A-Z]+$/.test(c.type)) return { error: `a column of "${t.name}" is malformed` };
-      if (c.encrypted !== undefined && c.encrypted !== true) return { error: `a column of "${t.name}" is malformed` };
+      if ((c.encrypted !== undefined && c.encrypted !== true) || (c.file !== undefined && c.file !== true)) return { error: `a column of "${t.name}" is malformed` };
       // These are only compared with the new schema, never written into SQL, but must still be plain text.
       if ((c.default !== null && typeof c.default !== "string") || (c.check !== null && typeof c.check?.expr !== "string")) {
         return { error: `a column of "${t.name}" is malformed` };

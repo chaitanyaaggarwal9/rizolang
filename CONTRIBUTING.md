@@ -47,7 +47,7 @@ RIZO_TEST_DATABASE_URL=postgres://user:pass@localhost:5432/dev npm test
 | `src/dev.ts`             | `rizolang dev`: build, migrate and run, rebuilding on save           |
 | `src/types.ts`           | The single source of truth for field types and their mappings       |
 | `src/emit/`              | Generates PostgreSQL (`sql.ts`), types (`typescript.ts`), routes and app files (`routes.ts`) and OpenAPI (`openapi.ts`) |
-| `runtime/`               | Copied into every generated app: validation, sessions, passwords, HTTP server |
+| `runtime/`               | Copied into every generated app: validation, sessions, passwords, files, HTTP server |
 | `src/diagnostics.ts`     | The error format: code, location, message and fix                   |
 | `src/cli.ts`, `src/bin.ts` | The `rizolang` command                                            |
 | `docs/SPEC.md`           | The language specification                                          |

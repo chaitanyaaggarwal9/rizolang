@@ -110,6 +110,8 @@ export interface NoticeOptions {
   readonly auditRetentionDays: number;
   /** Who sends account emails: "Resend", or "development" when emails are only printed. */
   readonly emailService: string;
+  /** Where uploaded files are kept: "local" or "S3-compatible storage". */
+  readonly fileStorage?: string;
 }
 
 /** The privacy notice served at GET /auth/privacy and shown on the /privacy page. */
@@ -142,6 +144,17 @@ export function privacyNotice(spec: PrivacySpec, options: NoticeOptions): Record
       "Fields marked encrypted are encrypted before they reach our database.",
       "Connections and logins are protected, and every login and change to your account is recorded.",
     ],
+    ...(spec.models.some((m) => m.fields.some((f) => f.kind === "File"))
+      ? {
+          files: [
+            "Files you upload (such as photos and documents) are kept only while a record uses them, and deleted within a day after that.",
+            "Location (GPS) data is removed from photos when they are uploaded.",
+            options.fileStorage === "S3-compatible storage"
+              ? "Files are stored in a private storage bucket with our storage provider, and only this site can read them."
+              : "Files are stored on our own server.",
+          ],
+        }
+      : {}),
     securityLog: `Security events (such as logins, password changes and deletions), with the IP address they came from, are kept for ${options.auditRetentionDays} days.`,
   };
 }

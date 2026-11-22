@@ -62,6 +62,7 @@ function describe(t: Token): string {
   switch (t.kind) {
     case "eof": return "the end of the file";
     case "int": return `the number ${t.text}`;
+    case "size": return `the size ${t.text}`;
     case "path": return `the path ${t.text}`;
     case "string": return `the text "${t.text.length > 30 ? `${t.text.slice(0, 30)}…` : t.text}"`;
     default: return `"${t.text}"`;
@@ -289,18 +290,18 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
             `After the type, write only modifiers: ${MODIFIER_NAMES.join(", ")}. Example: \`${nameTok.text}: ${typeTok.text} max 100\`.`);
       }
       next();
-      if (t.text === "unique" || t.text === "optional" || t.text === "private" || t.text === "encrypted") {
+      if (t.text === "unique" || t.text === "optional" || t.text === "private" || t.text === "encrypted" || t.text === "image" || t.text === "pdf") {
         modifiers.push({ kind: t.text, span: t.span });
         prev = t;
       } else if (t.text === "min" || t.text === "max") {
         const num = peek();
-        if (num.kind !== "int" || num.span.line !== t.span.line) {
+        if ((num.kind !== "int" && num.kind !== "size") || num.span.line !== t.span.line) {
           fail("RZ0208", num.span.line === t.span.line ? num.span : t.span,
             `Expected a whole number after "${t.text}".`,
-            `Write the limit as a number: \`${t.text} 100\`.`);
+            typeTok.text === "File" ? `Write the size limit with kb or mb: \`${t.text} 5mb\`.` : `Write the limit as a number: \`${t.text} 100\`.`);
         }
         next();
-        modifiers.push({ kind: t.text, value: num.value, span: t.span, valueSpan: num.span });
+        modifiers.push({ kind: t.text, value: num.value, span: t.span, valueSpan: num.span, ...(num.kind === "size" ? { size: true } : {}) });
         prev = num;
       } else {
         const guess = didYouMean(t.text, MODIFIER_NAMES);

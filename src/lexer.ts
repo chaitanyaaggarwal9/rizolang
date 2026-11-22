@@ -18,13 +18,15 @@ export type TokenKind =
   | "compare"
   /** `?name`: a query parameter in a list filter. `text` is the name without "?". */
   | "query"
+  /** A file size such as `5mb` or `500kb` (File fields). `value` is in bytes. */
+  | "size"
   | "eof";
 
 export interface Token {
   readonly kind: TokenKind;
   /** The token as written; for "string" tokens, the decoded text without quotes. */
   readonly text: string;
-  /** Numeric value, only for "int" tokens. */
+  /** Numeric value: for "int" tokens the number, for "size" tokens the bytes. */
   readonly value: number;
   readonly span: Span;
 }
@@ -161,6 +163,11 @@ export function lex(rawSource: string, file: string): LexResult {
         return fail("RZ0102", { line, col, length: k - i },
           `Decimal number "${src.slice(i, k)}" is not allowed here.`,
           `Use a whole number, such as ${text}.`);
+      }
+      const unit = /^(kb|mb)(?![A-Za-z0-9_])/.exec(src.slice(j, j + 3))?.[1];
+      if (unit !== undefined && c !== "-" && digits.length <= 6) {
+        push("size", src.slice(i, j + 2), Number(text) * (unit === "kb" ? 1024 : 1024 * 1024));
+        continue;
       }
       if (isLetter(src[j]) || src[j] === "_") {
         let k = j;

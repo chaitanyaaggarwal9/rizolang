@@ -18,6 +18,7 @@ model Post {
   body: Text
   published: Bool
   views: Number min 0 optional
+  image: File image max 5mb optional
 }
 
 model Comment {

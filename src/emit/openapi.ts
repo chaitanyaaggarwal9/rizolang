@@ -2,7 +2,7 @@ import type { ResolvedApi, ResolvedAuth } from "../check-api.js";
 import { type ResolvedField, type ResolvedModel, isHidden } from "../checker.js";
 import { FIELD_TYPES } from "../types.js";
 import { VERSION } from "../version.js";
-import type { FieldKind, FieldSpec, Route } from "../../runtime/types.ts";
+import type { FieldKind, FieldSpec, Route, UploadSpec } from "../../runtime/types.ts";
 import { buildApp } from "./routes.js";
 
 /**
@@ -31,6 +31,7 @@ export function emitOpenApi(apis: readonly ResolvedApi[], auth: ResolvedAuth | u
     paths[path] ??= {};
     (paths[path] as Record<string, unknown>)[api.method.toLowerCase()] = operation(api, route, uniqueId(api, usedIds));
   });
+  for (const u of app.files?.uploads ?? []) paths[`/_rizo/uploads/${u.path}`] = { post: uploadOperation(u) };
 
   const schemas: Record<string, unknown> = {
     Error: {
@@ -100,6 +101,40 @@ export function emitOpenApi(apis: readonly ResolvedApi[], auth: ResolvedAuth | u
   };
   return `${JSON.stringify(doc, null, 2)}\n`;
 }
+
+/** POST /_rizo/uploads/<model>/<field>: the raw file as the body. */
+function uploadOperation(u: UploadSpec): Record<string, unknown> {
+  const types = u.accept.map((ext) => FILE_TYPES[ext] ?? "application/octet-stream");
+  return {
+    operationId: `upload_${u.path.replace(/[^A-Za-z0-9]+/g, "_")}`,
+    summary: `Upload a file for ${u.field}`,
+    description: `Send the file itself as the body (not a form). Its type is read from its content: ${u.accept.join(", ")}, at most ${u.max} bytes. Then put the returned url in the field when you create or update the record. Unused uploads are deleted after a day.`,
+    security: [{ session: [] }, { token: [] }],
+    "x-rizo-access": "login",
+    ...(u.roles.length > 0 ? { "x-rizo-roles": u.roles } : {}),
+    // Per account; every address also has the default 120 requests a minute.
+    "x-rizo-rate-limit": { requests: 60, perSeconds: 3600 },
+    requestBody: { required: true, content: Object.fromEntries(types.map((t) => [t, { schema: { type: "string", contentEncoding: "binary" } }])) },
+    responses: {
+      "201": {
+        description: "The file is stored.",
+        content: { "application/json": { schema: {
+          type: "object",
+          required: ["url", "type", "size"],
+          properties: { url: { type: "string" }, type: { type: "string" }, size: { type: "integer" } },
+        } } },
+      },
+      "401": { description: "Not logged in, or the API token is not valid." },
+      "403": { description: "Not allowed to set this field, or the API token was not created for an endpoint that takes it." },
+      "413": { description: `The file is larger than ${u.max} bytes.` },
+      "415": { description: `The file is not one of: ${u.accept.join(", ")}.` },
+      "429": { description: "Too many uploads. Wait for the number of seconds in Retry-After." },
+      "503": { description: "File storage is not available. Retry later." },
+    },
+  };
+}
+
+const FILE_TYPES: Readonly<Record<string, string>> = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", gif: "image/gif", pdf: "application/pdf" };
 
 function operation(api: ResolvedApi, route: Route, operationId: string): Record<string, unknown> {
   const model = api.query.model;
@@ -197,6 +232,7 @@ function fieldSchema(f: ResolvedField): Record<string, unknown> {
     s["maximum"] = f.max ?? info.valueRange.highest;
   }
   if (f.link !== undefined) s["description"] = `The id of a ${f.link}.`;
+  if (f.type === "File") s["description"] = "The file's address on this server; GET it to download the file.";
   return f.optional ? { ...s, type: [s["type"], "null"] } : s;
 }
 
@@ -204,6 +240,10 @@ function fieldSchema(f: ResolvedField): Record<string, unknown> {
 function specSchema(spec: FieldSpec, field: ResolvedField | undefined): Record<string, unknown> {
   const s = kindSchema(spec.kind, field?.link !== undefined);
   const lengthLike = spec.kind === "Text" || spec.kind === "Email" || spec.kind === "Password";
+  if (spec.kind === "File") {
+    s["description"] = `The address of a file you uploaded with POST ${spec.upload ?? "/_rizo/uploads/..."} (${(spec.accept ?? []).join(", ")}, at most ${spec.max ?? 0} bytes), or the record's current file.`;
+    return spec.nullable ? { ...s, type: [s["type"], "null"] } : s;
+  }
   if (spec.min !== undefined) s[lengthLike ? "minLength" : "minimum"] = spec.min;
   if (spec.max !== undefined) s[lengthLike ? "maxLength" : "maximum"] = spec.max;
   if (spec.kind === "Number") {
@@ -225,6 +265,7 @@ function kindSchema(kind: FieldKind, link: boolean): Record<string, unknown> {
     case "Bool": return { type: "boolean" };
     case "Date": return { type: "string", format: "date-time" };
     case "ID": return { type: "string", format: "uuid" };
+    case "File": return { type: "string", pattern: "^/_rizo/files/[0-9a-f]{32}[.](png|jpg|webp|gif|pdf)$" };
   }
 }
 

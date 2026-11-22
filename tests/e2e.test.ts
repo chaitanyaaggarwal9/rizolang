@@ -11,7 +11,11 @@ import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createRequestHandler, grantAdmins } from "../runtime/server.ts";
+import { mkdtempSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
+import { createRequestHandler, grantAdmins, sweepFiles } from "../runtime/server.ts";
+import { localStore } from "../runtime/files.ts";
 import type { App } from "../runtime/types.ts";
 import type { Email } from "../runtime/email.ts";
 import { compile } from "../src/compiler.js";
@@ -22,6 +26,9 @@ const DATABASE_URL = process.env["RIZO_TEST_DATABASE_URL"];
 const schema = `rizo_e2e_${randomBytes(6).toString("hex")}`;
 
 let pool: pg.Pool;
+/** Uploaded files go to a fresh folder. */
+const uploadDir = mkdtempSync(joinPath(tmpdir(), "rizo-e2e-uploads-"));
+const fileStore = localStore(uploadDir);
 let app: App;
 let server: Server;
 let base: string;
@@ -110,6 +117,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       publicUrl: "https://blog.example",
       openapi: result.output.server?.openapi ?? "",
       privacyContact: "privacy@blog.example",
+      fileStore,
       auditRetentionDays: 365,
       // Lets a test act from its own address (X-Forwarded-For), so the per-address limits of other tests don't add up.
       trustProxy: true,
@@ -530,6 +538,109 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       expect(posts.html).toContain('"kind":"admin","slug":"posts"');
       expect((await page("/admin/nothing", alice)).status).toBe(404);
       expect((await page("/", bob)).html).not.toContain('"admin":true');
+    });
+  });
+
+  describe("file uploads", () => {
+    /** A 1x1 PNG with GPS in an eXIf chunk is enough; the content decides the type. */
+    const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108020000009077" + "53de0000000c4944415478da63f8ffff3f0005fe02fe0def46b80000000049454e44ae426082", "hex");
+    const upload = async (body: Buffer | string, opts: { cookie?: string; headers?: Record<string, string>; path?: string } = {}) => {
+      const r = await fetch(`${base}${opts.path ?? "/_rizo/uploads/posts/image"}`, {
+        method: "POST", body, headers: { ...(opts.cookie ? { Cookie: opts.cookie } : {}), ...opts.headers },
+      });
+      const text = await r.text();
+      responses.push(text);
+      return { status: r.status, body: (text === "" ? {} : JSON.parse(text)) as { url?: string; type?: string; size?: number; error?: { message: string } } };
+    };
+    let ann: { cookie: string; id: string };
+
+    beforeAll(async () => {
+      ann = await join({ email: "ann.files@example.com", password: "anns long password", name: "Ann" } as never, "198.51.100.50");
+    });
+
+    it("stores a file the caller uploads and serves it with safe headers", async () => {
+      expect((await upload(PNG)).status).toBe(401);
+      const r = await upload(PNG, { cookie: ann.cookie, headers: { "Content-Type": "text/html" } });
+      expect(r.status).toBe(201);
+      expect(r.body).toMatchObject({ type: "image/png", size: PNG.length });
+      expect(r.body.url).toMatch(/^\/_rizo\/files\/[0-9a-f]{32}\.png$/);
+      const got = await fetch(base + String(r.body.url));
+      expect(got.status).toBe(200);
+      expect(Buffer.from(await got.arrayBuffer())).toEqual(PNG);
+      expect(got.headers.get("content-type")).toBe("image/png");
+      expect(got.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox; frame-ancestors 'none'");
+      expect(got.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(got.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+      expect(readdirSync(uploadDir)).toContain(String(r.body.url).split("/").pop());
+      // The address is the key to the file, so it never appears in the logs.
+      expect(logs.join("\n")).not.toContain(String(r.body.url).split("/").pop());
+      expect(logs.some((l) => l.startsWith("GET /_rizo/files/:name 200"))).toBe(true);
+      expect((await fetch(`${base}/_rizo/files/${"0".repeat(32)}.png`)).status).toBe(404);
+      expect((await fetch(`${base}/_rizo/files/..%2F..%2Fetc%2Fpasswd`)).status).toBe(404);
+    });
+
+    it("decides the type from the content, and refuses scripts, other types and oversized files", async () => {
+      const svg = await upload('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>', { cookie: ann.cookie, headers: { "Content-Type": "image/png" } });
+      expect(svg.status).toBe(415);
+      expect((await upload("<!doctype html><script>alert(1)</script>", { cookie: ann.cookie })).status).toBe(415);
+      expect((await upload("%PDF-1.7\n", { cookie: ann.cookie })).status).toBe(415); // the field takes images only
+      const big = Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024)]);
+      expect((await upload(big, { cookie: ann.cookie })).status).toBe(413);
+      expect((await upload(PNG, { cookie: ann.cookie, path: "/_rizo/uploads/posts/title" })).status).toBe(404);
+      expect((await upload(PNG, { cookie: ann.cookie, headers: { "Sec-Fetch-Site": "cross-site" } })).status).toBe(403);
+    });
+
+    it("attaches only your own upload for that field, or the record's current file", async () => {
+      const mine = String((await upload(PNG, { cookie: ann.cookie })).body.url);
+      const bobs = String((await upload(PNG, { cookie: bob })).body.url);
+      const create = (image: unknown, cookie: string) => call("POST", "/api/posts", { cookie, body: { title: "With a picture", body: "b", published: true, image } });
+      expect((await create(bobs, ann.cookie))).toMatchObject({ status: 400, body: { error: { field: "image" } } });
+      expect((await create(`/_rizo/files/${"f".repeat(32)}.png`, ann.cookie)).status).toBe(400);
+      expect((await create("https://evil.example/x.png", ann.cookie)).status).toBe(400);
+      const post = await create(mine, ann.cookie);
+      expect(post).toMatchObject({ status: 201, body: { image: mine } });
+      const id = (post.body as { id: string }).id;
+      // Sending the record's current file back is fine even when the sender didn't upload it
+      // (here: as if the uploader's account were gone), but it can't be put on another record.
+      await pool.query(`UPDATE "_rizo_files" SET "user_id" = NULL WHERE "id" = $1`, [mine]);
+      expect((await call("PATCH", `/api/posts/${id}`, { cookie: ann.cookie, body: { image: mine, title: "Edited" } })).status).toBe(200);
+      expect((await create(mine, ann.cookie)).status).toBe(400);
+      expect((await call("PATCH", `/api/posts/${id}`, { cookie: ann.cookie, body: { image: bobs } })).status).toBe(400);
+      expect((await call("GET", `/api/posts/${id}`)).body).toMatchObject({ image: mine });
+    });
+
+    it("lets API tokens upload only for fields their endpoints take", async () => {
+      const make = async (endpoints: string[]) => (await call("POST", "/auth/tokens", { cookie: ann.cookie, headers: { "X-Forwarded-For": "198.51.100.51" }, body: { name: "uploader", endpoints, days: 1 } })).body as { token: string };
+      const reader = await make(["GET /api/my/posts"]);
+      expect((await upload(PNG, { headers: { Authorization: `Bearer ${reader.token}` } })).status).toBe(403);
+      const writer = await make(["POST /api/posts"]);
+      expect((await upload(PNG, { headers: { Authorization: `Bearer ${writer.token}` } })).status).toBe(201);
+    });
+
+    it("deletes files no record uses after a day, and keeps the ones in use", async () => {
+      const used = String((await upload(PNG, { cookie: ann.cookie })).body.url);
+      const unused = String((await upload(PNG, { cookie: ann.cookie })).body.url);
+      const post = (await call("POST", "/api/posts", { cookie: ann.cookie, body: { title: "Kept", body: "b", published: false, image: used } })).body as { id: string };
+      const gone = String((await upload(PNG, { cookie: ann.cookie })).body.url);
+      const deleted = (await call("POST", "/api/posts", { cookie: ann.cookie, body: { title: "Deleted", body: "b", published: false, image: gone } })).body as { id: string };
+      expect((await call("DELETE", `/api/posts/${deleted.id}`, { cookie: ann.cookie })).status).toBe(204);
+      // Nothing is deleted before it is a day old.
+      expect(await sweepFiles(app, { query: (sql, v) => pool.query(sql, v) }, fileStore, () => undefined)).toBe(0);
+      await pool.query(`UPDATE "_rizo_files" SET "created_at" = now() - interval '2 days'`);
+      expect(await sweepFiles(app, { query: (sql, v) => pool.query(sql, v) }, fileStore, () => undefined)).toBeGreaterThanOrEqual(2);
+      const left = (await pool.query(`SELECT "id" FROM "_rizo_files"`)).rows.map((r) => r.id as string);
+      expect(left).toContain(used);
+      expect(left).not.toContain(unused);
+      expect(left).not.toContain(gone);
+      expect(readdirSync(uploadDir)).not.toContain(unused.split("/").pop());
+      expect((await fetch(base + used)).status).toBe(200);
+      expect((await fetch(base + unused)).status).toBe(404);
+      expect((await call("GET", `/api/posts/${post.id}`)).body).toMatchObject({ image: used });
+    });
+
+    it("shows a file picker on the post form, uploading to the field's address", async () => {
+      const r = await fetch(`${base}/posts/new`, { headers: { Cookie: ann.cookie } });
+      expect(await r.text()).toContain('"kind":"File","required":false,"nullable":true,"max":5242880,"accept":["png","jpg","webp","gif"],"upload":"/_rizo/uploads/posts/image"');
     });
   });
 

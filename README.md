@@ -264,6 +264,8 @@ curl 'http://127.0.0.1:3000/api/posts?limit=10'
 | `RIZO_PRIVACY_CONTACT` | (required with `privacy for`) | The address people write to about their data, shown on the privacy page |
 | `RIZO_ENCRYPTION_KEYS` | (required with `encrypted` fields) | `id:key` pairs, e.g. `k1:` plus the output of `openssl rand -base64 32`. The first key encrypts; all of them decrypt |
 | `RIZO_EMAIL_DEV` | off | `1` to print emails instead of sending them. For local development only |
+| `RIZO_UPLOAD_DIR` | `./uploads` | Where uploaded files are kept (apps with `File` fields), unless `RIZO_S3_BUCKET` is set |
+| `RIZO_S3_BUCKET`, `RIZO_S3_REGION`, `RIZO_S3_ACCESS_KEY_ID`, `RIZO_S3_SECRET_ACCESS_KEY`, `RIZO_S3_ENDPOINT` | none | Keep uploaded files in S3-compatible storage (AWS S3, Cloudflare R2, Backblaze B2, MinIO). The endpoint defaults to AWS for the region |
 
 ---
 
@@ -293,6 +295,7 @@ model User {
 | `Password` | salted scrypt hash | Never stored as plain text and never returned |
 | `Date` | date and time (UTC) | ISO 8601 in JSON |
 | `ID` | UUID | |
+| `File` | an uploaded image or PDF | `photo: File image max 5mb optional`. Stored on disk or in S3-compatible storage (next release; on `main` now) |
 | *a model name* | a link, e.g. `author: User` | A foreign key to that model |
 
 Every model gets an `id` automatically.
@@ -302,7 +305,10 @@ Every model gets an `id` automatically.
 - `optional`: the value may be missing.
 - `private`: stored, but never returned.
 - `encrypted`: encrypted by the server before it reaches the database (Text, Email, Number, Date). It can't be unique, filtered or sorted, and needs `RIZO_ENCRYPTION_KEYS`.
-- `min N` / `max N`: the length for text, the value for numbers.
+- `min N` / `max N`: the length for text, the value for numbers, the size for files (`max 5mb`).
+- `image` / `pdf`: what a `File` field may hold (neither means both).
+
+**Files.** Clients upload the file itself to `POST /_rizo/uploads/posts/photo`, then send the url it returns as the field's value; generated pages do both for you. The type is read from the file's content (never SVG or HTML), location data is removed from photos, only the uploader can attach a file, and files no record uses are deleted after a day. Files go to `RIZO_UPLOAD_DIR` (default `./uploads`), or to an S3-compatible bucket with `RIZO_S3_BUCKET`.
 
 ### Login
 
@@ -395,6 +401,7 @@ The compiler enforces these rules:
 | Privilege escalation | Roles are never accepted from requests. Only admins assign them, never to themselves. `RIZO_ADMIN_EMAILS` only promotes accounts that already exist. |
 | Editing someone else's data (IDOR) | `requires owner` becomes part of the `WHERE` clause. Owners are set from the session. |
 | Mass assignment | Unknown body fields are rejected. Ownership links are never accepted from clients. |
+| Malicious uploads | File types are read from the content, so SVG, HTML and scripts are refused. Files are served with `nosniff` and a sandbox policy from unguessable addresses, and only their uploader can attach them. Photo location data is removed. |
 | CSRF | `SameSite=Lax` cookies, JSON-only bodies, and `Sec-Fetch-Site` plus `Origin` checks on every POST, PUT, PATCH and DELETE. |
 | Slow queries and table scans | The compiler creates the right index for every list's filters and order (about 280× faster on 200,000 rows in our test), and every query is cancelled after 5 seconds. |
 | Bots, scrapers and brute force | Every endpoint is rate-limited (120/min by default, `limit 10 per minute` to tighten), with counters shared across servers in PostgreSQL. Login, signup and password checks have stricter limits, and password hashing is queued so a login flood can't stall the server. |
@@ -469,7 +476,7 @@ Rizo Lang is in **early development**, so expect the language to change before 1
   - privacy for the regions you declare (EU, UK, India, California, Brazil): data download and deletion, `keep` retention, a generated privacy page
 - [x] **Milestone 9** ([v0.6.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.6.0)): profile, email and password changes on the account page, search and richer list filters, `rizolang dev`, a health check, graceful shutdown and a generated `Dockerfile`
 - [x] Publish the compiler to npm ([`rizolang`](https://www.npmjs.com/package/rizolang))
-- [ ] **Milestone 10** (in progress): linked records (`with`), site branding and built-in admin pages (all on `main`), file uploads
+- [ ] **Milestone 10** (in progress): linked records (`with`), site branding, built-in admin pages and file uploads (all on `main`); release next
 - [ ] A VS Code extension with syntax highlighting
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.

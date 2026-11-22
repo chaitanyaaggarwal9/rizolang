@@ -23,6 +23,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Every app with roles gets `GET /auth/admin/<model>` (search by id or text, 50 records at a time) and `DELETE /auth/admin/<model>/:id`, for admins only, with the session cookie. With pages, it also gets `/admin` and `/admin/<model>`, with a search box, Delete buttons, a role picker for accounts, and an "Admin" link in the menu for admins.
   - Only `id` and public fields are shown (plus the role, for accounts); private and Password fields are never shown or searched, and encrypted fields are never searched. Every deletion is audit-logged.
   - Deleting an account works like `DELETE /auth/me`, never for your own account or another admin's.
+- Milestone 10, part 4: file uploads.
+  - A `File` field type with `image` (PNG, JPEG, WebP, GIF), `pdf` and `max 5mb` (up to 10 MB, the default), for example `photo: File image max 5mb optional`.
+  - Clients upload the file to `POST /_rizo/uploads/<model>/<field>`, then send the returned address as the field's value. The type is read from the content, so SVG, HTML and scripts are refused; a body can only use a file its sender uploaded for that field, or the record's current file.
+  - Files are served from unguessable addresses with `nosniff` and a sandbox policy (PDFs as downloads), never logged, and as public as the endpoints that return them. GPS data is removed from photos.
+  - Storage on disk (`RIZO_UPLOAD_DIR`) or in S3-compatible storage (`RIZO_S3_BUCKET` and friends), signed with Signature V4 using only Node's crypto: still no dependencies besides `pg`.
+  - Files no record uses are deleted after a day. Pages get file pickers and show images; `openapi.json`, the privacy notice and the Dockerfile (an uploads volume) cover files.
+  - New errors RZ0345 and RZ0346.
 
 ### Changed
 

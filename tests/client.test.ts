@@ -165,12 +165,23 @@ describe("el()", () => {
   it.each([
     ["img", "https://evil.example/x.png"], ["img", "//evil.example/x.png"], ["img", "javascript:alert(1)"],
     ["img", "data:image/png;base64,x"], ["img", "/_rizo/client.js"], ["script", "/_rizo/logo.png"], ["iframe", "/_rizo/logo.png"],
-  ])("refuses src on <%s> for %j: only the site logo image is allowed", (tag, src) => {
-    expect(() => client.el(tag, { src })).toThrow(/only for the site logo/);
+    ["img", "/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf"], ["img", "/_rizo/files/../client.js"], ["img", "/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.svg"], ["iframe", "/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"],
+  ])("refuses src on <%s> for %j: only the logo and uploaded images are allowed", (tag, src) => {
+    expect(() => client.el(tag, { src })).toThrow(/only for the site logo and uploaded images/);
   });
 
-  it("allows the site logo image", () => {
+  it("allows the site logo image and uploaded images", () => {
     expect((client.el("img", { src: "/_rizo/logo.png", alt: "" }) as unknown as FakeElement).attributes.get("src")).toBe("/_rizo/logo.png");
+    expect((client.el("img", { src: "/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.webp", alt: "" }) as unknown as FakeElement).attributes.get("src")).toBe("/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.webp");
+  });
+
+  it("shows uploaded images, links PDFs (as text inside a link), and leaves other values alone", () => {
+    const img = client.fileView("/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg", "Photo", false) as unknown as FakeElement;
+    expect([img.tagName, img.attributes.get("src"), img.attributes.get("alt")]).toEqual(["img", "/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg", "Photo"]);
+    const pdf = client.fileView("/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf", "Receipt", false) as unknown as FakeElement;
+    expect([pdf.tagName, pdf.attributes.get("href"), pdf.textContent]).toEqual(["a", "/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf", "Download PDF"]);
+    expect((client.fileView("/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf", "Receipt", true) as unknown as FakeElement).tagName).toBe("span");
+    for (const v of ["https://evil.example/x.png", "/_rizo/files/x.png", 5, null, `/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png?x`]) expect(client.fileView(v, "x", false)).toBeUndefined();
   });
 
   it.each(["https://evil.example", "//evil.example", "javascript:alert(1)", "data:text/html,x", "/\\evil.example", "/a\nb"])(
@@ -790,5 +801,55 @@ describe("admin pages", () => {
     form?.onsubmit?.({ preventDefault: () => undefined });
     await flush();
     expect(sent.map((x) => x.url)).toEqual(["/auth/me", "/auth/admin/users", "/auth/admin/users?q=a%26b"]);
+  });
+});
+
+describe("file fields in forms", () => {
+  const fileForm = {
+    kind: "form" as const, method: "POST" as const, endpoint: "/api/posts", submit: "Save", prefill: null, then: "/",
+    fields: [
+      { key: "title", kind: "Text" as const, label: "Title", required: true, nullable: false, multiline: false },
+      { key: "image", kind: "File" as const, label: "Image", required: false, nullable: true, multiline: false, max: 5242880, accept: ["png", "jpg"], upload: "/_rizo/uploads/posts/image" },
+    ],
+  };
+
+  it("offers a file picker for the allowed types, then uploads the file and sends its address", async () => {
+    const sent: { url: string; method: string; body: unknown }[] = [];
+    (globalThis as { fetch?: unknown }).fetch = async (url: string, init?: { method?: string; body?: unknown }) => {
+      sent.push({ url, method: init?.method ?? "GET", body: init?.body });
+      const json = url.startsWith("/_rizo/uploads/") ? { url: "/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png", type: "image/png", size: 3 } : { id: "p1" };
+      return { ok: true, status: 201, json: async () => json };
+    };
+    const page = client.renderPage({ title: "New", params: {}, loggedIn: true, auth: true, items: [fileForm] }) as unknown as FakeElement;
+    const inputs = all(page).filter((e) => e.tagName === "input");
+    const picker = inputs.find((e) => e.attributes.get("type") === "file");
+    expect(picker?.attributes.get("accept")).toBe("image/png,image/jpeg");
+    const chosen = { name: "cat.png" };
+    (picker as unknown as { files: unknown[] }).files = [chosen];
+    const title = inputs.find((e) => e.attributes.get("type") === "text");
+    if (title !== undefined) title.value = "Cat";
+    all(page).find((e) => e.tagName === "form")?.onsubmit?.({ preventDefault: () => undefined });
+    await flush();
+    await flush();
+    expect(sent.map((x) => [x.method, x.url])).toEqual([["POST", "/_rizo/uploads/posts/image"], ["POST", "/api/posts"]]);
+    expect(sent[0]?.body).toBe(chosen);
+    expect(JSON.parse(String(sent[1]?.body))).toEqual({ title: "Cat", image: "/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png" });
+  });
+
+  it("shows a failed upload on its field and sends nothing", async () => {
+    const sent: string[] = [];
+    (globalThis as { fetch?: unknown }).fetch = async (url: string) => {
+      sent.push(url);
+      return { ok: false, status: 415, json: async () => ({ error: { message: "This file type is not allowed here." } }) };
+    };
+    const page = client.renderPage({ title: "New", params: {}, loggedIn: true, auth: true, items: [fileForm] }) as unknown as FakeElement;
+    const picker = all(page).find((e) => e.attributes.get("type") === "file");
+    (picker as unknown as { files: unknown[] }).files = [{ name: "x.svg" }];
+    all(page).find((e) => e.tagName === "form")?.onsubmit?.({ preventDefault: () => undefined });
+    await flush();
+    await flush();
+    expect(sent).toEqual(["/_rizo/uploads/posts/image"]);
+    expect(texts(page)).toContain("This file type is not allowed here.");
+    expect(picker?.attributes.get("aria-invalid")).toBe("true");
   });
 });

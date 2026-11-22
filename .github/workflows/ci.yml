@@ -104,10 +104,10 @@ jobs:
           expect_reject "INSERT INTO posts (author_id, title, body, published) VALUES (gen_random_uuid(), 't', 'b', true)"
       - name: Type-check the generated app
         run: npx tsc -p examples/dist/tsconfig.json
-      - name: End-to-end tests against PostgreSQL
+      - name: All tests, including those that need PostgreSQL
         env:
           RIZO_TEST_DATABASE_URL: postgres://rizo:rizo@localhost:5432/rizo
-        run: npx vitest run tests/e2e.test.ts tests/e2e-encrypted.test.ts
+        run: npx vitest run
       - name: Apply migrations to a new database
         env:
           DATABASE_URL: postgres://rizo:rizo@localhost:5432/migrated

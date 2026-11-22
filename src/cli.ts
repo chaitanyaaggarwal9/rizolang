@@ -33,6 +33,10 @@ Usage:
       Review the file for risky choices (public writes, personal data that isn't private,
       loose rate limits...) and print each with its location and a fix. Writes nothing.
       Exits with 1 when there are warnings, so it can run in CI.
+  rizolang dev <file.rz> [--port 3000] [--allow-data-loss]
+      For local development, with DATABASE_URL set: build, apply migrations and run the server
+      with development settings (printed emails, localhost links), then rebuild and restart
+      whenever the file is saved.
   rizolang --version         Print the version
   rizolang --help            Print this help`;
 
@@ -93,7 +97,7 @@ export function run(argv: readonly string[], io: CliIo): number {
   }
   if (command !== "build" && command !== "audit") {
     return usageError("RZ0903", `Unknown command "${command}".`,
-      "Run `rizolang build <file.rz>` or `rizolang audit <file.rz>`.");
+      "Run `rizolang build <file.rz>`, `rizolang audit <file.rz>` or `rizolang dev <file.rz>`.");
   }
   if (command === "audit") return runAudit(io, files, flags, json, usageError);
   const unknownFlag = flags.find((f) => f !== "--allow-data-loss" && f !== "--json");

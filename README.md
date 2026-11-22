@@ -187,6 +187,14 @@ npm link              # optional: makes the `rizolang` command available everywh
 
 ### Build and run an app
 
+For development, one command builds, applies migrations, runs the server with development settings, and restarts it whenever you save:
+
+```sh
+DATABASE_URL=postgres://user:pass@localhost:5432/app npx rizolang dev app.rz
+```
+
+For production, run the steps yourself:
+
 ```sh
 npx rizolang build app.rz
 cd dist

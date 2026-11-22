@@ -635,6 +635,16 @@ Renaming looks like removing and adding, so it is refused too. Keep the old name
 
 Needs Node.js 22.18 or newer.
 
+**For development**, one command does everything:
+
+```sh
+DATABASE_URL=postgres://localhost:5432/app rizolang dev app.rz
+```
+
+`rizolang dev` builds, installs `pg` in `dist/` the first time, applies migrations and starts the server on port 3000 (`--port` to change it). It fills in development settings that aren't already set, and says which: `RIZO_PUBLIC_URL=http://localhost:3000`, printed emails (`RIZO_EMAIL_DEV=1`), a placeholder `RIZO_PRIVACY_CONTACT`, and a local encryption key kept in `dist/.dev-encryption-key`. Saving the `.rz` file rebuilds, migrates and restarts the server; if the file has errors, they are printed and the running server keeps going. Changes that would delete data still need `--allow-data-loss`, because migrations are committed and later run in production. Ctrl+C stops everything. It needs `DATABASE_URL` (RZ0906) and a file with an `auth` line, `api` or `page` blocks (RZ0907).
+
+**In production**, run the steps yourself:
+
 ```sh
 cd dist && npm install
 DATABASE_URL=postgres://user:pass@localhost:5432/app node migrate.ts
@@ -792,6 +802,8 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0903 | Wrong command-line usage                                                |
 | RZ0904 | The change would delete data (needs `--allow-data-loss`)                |
 | RZ0905 | `migrations/rizo-schema.json` is missing or damaged                     |
+| RZ0906 | `rizolang dev` has no database (`DATABASE_URL` is not set), or can't install `pg` |
+| RZ0907 | `rizolang dev` was given a file with no server to run                   |
 
 ---
 

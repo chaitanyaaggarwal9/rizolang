@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `?name` is an optional query parameter: `db.Post.list(title contains ?q, views >= ?minViews)` reads `/api/posts?q=...&minViews=...`, skipping each filter that is left out. Values are validated against the field's type before any query runs, and are always SQL parameters. `openapi.json` lists them.
   - Automatic indexes put `=` columns first, then range columns, then the sort column.
 
+- Milestone 9, part 4: `rizolang dev app.rz`.
+  - With `DATABASE_URL` set, it builds, installs `pg` in `dist/` the first time, applies migrations and starts the server on port 3000 (`--port`), filling in development settings that aren't set and saying which: localhost links, printed emails, a placeholder privacy contact, and a local encryption key in `dist/.dev-encryption-key`.
+  - Saving the `.rz` file rebuilds, migrates and restarts. If the file has errors, they are printed and the running server keeps going. It announces the address only once the server accepts connections. Data-loss changes still need `--allow-data-loss`. Ctrl+C stops everything.
+  - New CLI errors RZ0906 (no `DATABASE_URL`) and RZ0907 (nothing to run).
+
 ### Changed
 
 - The compact spec is shorter (about 1,300 words instead of 1,480), with the same rules, so there is room for new features under its 1,500-word limit.

@@ -7,3 +7,5 @@ coverage/
 .env
 .env.*
 examples/migrations/
+# Scratch projects made by the rizolang dev test
+tests/.dev-tmp-*/

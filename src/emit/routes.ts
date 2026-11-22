@@ -47,7 +47,7 @@ export function buildApp(
   const builtIn = authSpecs === null || pages.length === 0 ? [] : authPages(authSpecs, privacy !== undefined);
   const models = [...new Set([...(auth === undefined ? [] : [auth.model]), ...apis.map((a) => a.query.model)])];
   const encrypted = models.flatMap(encryptedColumns);
-  const admin = auth !== undefined && auth.roles.includes("admin") ? adminModels(known, auth) : undefined;
+  const admin = auth !== undefined && authSpecs !== null && auth.roles.includes("admin") ? adminModels(known, auth, authSpecs.account.ghost !== null) : undefined;
   const adminPageRoutes = admin !== undefined && pages.length > 0 ? adminPages(admin, known, auth?.roles ?? []) : [];
   return {
     auth: authSpecs,
@@ -78,7 +78,7 @@ function adminFields(model: ResolvedModel): FieldViewSpec[] {
  * For apps with the admin role: every model, with SQL to search and list it
  * (public fields only, in id order) and to delete one record.
  */
-function adminModels(models: readonly ResolvedModel[], auth: ResolvedAuth): AdminModel[] {
+function adminModels(models: readonly ResolvedModel[], auth: ResolvedAuth, ghost: boolean): AdminModel[] {
   return models.map((m) => {
     const account = m === auth.model;
     const select = publicSelect(m);
@@ -93,7 +93,7 @@ function adminModels(models: readonly ResolvedModel[], auth: ResolvedAuth): Admi
       publicKeys: [...select.keys, ...(account ? ["role"] : [])],
       ...encryptedOf(m),
       listSql: `SELECT ${select.sql}${account ? `, ${q("role")}` : ""} FROM ${table} WHERE ($1::text IS NULL OR ${match}) AND ($2::uuid IS NULL OR ${q("id")} > $2::uuid) ORDER BY ${q("id")} LIMIT $3`,
-      deleteSql: `DELETE FROM ${table} WHERE ${q("id")} = $1`,
+      deleteSql: account ? accountDeleteSql(m, models, ghost, true) : `DELETE FROM ${table} WHERE ${q("id")} = $1`,
     };
   });
 }
@@ -695,6 +695,23 @@ function ghostValue(f: ResolvedField): GhostValue | null | undefined {
   }
 }
 
+/**
+ * Deletes an account ($1). With `ghost`, its records that need an owner are
+ * first given to the "Deleted user" account ($2), in the same statement.
+ * With `notAdmin` (admin pages), nothing happens if the account is an admin,
+ * checked in the statement itself, so a role change can't slip in between.
+ */
+function accountDeleteSql(model: ResolvedModel, models: readonly ResolvedModel[], ghost: boolean, notAdmin: boolean): string {
+  const table = q(model.table);
+  const guard = notAdmin ? ` AND ${q("role")} IS DISTINCT FROM ${roleLiteral("admin")}` : "";
+  const target = notAdmin ? ` AND EXISTS (SELECT 1 FROM ${table} WHERE ${q("id")} = $1${guard})` : "";
+  const requiredLinks = models.filter((m) => m !== model).flatMap((m) => m.fields.filter((f) => f.link === model.name && !f.optional).map((f) => ({ m, f })));
+  const moves = requiredLinks.map(({ m, f }, i) => `"moved${i + 1}" AS (UPDATE ${q(m.table)} SET ${q(f.column)} = $2 WHERE ${q(f.column)} = $1${target})`);
+  return ghost
+    ? `WITH ${moves.join(", ")} DELETE FROM ${table} WHERE ${q("id")} = $1${guard}`
+    : `DELETE FROM ${table} WHERE ${q("id")} = $1${guard}`;
+}
+
 function authSpec(auth: ResolvedAuth, models: readonly ResolvedModel[]): AuthSpec {
   const model = auth.model;
   const table = q(model.table);
@@ -730,10 +747,7 @@ function authSpec(auth: ResolvedAuth, models: readonly ResolvedModel[]): AuthSpe
       removeSql: `DELETE FROM ${table} WHERE ${q("id")} = $1`,
     };
   }
-  const moves = requiredLinks.map(({ m, f }, i) => `"moved${i + 1}" AS (UPDATE ${q(m.table)} SET ${q(f.column)} = $2 WHERE ${q(f.column)} = $1)`);
-  const deleteSql = ghost === null
-    ? `DELETE FROM ${table} WHERE ${q("id")} = $1`
-    : `WITH ${moves.join(", ")} DELETE FROM ${table} WHERE ${q("id")} = $1`;
+  const deleteSql = accountDeleteSql(model, models, ghost !== null, false);
   return {
     model: model.name,
     account: {

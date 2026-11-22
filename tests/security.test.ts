@@ -350,7 +350,9 @@ model Post {
       expect(m.listSql).not.toMatch(/lower\("(email|secret_note|phone|password_hash)"\)/);
       // Values are only parameters: the search text, the cursor and the page size.
       expect(m.listSql.match(/\$\d/g)?.every((p) => ["$1", "$2", "$3"].includes(p))).toBe(true);
-      expect(m.deleteSql).toMatch(/^DELETE FROM "[a-z_]+" WHERE "id" = \$1$/);
+      // Accounts: the statement itself refuses admins, so a role change can't race the check.
+      if (m.account) expect(m.deleteSql).toMatch(/DELETE FROM "users" WHERE "id" = \$1 AND "role" IS DISTINCT FROM 'admin'$/);
+      else expect(m.deleteSql).toMatch(/^DELETE FROM "[a-z_]+" WHERE "id" = \$1$/);
     }
   });
 

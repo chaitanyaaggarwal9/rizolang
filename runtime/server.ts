@@ -1096,20 +1096,27 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       await audit.record({ action: "record_deleted", userId: me, targetId: id, ip, detail: model.name });
     } else {
       if (id === me) throw new HttpError(403, "forbidden", "You cannot delete your own account here. Use the account page.");
-      if ((await roleOf(id)) === "admin") throw new HttpError(403, "forbidden", "Admins can't be deleted here. Remove their admin role first.");
+      const adminMessage = "Admins can't be deleted here. Remove their admin role first.";
+      const target = (await db.query(auth.roleSql, [id])).rows[0];
+      if (target === undefined) throw new HttpError(404, "not_found", `${model.name} not found.`);
+      if (target["role"] === "admin") throw new HttpError(403, "forbidden", adminMessage);
       const ghost = auth.account.ghost === null ? undefined : await deletedUser();
       if (ghost === id) throw new HttpError(409, "in_use", "This account can't be deleted.");
       let r: QueryResult;
       try {
-        // As with DELETE /auth/me: records that must have an owner go to "Deleted user" in the same statement.
-        r = await run(auth.account.deleteSql, ghost === undefined ? [id] : [id, ghost], auth.model);
+        // As with DELETE /auth/me: records that must have an owner go to "Deleted user" in the same
+        // statement. The statement itself skips admins, in case the role changed since the check above.
+        r = await run(model.deleteSql, ghost === undefined ? [id] : [id, ghost], auth.model);
       } catch (e) {
         if (e instanceof HttpError && e.code === "in_use") {
           throw new HttpError(409, "in_use", "This account still owns records that can't be kept without it. Delete them first, then delete the account.");
         }
         throw e;
       }
-      if ((r.rowCount ?? 0) === 0) throw new HttpError(404, "not_found", `${model.name} not found.`);
+      if ((r.rowCount ?? 0) === 0) {
+        if ((await roleOf(id)) === "admin") throw new HttpError(403, "forbidden", adminMessage);
+        throw new HttpError(404, "not_found", `${model.name} not found.`);
+      }
       await audit.record({ action: "account_deleted", userId: me, targetId: id, ip, detail: "admin" });
     }
     res.writeHead(204, SECURITY_HEADERS).end();

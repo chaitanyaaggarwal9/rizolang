@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - New errors RZ0344 and RZ0908.
 - Milestone 10, part 3: built-in admin pages.
   - Every app with roles gets `GET /auth/admin/<model>` (search by id or text, 50 records at a time) and `DELETE /auth/admin/<model>/:id`, for admins only, with the session cookie. With pages, it also gets `/admin` and `/admin/<model>`, with a search box, Delete buttons, a role picker for accounts, and an "Admin" link in the menu for admins.
-  - Only `id` and public fields are shown (plus the role, for accounts); private, Password and encrypted fields are never shown or searched. Every deletion is audit-logged.
+  - Only `id` and public fields are shown (plus the role, for accounts); private and Password fields are never shown or searched, and encrypted fields are never searched. Every deletion is audit-logged.
   - Deleting an account works like `DELETE /auth/me`, never for your own account or another admin's.
 
 ### Changed

@@ -758,6 +758,27 @@ describe("admin pages", () => {
     expect(texts(page)).not.toContain(HOSTILE);
   });
 
+  it("shows only the newest search, even when an older answer arrives later", async () => {
+    const pending: { url: string; done: (body: unknown) => void }[] = [];
+    (globalThis as { fetch?: unknown }).fetch = (url: string) => {
+      if (url === "/auth/me") return Promise.resolve({ ok: true, status: 200, json: async () => ({ id: "me" }) });
+      return new Promise((resolve) => pending.push({ url, done: (body) => resolve({ ok: true, status: 200, json: async () => body }) }));
+    };
+    const page = client.renderPage({ title: "User", params: {}, loggedIn: true, auth: true, items: [usersItem] }) as unknown as FakeElement;
+    await flush();
+    const input = all(page).find((e) => e.tagName === "input");
+    const form = all(page).find((e) => e.tagName === "form");
+    if (input !== undefined) input.value = "new";
+    form?.onsubmit?.({ preventDefault: () => undefined });
+    expect(pending.map((p) => p.url)).toEqual(["/auth/admin/users", "/auth/admin/users?q=new"]);
+    pending[1]?.done({ items: [{ id: "n", name: "Newest", role: null }], next: null });
+    await flush();
+    pending[0]?.done({ items: [{ id: "o", name: "Stale", role: null }], next: null });
+    await flush();
+    expect(texts(page)).toContain("Newest");
+    expect(texts(page)).not.toContain("Stale");
+  });
+
   it("searches with ?q", async () => {
     const sent = stubAdmin();
     const page = client.renderPage({ title: "User", params: {}, loggedIn: true, auth: true, items: [usersItem] }) as unknown as FakeElement;

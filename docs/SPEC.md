@@ -236,12 +236,12 @@ Each account has at most one role, or none.
 
 | Endpoint | Result |
 |----------|--------|
-| `GET /auth/admin/<model>?q=&after=` | 200 `{ "items", "next" }`: 50 records at a time, in id order, with `id` and the public fields only (plus `role` for accounts). `q` (optional, at most 200 characters) finds the exact id, or text anywhere in a public Text or Email field, ignoring case. Private, Password and encrypted fields are never shown or searched |
+| `GET /auth/admin/<model>?q=&after=` | 200 `{ "items", "next" }`: 50 records at a time, in id order, with `id` and the public fields only (plus `role` for accounts). `q` (optional, at most 200 characters) finds the exact id, or text anywhere in a public Text or Email field, ignoring case. Private and Password fields are never shown or searched; encrypted public fields are shown (decrypted, as on any endpoint) but never searched |
 | `DELETE /auth/admin/<model>/:id` | 204. 404 if there is no such record, 409 if other records need it |
 
 - **`<model>`** is the model's table name with `-` for `_`: `posts` for `Post`, `blog-posts` for `BlogPost`. Other names answer 404.
 - **Access:** login with the session cookie (never an API token), then 403 unless the account has the admin role. Deletes are audit-logged like any other.
-- **Accounts:** deleting an account works like `DELETE /auth/me`: its sessions, passkeys and tokens go with it, and records that need an owner are credited to "Deleted user". Admins can't delete their own account here (403), another admin (403: remove their admin role first) or "Deleted user" (409).
+- **Accounts:** deleting an account works like `DELETE /auth/me`: its sessions, passkeys and tokens go with it, and records that need an owner are credited to "Deleted user". Admins can't delete their own account here (403), another admin (403: remove their admin role first, checked inside the delete statement) or "Deleted user" (409).
 - **Pages:** `/admin` lists the models, and `/admin/<model>` has a search box, the records, "Load more", a Delete button (after a confirmation) and, for accounts, a role picker. Admins see an "Admin" link in the menu.
 - **Reserved paths:** with roles, pages and endpoints can't use paths under `/admin` (RZ0334, RZ0322). Pages may link to `/admin`.
 

@@ -435,7 +435,13 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
 
     it("lets only admins use the admin endpoints, and only with the session cookie", async () => {
       expect((await call("GET", "/auth/admin/posts")).status).toBe(401);
-      expect((await call("GET", "/auth/admin/posts", { headers: { Authorization: "Bearer rzt_not_a_session" } })).status).toBe(401);
+      // A real, valid API token of an admin still can't use them.
+      const made = await call("POST", "/auth/tokens", { cookie: alice, headers: { "X-Forwarded-For": "198.51.100.41" }, body: { name: "Admin agent", endpoints: ["GET /api/admin/posts"], days: 1 } });
+      expect(made.status).toBe(201);
+      const bearer = { Authorization: `Bearer ${(made.body as { token: string }).token}` };
+      expect((await call("GET", "/api/admin/posts", { headers: bearer })).status).toBe(200);
+      expect((await call("GET", "/auth/admin/posts", { headers: bearer })).status).toBe(401);
+      expect((await call("DELETE", `/auth/admin/posts/${danaPost}`, { headers: bearer })).status).toBe(401);
       expect((await call("GET", "/auth/admin/posts", { cookie: bob })).status).toBe(403);
       expect((await call("DELETE", `/auth/admin/posts/${danaPost}`, { cookie: bob })).status).toBe(403);
       expect((await call("GET", "/auth/admin/nothing", { cookie: alice })).status).toBe(404);
@@ -493,6 +499,13 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       expect((await call("DELETE", `/auth/admin/users/${aliceId}`, { cookie: alice })).status).toBe(403);
       expect((await call("PUT", `/auth/users/${dana.id}/role`, { cookie: alice, body: { role: "admin" } })).status).toBe(200);
       expect((await call("DELETE", `/auth/admin/users/${dana.id}`, { cookie: alice })).status).toBe(403);
+      // Even if the role changes after the server's check, the delete statement itself skips admins
+      // and moves none of their records.
+      const usersAdmin = app.admin?.find((m) => m.account);
+      const raced = await pool.query(usersAdmin?.deleteSql ?? "", [dana.id, aliceId]);
+      expect(raced.rowCount).toBe(0);
+      expect((await pool.query(`SELECT count(*)::int AS "n" FROM "posts" WHERE "author_id" = $1`, [dana.id])).rows[0].n).toBeGreaterThan(0);
+      expect((await call("DELETE", "/auth/admin/users/00000000-0000-4000-8000-000000000000", { cookie: alice })).status).toBe(404);
       expect((await call("PUT", `/auth/users/${dana.id}/role`, { cookie: alice, body: { role: null } })).status).toBe(200);
       const remaining = (await pool.query(`SELECT count(*)::int AS "n" FROM "posts" WHERE "author_id" = $1`, [dana.id])).rows[0].n as number;
       expect(remaining).toBeGreaterThan(0);

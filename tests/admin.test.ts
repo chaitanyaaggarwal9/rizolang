@@ -93,6 +93,15 @@ describe("admin pages: SQL", () => {
   it("deletes one record by id", () => {
     expect(posts?.deleteSql).toBe('DELETE FROM "blog_posts" WHERE "id" = $1');
   });
+
+  it("deletes accounts like DELETE /auth/me, but skips admins inside the statement", () => {
+    const guard = `"role" IS DISTINCT FROM 'admin'`;
+    expect(users?.deleteSql).toBe(
+      `WITH "moved1" AS (UPDATE "blog_posts" SET "author_id" = $2 WHERE "author_id" = $1 AND EXISTS (SELECT 1 FROM "users" WHERE "id" = $1 AND ${guard})) DELETE FROM "users" WHERE "id" = $1 AND ${guard}`,
+    );
+    // DELETE /auth/me itself is unchanged.
+    expect(app.auth?.account.deleteSql).toBe('WITH "moved1" AS (UPDATE "blog_posts" SET "author_id" = $2 WHERE "author_id" = $1) DELETE FROM "users" WHERE "id" = $1');
+  });
 });
 
 describe("admin pages: reserved paths", () => {

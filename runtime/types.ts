@@ -321,7 +321,7 @@ export interface AdminModel {
   readonly encrypted?: readonly EncryptedField[];
   /** $1: search text or null, $2: the id to continue after or null, $3: the page size plus one. */
   readonly listSql: string;
-  /** `DELETE FROM <table> WHERE id = $1` (accounts use auth.account.deleteSql instead). */
+  /** `DELETE FROM <table> WHERE id = $1`. For accounts, auth.account.deleteSql that also skips admins ($2: "Deleted user"). */
   readonly deleteSql: string;
 }
 

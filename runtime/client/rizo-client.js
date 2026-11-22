@@ -846,6 +846,8 @@ function adminItem(item) {
   /** The admin's own id, so their own account has no delete or role buttons. */
   let myId = "";
   let n = 0;
+  /** Only the newest search or page is shown: answers to older requests are dropped. */
+  let latest = 0;
 
   /** @param {Record<string, unknown>} record */
   const card = (record) => {
@@ -898,6 +900,7 @@ function adminItem(item) {
    * @param {string | null} after
    */
   const load = (q, after) => {
+    const request = ++latest;
     more.hidden = true;
     box.setAttribute("aria-busy", "true");
     const query = new URLSearchParams();
@@ -905,6 +908,7 @@ function adminItem(item) {
     if (after !== null) query.set("after", after);
     const url = query.toString() === "" ? endpoint : `${endpoint}?${query.toString()}`;
     getJson(url).then((page) => {
+      if (request !== latest) return;
       const { items, next } = /** @type {{ items: Record<string, unknown>[], next: string | null }} */ (page);
       if (after === null) list.replaceChildren(...(items.length === 0 ? [el("li", { class: "rizo-empty" }, q === "" ? `No ${noun} records yet.` : "Nothing matches this search.")] : []));
       for (const record of items) list.append(card(record));
@@ -912,7 +916,11 @@ function adminItem(item) {
         more.hidden = false;
         more.onclick = () => load(q, next);
       }
-    }, fail).finally(() => box.setAttribute("aria-busy", "false"));
+    }, (e) => {
+      if (request === latest) fail(e);
+    }).finally(() => {
+      if (request === latest) box.setAttribute("aria-busy", "false");
+    });
   };
 
   form.onsubmit = (event) => {

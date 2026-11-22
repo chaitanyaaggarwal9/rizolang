@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Milestone 9, part 2: the account page.
+  - `/account` starts with forms to edit the profile, change the login email and change the password.
+  - Changing the login email (`POST /auth/email`, with the password) sends a one-time link to the new address. Nothing changes until it is opened on the new built-in `/confirm-email` page (`POST /auth/email/confirm`); then the old address is told, and the change is recorded in the audit log. A taken address gets the same answer and no link.
+  - Edit forms (PATCH) now send only the fields that changed, so a private field that isn't shown is never cleared. Built-in edit forms stay on the page after saving, with a "saved" message.
+  - `/confirm-email` is now a reserved page path.
+
 ### Changed
 
 - The compact spec is shorter (about 1,300 words instead of 1,480), with the same rules, so there is room for new features under its 1,500-word limit.

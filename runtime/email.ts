@@ -29,7 +29,10 @@ export const EMAIL_TOKENS = '"_rizo_email_tokens"';
 export const VERIFY_SECONDS = 24 * 60 * 60;
 export const RESET_SECONDS = 60 * 60;
 
-export type TokenPurpose = "verify" | "reset";
+export type TokenPurpose = "verify" | "reset" | "email";
+
+/** How long a link to confirm a new login email works. */
+export const CHANGE_SECONDS = 60 * 60;
 
 export const EMAIL_SQL = {
   isUnverified: `SELECT 1 FROM ${UNVERIFIED} WHERE "user_id" = $1`,
@@ -39,6 +42,9 @@ export const EMAIL_SQL = {
   useToken: `DELETE FROM ${EMAIL_TOKENS} WHERE "id" = $1 AND "purpose" = $2 AND "expires_at" > now() RETURNING "user_id"`,
   /** Older links stop working when a new one is sent, and after a password reset. */
   deleteTokens: `DELETE FROM ${EMAIL_TOKENS} WHERE "user_id" = $1 AND "purpose" = $2`,
+  /** A link to confirm a new login email ($4), which takes effect only when the link is opened. */
+  createEmailChange: `INSERT INTO ${EMAIL_TOKENS} ("id", "user_id", "purpose", "expires_at", "new_email") VALUES ($1, $2, 'email', now() + make_interval(secs => $3), $4)`,
+  useEmailChange: `DELETE FROM ${EMAIL_TOKENS} WHERE "id" = $1 AND "purpose" = 'email' AND "expires_at" > now() RETURNING "user_id", "new_email"`,
   sweepTokens: `DELETE FROM ${EMAIL_TOKENS} WHERE "expires_at" <= now()`,
 } as const;
 
@@ -79,6 +85,26 @@ export const MESSAGES = {
       `Forgot your password? Reset it: ${publicUrl}/reset-password`,
       "",
       "If it wasn't you, you can ignore this email. Nothing has changed.",
+    ].join("\n"),
+  }),
+  changeEmail: (publicUrl: string, token: string): { subject: string; text: string } => ({
+    subject: `Confirm your new email for ${host(publicUrl)}`,
+    text: [
+      `Confirm that you want to log in to ${host(publicUrl)} with this email address from now on:`,
+      "",
+      `${publicUrl}/confirm-email#token=${token}`,
+      "",
+      "The link works once, for 1 hour. Until you open it, nothing changes.",
+      "If you didn't ask for this, you can ignore this email.",
+    ].join("\n"),
+  }),
+  emailChanged: (publicUrl: string): { subject: string; text: string } => ({
+    subject: `Your email for ${host(publicUrl)} was changed`,
+    text: [
+      `The email address you use to log in to ${host(publicUrl)} was just changed, and this address no longer works for logging in.`,
+      "",
+      "If you made this change, there is nothing to do.",
+      "If you didn't, someone may know your password: reply to this email or contact the site's owner right away.",
     ].join("\n"),
   }),
   reset: (publicUrl: string, token: string): { subject: string; text: string } => ({

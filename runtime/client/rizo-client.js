@@ -12,7 +12,7 @@
  * @typedef {"Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID"} FieldKind
  * @typedef {{ key: string, label: string, type: FieldKind }} FieldView
  * @typedef {{ key: string, kind: FieldKind, label: string, required: boolean, nullable: boolean, min?: number, max?: number, multiline: boolean }} FormField
- * @typedef {{ kind: "form", method: "POST" | "PUT" | "PATCH", endpoint: string, fields: FormField[], submit: string, prefill: string | null, then: string | null, done?: string }} FormItem
+ * @typedef {{ kind: "form", method: "POST" | "PUT" | "PATCH", endpoint: string, fields: FormField[], submit: string, prefill: string | null, then: string | null, done?: string, heading?: string, idPrefix?: string }} FormItem
  * @typedef {{ kind: "button", label: string, method: "DELETE", endpoint: string, then: string }} ButtonItem
  * @typedef {{ kind: "text", text: string }
  *   | { kind: "link", label: string, path: string }
@@ -26,6 +26,7 @@
  *   | { kind: "yourData" }
  *   | { kind: "privacy" }
  *   | { kind: "verifyEmail" }
+ *   | { kind: "confirmEmail" }
  *   | { kind: "newPassword", field: FormField }} PageItem
  * @typedef {{ title: string, items: PageItem[], params: Record<string, string>, loggedIn: boolean, auth: boolean, privacy?: boolean }} PageData
  */
@@ -276,6 +277,7 @@ export function readField(field, input, partial) {
  */
 function formItem(item, params, extra = {}) {
   const form = el("form", { class: "rizo-form" });
+  if (item.heading !== undefined) form.append(el("h2", {}, item.heading));
   const status = el("p", { class: "rizo-error", role: "alert" });
   status.hidden = true;
   const isLogin = item.endpoint === "/auth/login";
@@ -283,7 +285,7 @@ function formItem(item, params, extra = {}) {
   const inputs = new Map();
 
   for (const field of item.fields) {
-    const id = `rizo-field-${field.key}`;
+    const id = `${item.idPrefix ?? "rizo-field-"}${field.key}`;
     /** @type {Record<string, string>} */
     const attrs = { id, name: field.key, "aria-describedby": `${id}-error` };
     // A required checkbox would have to be ticked; for Rizo, unticked simply means false.
@@ -296,7 +298,8 @@ function formItem(item, params, extra = {}) {
       if (field.min !== undefined) attrs["min"] = String(field.min);
       if (field.max !== undefined) attrs["max"] = String(field.max);
     }
-    if (field.kind === "Password") attrs["autocomplete"] = isLogin ? "current-password" : "new-password";
+    const current = isLogin || field.key === "currentPassword" || (field.key === "password" && item.endpoint !== "/auth/signup");
+    if (field.kind === "Password") attrs["autocomplete"] = current ? "current-password" : "new-password";
     if (field.kind === "Email") attrs["autocomplete"] = isLogin ? "username" : "email";
     const input = field.multiline
       ? /** @type {HTMLTextAreaElement} */ (el("textarea", { ...attrs, rows: "6" }))
@@ -308,9 +311,14 @@ function formItem(item, params, extra = {}) {
   }
 
   const submit = /** @type {HTMLButtonElement} */ (el("button", { type: "submit", class: "rizo-submit" }, item.submit));
-  form.append(status, submit);
+  const savedNote = el("p", { class: "rizo-done", role: "status" });
+  savedNote.hidden = true;
+  form.append(status, submit, savedNote);
+
 
   let prefilled = false;
+  /** Values the form started with (PATCH forms send only what changed). */
+  const initial = new Map();
   if (item.prefill !== null) {
     getJson(fillPath(item.prefill, params)).then(
       (record) => {
@@ -321,6 +329,7 @@ function formItem(item, params, extra = {}) {
           if (field.kind === "Bool") /** @type {HTMLInputElement} */ (input).checked = value === true;
           else input.value = field.kind === "Date" ? toLocalInput(String(value)) : String(value);
         }
+        for (const { field, input } of inputs.values()) initial.set(field.key, JSON.stringify(readField(field, input, false) ?? null));
         prefilled = true;
       },
       (e) => {
@@ -333,6 +342,7 @@ function formItem(item, params, extra = {}) {
   form.onsubmit = (event) => {
     event.preventDefault();
     status.hidden = true;
+    savedNote.hidden = true;
     /** @type {Record<string, unknown>} */
     const body = { ...extra };
     const partial = item.method !== "POST" && !prefilled;
@@ -340,11 +350,20 @@ function formItem(item, params, extra = {}) {
       error.textContent = "";
       input.removeAttribute("aria-invalid");
       const value = readField(field, input, partial);
-      if (value !== undefined) body[field.key] = value;
+      const unchanged = item.method === "PATCH" && prefilled && JSON.stringify(value ?? null) === initial.get(field.key);
+      if (value !== undefined && !unchanged) body[field.key] = value;
     }
     submit.disabled = true;
     sendJson(item.method, fillPath(item.endpoint, params), body).then(
       (result) => {
+        if (item.done !== undefined && item.method === "PATCH") {
+          // An edit form stays, so it can be used again; what was saved is the new starting point.
+          submit.disabled = false;
+          savedNote.textContent = item.done;
+          savedNote.hidden = false;
+          for (const { field, input } of inputs.values()) initial.set(field.key, JSON.stringify(readField(field, input, false) ?? null));
+          return;
+        }
         if (item.done !== undefined) {
           form.replaceWith(el("p", { class: "rizo-done", role: "status" }, item.done));
           return;
@@ -474,6 +493,26 @@ function verifyEmailItem(token) {
       status.setAttribute("class", "rizo-error");
       status.textContent = e instanceof Error ? e.message : String(e);
       box.append(el("p", {}, el("a", { href: "/verify-email" }, "Get a new link")));
+    },
+  );
+  return box;
+}
+
+/**
+ * Confirm a new login email, when the page was opened from the emailed link.
+ * @param {string} token
+ */
+function confirmEmailItem(token) {
+  const status = el("p", { role: "status" }, "Confirming your new email…");
+  const box = el("div", { class: "rizo-actions", "aria-live": "polite" }, status);
+  sendJson("POST", "/auth/email/confirm", { token }).then(
+    () => {
+      status.textContent = "Your email is changed. Use the new address to log in from now on.";
+      box.append(el("p", {}, el("a", { href: "/account" }, "Your account")));
+    },
+    (e) => {
+      status.setAttribute("class", "rizo-error");
+      status.textContent = e instanceof Error ? e.message : String(e);
     },
   );
   return box;
@@ -787,7 +826,7 @@ export function renderPage(data) {
   if (data.auth) main.append(menu(data));
   main.append(el("h1", {}, data.title));
   // Opened from an emailed link: show only what the link is for.
-  const linkItem = data.items.find((item) => item.kind === "verifyEmail" || item.kind === "newPassword");
+  const linkItem = data.items.find((item) => item.kind === "verifyEmail" || item.kind === "newPassword" || item.kind === "confirmEmail");
   const token = openedWithToken;
   for (const item of linkItem !== undefined && token !== null ? [linkItem] : data.items) {
     if (item.kind === "text") main.append(el("p", {}, item.text));
@@ -802,6 +841,8 @@ export function renderPage(data) {
     else if (item.kind === "privacy") main.append(privacyItem());
     else if (item.kind === "verifyEmail") {
       if (token !== null) main.append(verifyEmailItem(token));
+    } else if (item.kind === "confirmEmail") {
+      if (token !== null) main.append(confirmEmailItem(token));
     } else if (item.kind === "newPassword") {
       if (token !== null) main.append(newPasswordItem(item.field, token));
     }

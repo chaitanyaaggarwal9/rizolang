@@ -818,6 +818,44 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect(data.items).toEqual([{ kind: "privacy" }]);
   });
 
+  describe("changing the login email", () => {
+    const MAY = { email: "may@example.com", password: "mays long password", name: "May" };
+    const at = { "X-Forwarded-For": "198.51.100.60" };
+    let may: string;
+
+    beforeAll(async () => {
+      may = (await join(MAY, "198.51.100.60")).cookie;
+    });
+
+    it("needs the password, and answers the same for a taken address without sending a link", async () => {
+      const wrong = await call("POST", "/auth/email", { cookie: may, headers: at, body: { newEmail: "may.new@example.com", password: "wrong wrong wrong" } });
+      expect(wrong).toMatchObject({ status: 403, body: { error: { field: "password" } } });
+      const sent = mail.length;
+      const taken = await call("POST", "/auth/email", { cookie: may, headers: at, body: { newEmail: BOB.email, password: MAY.password } });
+      expect(taken).toMatchObject({ status: 202, body: { message: "Check your email for a link." } });
+      expect(mail.length).toBe(sent);
+      expect((await call("POST", "/auth/email", { headers: at, body: { newEmail: "x@example.com", password: "x" } })).status).toBe(401);
+    });
+
+    it("changes it only when the link sent to the new address is opened, then tells the old address", async () => {
+      const r = await call("POST", "/auth/email", { cookie: may, headers: at, body: { newEmail: "May.New@example.com", password: MAY.password } });
+      expect(r.status).toBe(202);
+      expect(mail.at(-1)).toMatchObject({ to: "may.new@example.com", subject: "Confirm your new email for blog.example" });
+      const token = linkToken("may.new@example.com", "/confirm-email");
+      // Nothing changes before the link is opened.
+      expect((await call("POST", "/auth/login", { headers: at, body: { email: MAY.email, password: MAY.password } })).status).toBe(200);
+      expect((await call("POST", "/auth/email/confirm", { headers: at, body: { token: "A".repeat(43) } })).status).toBe(400);
+      expect((await call("POST", "/auth/email/confirm", { headers: at, body: { token } })).status).toBe(204);
+      expect(mail.at(-1)).toMatchObject({ to: MAY.email, subject: "Your email for blog.example was changed" });
+      expect((await call("POST", "/auth/email/confirm", { headers: at, body: { token } })).status).toBe(400);
+      expect((await call("POST", "/auth/login", { headers: at, body: { email: MAY.email, password: MAY.password } })).status).toBe(401);
+      expect((await call("POST", "/auth/login", { headers: at, body: { email: "may.new@example.com", password: MAY.password } })).status).toBe(200);
+      expect((await call("GET", "/auth/me", { cookie: may })).status).toBe(200);
+      const audit = (await pool.query(`SELECT count(*)::int AS "n" FROM "_rizo_audit" WHERE "action" = 'email_changed'`)).rows[0].n;
+      expect(audit).toBe(1);
+    });
+  });
+
   describe("API tokens", () => {
     const LEE = { email: "lee@example.com", password: "lees long password", name: "Lee" };
     const at = { "X-Forwarded-For": "198.51.100.50" };
@@ -1006,7 +1044,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect(has("record_deleted", { user_id: aliceId, detail: "Post" })).toBe(true);
     expect(has("login_failed", { user_id: aliceId, detail: "email not confirmed" })).toBe(true);
     expect(has("email_verified", { user_id: aliceId })).toBe(true);
-    for (const action of ["password_changed", "password_check_failed", "account_deleted", "logout_all", "logout", "password_reset_requested", "password_reset", "session_revoked", "token_created", "token_used", "token_revoked", "data_exported"]) {
+    for (const action of ["password_changed", "password_check_failed", "account_deleted", "logout_all", "logout", "password_reset_requested", "password_reset", "session_revoked", "token_created", "token_used", "token_revoked", "data_exported", "email_changed"]) {
       expect(has(action), action).toBe(true);
     }
     expect(rows.every((r) => r.ip === null || /^[0-9a-f.:]+$/i.test(String(r.ip)))).toBe(true);

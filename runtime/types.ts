@@ -126,6 +126,10 @@ export interface AuthSpec {
     readonly hashSql: string;
     /** `UPDATE <users> SET <hash column> = $2 WHERE id = $1` */
     readonly setPasswordSql: string;
+    /** `SELECT <login column> AS "email" FROM <users> WHERE id = $1` */
+    readonly emailSql: string;
+    /** `UPDATE <users> SET <login column> = $2 WHERE id = $1` */
+    readonly setEmailSql: string;
     /**
      * Deletes the account ($1). When `ghost` is set, it first gives the
      * account's records to the "Deleted user" account ($2), in the same statement.
@@ -212,6 +216,10 @@ export type PageItemSpec =
       readonly then: string | null;
       /** Built-in forms only: show this message after sending, instead of opening a page. */
       readonly done?: string;
+      /** Built-in forms only: a heading above the form. */
+      readonly heading?: string;
+      /** Built-in forms only: prefix for input ids, so several forms can share a page. */
+      readonly idPrefix?: string;
     }
   | { readonly kind: "button"; readonly label: string; readonly method: "DELETE"; readonly endpoint: string; readonly then: string }
   /** "Log in with a passkey" (built-in login page). */
@@ -228,6 +236,8 @@ export type PageItemSpec =
   | { readonly kind: "privacy" }
   /** Confirms the email when the page was opened from the emailed link (built-in /verify-email). */
   | { readonly kind: "verifyEmail" }
+  /** Confirms a new login email when the page was opened from the emailed link (built-in /confirm-email). */
+  | { readonly kind: "confirmEmail" }
   /** Asks for a new password when the page was opened from the emailed link (built-in /reset-password). */
   | { readonly kind: "newPassword"; readonly field: FormFieldSpec };
 

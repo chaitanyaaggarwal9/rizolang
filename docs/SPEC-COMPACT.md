@@ -94,7 +94,7 @@ api METHOD /path/:param -> Model.public {
 - `requires role admin` gives 403 to users without that role.
 - Endpoints allow 120 requests a minute by default. Add `limit 10 per minute` (second, minute, hour, day) where a tighter limit fits, such as comments.
 - `requires owner author` lets only the record's owner act (others get 404). It works with find, update and delete, and is **required** on update and delete of a model that links to the auth model.
-- The return type is `-> Model.public` or `-> list Model.public`, and there is none for delete. Only `.public` can be returned.
+- The return type is `-> Model.public` or `-> list Model.public`, and there is none for delete. Only `.public` can be returned. On find and list, `-> list Post.public with author` also returns each linked author's public fields.
 - Paths use lowercase segments and `:camelCase` parameters. Every parameter must be used. `/auth` is reserved.
 
 | Action                          | Method       | Result             |

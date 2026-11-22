@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Milestone 10, part 1: linked records.
+  - `-> list Post.public with author, editor` (on `find` and `list`) returns each link as the linked record's public fields, or `null` for an empty optional link. Private and Password fields are never included, and encrypted fields are decrypted. Still one query: each linked record is read by primary key in a subquery.
+  - Pages show the linked record's first public text field ("by Ann") instead of its id, and `openapi.json` describes the linked record.
+  - New error RZ0343.
+
 ### Security
 
 - Defense in depth for migrations, after a Socket.dev AI review of `build/src/migrations.js`. Migration files now clean the source file name themselves (it was already cleaned by the CLI), and the schema snapshot is refused if a check expression or default isn't text. Snapshot check expressions and defaults were already never written into SQL; a test now proves that even a tampered snapshot can't add SQL to a migration.

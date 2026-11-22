@@ -89,6 +89,8 @@ export interface ReturnType {
   /** The word after the dot; must be "public". */
   readonly view: string;
   readonly viewSpan: Span;
+  /** `with author, editor`: link fields whose records are returned too. */
+  readonly with: readonly { readonly name: string; readonly span: Span }[];
   readonly span: Span;
 }
 

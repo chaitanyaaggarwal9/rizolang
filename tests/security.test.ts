@@ -531,3 +531,12 @@ describe("security: list filters from query parameters", () => {
     expect(route?.values.slice(0, 2)).toEqual([{ from: "query", name: "q" }, { from: "query", name: "min" }]);
   });
 });
+
+describe("security: linked records (with)", () => {
+  it("never selects a linked record's private or Password fields, and copies only its public keys", () => {
+    const r = compileOk("auth User by email\nmodel User {\n  email: Email unique private\n  password: Password\n  name: Text\n}\nmodel Post {\n  author: User\n  title: Text\n}\napi GET /api/posts -> list Post.public with author {\n  public\n  return db.Post.list()\n}\n");
+    const route = buildApp(r.apis, r.auth).routes[0];
+    expect(route?.sql).not.toMatch(/"email"|password/);
+    expect(route?.expanded).toEqual([{ key: "author", publicKeys: ["id", "name"] }]);
+  });
+});

@@ -523,7 +523,22 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
     next();
     next();
     const span = { ...start.span, length: view.span.col + view.span.length - start.span.col };
-    return { list, model: model.text, modelSpan: model.span, view: view.text, viewSpan: view.span, span };
+    const withLinks: { name: string; span: Span }[] = [];
+    if (isWord(peek(), "with") && peek().span.line === view.span.line) {
+      next();
+      for (;;) {
+        const name = peek();
+        if (name.kind !== "ident" || name.span.line !== view.span.line) {
+          fail("RZ0215", name.span.line === view.span.line ? name.span : view.span, `Expected a link field after "with" but found ${describe(name)}.`,
+            `Name the link fields whose records to return too, for example \`-> ${list ? "list " : ""}${model.text}.public with author\`.`);
+        }
+        next();
+        withLinks.push({ name: name.text, span: name.span });
+        if (peek().kind !== "comma") break;
+        next();
+      }
+    }
+    return { list, model: model.text, modelSpan: model.span, view: view.text, viewSpan: view.span, with: withLinks, span };
   }
 
   function parseStatement(): Statement {

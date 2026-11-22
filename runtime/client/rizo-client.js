@@ -10,7 +10,7 @@
  * - Data comes only from this site's endpoints (fetch with same-origin cookies).
  *
  * @typedef {"Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID"} FieldKind
- * @typedef {{ key: string, label: string, type: FieldKind }} FieldView
+ * @typedef {{ key: string, label: string, type: FieldKind, display?: string }} FieldView
  * @typedef {{ key: string, kind: FieldKind, label: string, required: boolean, nullable: boolean, min?: number, max?: number, multiline: boolean }} FormField
  * @typedef {{ kind: "form", method: "POST" | "PUT" | "PATCH", endpoint: string, fields: FormField[], submit: string, prefill: string | null, then: string | null, done?: string, heading?: string, idPrefix?: string }} FormItem
  * @typedef {{ kind: "button", label: string, method: "DELETE", endpoint: string, then: string }} ButtonItem
@@ -88,6 +88,21 @@ export function formatValue(value, type) {
 }
 
 /**
+ * A field of a record as text. A linked record returned `with` it shows its
+ * display field ("Alice") instead of an id.
+ * @param {Record<string, unknown>} record
+ * @param {FieldView} f
+ */
+export function fieldText(record, f) {
+  const value = record[f.key];
+  if (value !== null && typeof value === "object") {
+    const linked = /** @type {Record<string, unknown>} */ (value);
+    return formatValue(linked[f.display ?? "id"] ?? linked["id"], "Text");
+  }
+  return formatValue(value, f.type);
+}
+
+/**
  * Fetch JSON from this site's API. Errors become readable messages.
  * @param {string} url
  * @returns {Promise<unknown>}
@@ -124,7 +139,7 @@ function recordView(record, fields) {
   const list = el("dl", { class: "rizo-record" });
   for (const f of fields) {
     if (f.key === "id") continue;
-    list.append(el("dt", {}, f.label), el("dd", {}, formatValue(record[f.key], f.type)));
+    list.append(el("dt", {}, f.label), el("dd", {}, fieldText(record, f)));
   }
   return list;
 }

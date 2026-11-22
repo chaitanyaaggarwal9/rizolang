@@ -205,9 +205,18 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     return out;
   }
 
-  /** Copy only public keys from a row, decrypting encrypted fields. */
-  function reveal(row: Record<string, unknown>, keys: readonly string[], fields: readonly EncryptedField[] | undefined): Record<string, unknown> {
+  /** Copy only public keys from a row, decrypting encrypted fields; linked records (`with`) the same way. */
+  function reveal(
+    row: Record<string, unknown>,
+    keys: readonly string[],
+    fields: readonly EncryptedField[] | undefined,
+    expanded: Route["expanded"] = undefined,
+  ): Record<string, unknown> {
     const out = pick(row, keys);
+    for (const x of expanded ?? []) {
+      const linked = out[x.key];
+      out[x.key] = linked !== null && typeof linked === "object" ? reveal(linked as Record<string, unknown>, x.publicKeys, x.encrypted) : null;
+    }
     for (const f of fields ?? []) {
       const v = out[f.key];
       if (v !== undefined && v !== null) out[f.key] = decryptValue(encryptionKeys(), f.aad, v);
@@ -664,14 +673,14 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         const next = r.rows.length > limit && last !== undefined
           ? encodeCursor(route.page?.order ? [String(last["_cursor"]), String(last["id"])] : [String(last["id"])])
           : null;
-        return send(res, 200, { items: rows.map((row) => reveal(row, route.publicKeys, route.encrypted)), next });
+        return send(res, 200, { items: rows.map((row) => reveal(row, route.publicKeys, route.encrypted, route.expanded)), next });
       }
       case "created":
-        return send(res, 201, reveal(r.rows[0] ?? {}, route.publicKeys, route.encrypted));
+        return send(res, 201, reveal(r.rows[0] ?? {}, route.publicKeys, route.encrypted, route.expanded));
       case "one": {
         const row = r.rows[0];
         if (row === undefined) throw new HttpError(404, "not_found", `${route.model} not found.`);
-        return send(res, 200, reveal(row, route.publicKeys, route.encrypted));
+        return send(res, 200, reveal(row, route.publicKeys, route.encrypted, route.expanded));
       }
       case "none": {
         if ((r.rowCount ?? 0) === 0) throw new HttpError(404, "not_found", `${route.model} not found.`);

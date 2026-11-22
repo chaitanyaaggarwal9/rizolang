@@ -628,6 +628,16 @@ describe("account forms", () => {
   });
 });
 
+describe("linked records", () => {
+  it("shows a linked record's display field as text, and falls back to its id", () => {
+    const f = { key: "author", label: "Author", type: "ID", display: "name" } as const;
+    expect(client.fieldText({ author: { id: "u1", name: HOSTILE } }, f)).toBe(HOSTILE);
+    expect(client.fieldText({ author: { id: "u1" } }, f)).toBe("u1");
+    expect(client.fieldText({ author: null }, f)).toBe("—");
+    expect(client.fieldText({ author: "u1" }, { key: "author", label: "Author", type: "ID" })).toBe("u1");
+  });
+});
+
 describe("buttons and the menu", () => {
   const buttonPage = () => client.renderPage({
     title: "Post", params: { id: "7" }, loggedIn: true, auth: false,

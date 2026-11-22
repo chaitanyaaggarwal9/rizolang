@@ -172,6 +172,7 @@ It adds these endpoints. Paths under `/auth` are reserved.
 | `DELETE /auth/tokens/:id` | none                        | Login required (cookie). 204: the token stops working. 404 if it isn't yours |
 | `DELETE /auth/sessions/:id` | none                      | Login required. 204: that device is logged out (if it is this one, the cookie is cleared too). 404 if it isn't one of yours |
 | `DELETE /auth/me`   | `{ "password": ... }`             | 204: the account is deleted (see "Your data" below). 409 only if records need an owner and no "Deleted user" account can be made |
+| `GET /auth/privacy` | none                              | Public, only with `privacy for`: the privacy notice (§4.2) |
 | `GET /auth/me/export` | none                            | Login required (cookie). 200 with everything stored about you, as a `my-data.json` download. At most 5 times an hour |
 | `GET /auth/audit`   | `?account=<id>&limit=<1–500>` (optional) | Admins only (needs `roles admin`): the newest security audit entries, `{ "items": [...] }` |
 | `POST /auth/passkeys/register-options` | none | Login required. 200 with WebAuthn creation options for this account |
@@ -270,6 +271,15 @@ model Message {
 ```
 
 **`privacy for`** names the regions the app serves: `EU` (GDPR), `UK` (UK GDPR), `IN` (India's DPDP Act), `US-CA` (California's CCPA) and `BR` (Brazil's LGPD). At most one line, with each region once (RZ0341). It needs an `auth` line, because privacy rights belong to accounts. Every app with accounts already lets people download and delete their data (§4, "Your data"). These rules help an app meet the technical parts of these laws; they are not legal advice.
+
+**The privacy notice.** With a `privacy for` line, the app publishes what it does with people's data, written for them, with no text to write:
+- `GET /auth/privacy` (public JSON) and, in apps with pages, a built-in `/privacy` page linked from every page's menu.
+- **What we store:** every model and field, and whether each is shown publicly, private, encrypted or stored only as a hash, and how long records are kept (`keep`, or until deleted).
+- **Cookies:** the one login cookie, and why there is no cookie banner (no tracking).
+- **Who else handles the data:** Resend for account emails, and a statement that personal information isn't sold, shared or used for advertising.
+- **Security**, and how long security logs (with IP addresses) are kept (`RIZO_AUDIT_RETENTION_DAYS`).
+- **Rights:** download (`/account`), delete (`/account`), and correction or questions through the contact; for each region, its law and where to complain.
+- **Contact:** `RIZO_PRIVACY_CONTACT` (§6), which is required: an app with `privacy for` refuses to start without it.
 
 **`keep N days|months|years`**, on its own line in a model, deletes records that long after they were created (`day`, `month` and `year` work too).
 - From 1 day to 100 years. At most one per model. Not on the auth model: people delete their own accounts (RZ0342).
@@ -510,7 +520,7 @@ page /posts/:id/delete {
 ```
 
 **Rules:**
-- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. `/login`, `/signup`, `/account`, `/verify-email` and `/reset-password` are reserved for the built-in pages.
+- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password` and `/privacy` are reserved for the built-in pages.
 - **Parameters:** a page's `:parameters` fill in the parameters of the endpoint it shows, by name. Every page parameter must be used (RZ0323).
 - **Never more open than its data (RZ0335):**
   - A page that uses (shows, or has a form or button for) a `requires login` endpoint must also `requires login`.
@@ -530,6 +540,7 @@ page /posts/:id/delete {
 
 **Built-in pages.** In an app with an `auth` line and at least one page:
 - `/login` and `/signup` are generated, with forms for `/auth/login` and `/auth/signup`. `/login` also has "Log in with a passkey", and links to reset the password or get a new confirmation link.
+- `/privacy` (with a `privacy for` line) shows the privacy notice (§4.2), and every page's menu links to it.
 - `/verify-email` and `/reset-password` open from the emailed links: they confirm the email, or ask for a new password. Opened without a link, they ask for an email address and send a new link.
 - `/account` (login required) lists the user's passkeys, and adds and removes them. It also lists the devices the user is logged in on, with "Log out" for each and "Log out everywhere", lets the user create and revoke API tokens, download their data, and delete their account.
 - Every page shows a menu with a link home, plus "Log in" and "Sign up", or "Account" and "Log out".
@@ -633,6 +644,7 @@ To start a brand-new database, `psql "$DATABASE_URL" -f schema.sql` works too. T
 | `RIZO_PUBLIC_URL`           | (required with `auth`) | The app's address for links in emails, e.g. `https://blog.example`. https, or http only for localhost. No path |
 | `RIZO_EMAIL_API_KEY`        | (required with `auth`) | Resend API key |
 | `RIZO_EMAIL_FROM`           | (required with `auth`) | Sender on a domain verified with Resend, e.g. `Blog <hello@blog.example>` |
+| `RIZO_PRIVACY_CONTACT`      | (required with `privacy for`) | The email address people write to about their data, shown on the privacy page |
 | `RIZO_ENCRYPTION_KEYS`      | (required with `encrypted` fields) | Comma-separated `id:key` pairs. The id is 1–16 lowercase letters or digits, the key 32 random bytes in base64 (`openssl rand -base64 32`). The first key encrypts; all of them decrypt |
 | `RIZO_EMAIL_DEV`            | off         | `1` to print emails to the console instead of sending them (then the key and sender aren't needed). **Never in production** |
 
@@ -783,6 +795,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RA05 | warning | A public `list` of the auth model |
 | RA06 | warning | A `requires login` update or delete with no owner or role check |
 | RA07 | note    | A public endpoint allowing more than 300 requests a minute |
+| RA08 | note    | With `privacy for`: a model whose records belong to accounts but have no `keep` |
 
 ---
 

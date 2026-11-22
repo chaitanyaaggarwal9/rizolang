@@ -34,7 +34,12 @@ describe("privacy for", () => {
 
   it("is included in the route data", () => {
     const r = compileOk(`privacy for IN, EU\n${ACCOUNTS}`);
-    expect(buildApp(r.apis, r.auth, [], r.models, r.privacy).privacy).toEqual(["IN", "EU"]);
+    const spec = buildApp(r.apis, r.auth, [], r.models, r.privacy).privacy;
+    expect(spec?.regions).toEqual(["IN", "EU"]);
+    expect(spec?.models).toEqual([{ name: "User", account: true, keep: null, fields: [
+      { label: "Email", kind: "Email", stored: "public" },
+      { label: "Password", kind: "Password", stored: "hashed" },
+    ] }]);
   });
 
   it.each([

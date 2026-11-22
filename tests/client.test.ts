@@ -548,6 +548,26 @@ describe("your data", () => {
   });
 });
 
+describe("the privacy page", () => {
+  it("shows the notice as text, and the menu links to it only with privacy rules", async () => {
+    stubFetch({
+      regions: [{ code: "EU", region: "European Union", law: "GDPR", complaint: HOSTILE }],
+      contact: HOSTILE,
+      data: [{ name: "User", account: true, fields: [{ label: "Email", kind: "Email", stored: "private" }], kept: "Until you delete your account." }],
+      rights: ["Delete your account."], cookies: "One cookie.", sharing: ["None."], security: ["Hashed."], securityLog: "Kept 365 days.",
+    });
+    const page = client.renderPage({ title: "Privacy", params: {}, loggedIn: false, auth: true, privacy: true, items: [{ kind: "privacy" }] }) as unknown as FakeElement;
+    await flush();
+    const text = page.textContent;
+    expect(text).toContain("User (your account)");
+    expect(text).toContain("Email: private: never shown to others");
+    expect(text).toContain(`Write to ${HOSTILE} about your data`);
+    expect(all(page).filter((e) => e.tagName === "a").map((e) => e.attributes.get("href"))).toContain("/privacy");
+    const plain = client.renderPage({ title: "Home", params: {}, loggedIn: false, auth: true, items: [] }) as unknown as FakeElement;
+    expect(all(plain).filter((e) => e.tagName === "a").map((e) => e.attributes.get("href"))).not.toContain("/privacy");
+  });
+});
+
 describe("buttons and the menu", () => {
   const buttonPage = () => client.renderPage({
     title: "Post", params: { id: "7" }, loggedIn: true, auth: false,

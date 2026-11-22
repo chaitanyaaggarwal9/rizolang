@@ -2,7 +2,7 @@ import type { FieldValue, ResolvedApi, ResolvedAuth, ResolvedValue } from "../ch
 import { type ResolvedField, type ResolvedModel, isHidden } from "../checker.js";
 import { FIELD_TYPES, type FieldTypeName } from "../types.js";
 import { VERSION } from "../version.js";
-import type { App, AuthSpec, EncryptedColumn, EncryptedField, FieldSpec, GhostSpec, GhostValue, RetentionSpec, FormFieldSpec, PageItemSpec, PageRoute, PathPart, Route, ValueSource } from "../../runtime/types.ts";
+import type { App, AuthSpec, EncryptedColumn, EncryptedField, FieldSpec, GhostSpec, GhostValue, PrivacySpec, RetentionSpec, FormFieldSpec, PageItemSpec, PageRoute, PathPart, Route, ValueSource } from "../../runtime/types.ts";
 import { type ResolvedPage, labelFor } from "../check-page.js";
 import { q, roleLiteral } from "./sql.js";
 import { CREATED_COLUMN, UNVERIFIED_TABLE } from "../schema.js";
@@ -42,7 +42,7 @@ export function buildApp(
   // Every model, including ones no endpoint uses (they can still link to accounts).
   const known = [...new Set([...allModels, ...(auth === undefined ? [] : [auth.model]), ...apis.map((a) => a.query.model)])];
   const authSpecs = auth === undefined ? null : authSpec(auth, known);
-  const builtIn = authSpecs === null || pages.length === 0 ? [] : authPages(authSpecs);
+  const builtIn = authSpecs === null || pages.length === 0 ? [] : authPages(authSpecs, privacy !== undefined);
   const models = [...new Set([...(auth === undefined ? [] : [auth.model]), ...apis.map((a) => a.query.model)])];
   const encrypted = models.flatMap(encryptedColumns);
   return {
@@ -51,7 +51,24 @@ export function buildApp(
     pages: [...pages.map(pageRoute), ...builtIn],
     ...(encrypted.length > 0 ? { encrypted } : {}),
     ...(retention(known).length > 0 ? { retention: retention(known) } : {}),
-    ...(privacy !== undefined ? { privacy: [...privacy] } : {}),
+    ...(privacy !== undefined ? { privacy: privacySpec(privacy, known, auth) } : {}),
+  };
+}
+
+/** What the privacy notice lists: every model, how each field is kept, and how long records are kept. */
+function privacySpec(regions: readonly string[], models: readonly ResolvedModel[], auth: ResolvedAuth | undefined): PrivacySpec {
+  return {
+    regions: [...regions],
+    models: models.map((m) => ({
+      name: m.name,
+      account: auth?.model === m,
+      fields: m.fields.map((f) => ({
+        label: labelFor(f.name),
+        kind: f.link !== undefined ? `link to ${f.link}` : f.type,
+        stored: f.type === "Password" ? "hashed" : f.encrypted ? "encrypted" : f.private ? "private" : "public",
+      })),
+      keep: m.keep === undefined ? null : { amount: m.keep.amount, unit: m.keep.unit },
+    })),
   };
 }
 
@@ -105,7 +122,7 @@ function formField(spec: FieldSpec): FormFieldSpec {
 }
 
 /** The built-in account pages, added when a file has both an auth line and pages. */
-function authPages(auth: AuthSpec): PageRoute[] {
+function authPages(auth: AuthSpec, privacy: boolean): PageRoute[] {
   const page = (path: string, title: string, items: PageItemSpec[]): PageRoute => ({
     pattern: path, path: [{ static: path.slice(1) }], access: "public", roles: [], title, items,
   });
@@ -139,6 +156,7 @@ function authPages(auth: AuthSpec): PageRoute[] {
       },
       login,
     ]),
+    ...(privacy ? [page("/privacy", "Privacy", [{ kind: "privacy" }])] : []),
     page("/reset-password", "Reset your password", [
       { kind: "newPassword", field: { ...auth.account.password, label: "New password", multiline: false } },
       { kind: "text", text: "Enter your email and we'll send you a link to choose a new password." },

@@ -24,9 +24,10 @@
  *   | { kind: "sessions" }
  *   | { kind: "tokens" }
  *   | { kind: "yourData" }
+ *   | { kind: "privacy" }
  *   | { kind: "verifyEmail" }
  *   | { kind: "newPassword", field: FormField }} PageItem
- * @typedef {{ title: string, items: PageItem[], params: Record<string, string>, loggedIn: boolean, auth: boolean }} PageData
+ * @typedef {{ title: string, items: PageItem[], params: Record<string, string>, loggedIn: boolean, auth: boolean, privacy?: boolean }} PageData
  */
 
 const ALLOWED_ATTRIBUTES = new Set([
@@ -651,6 +652,35 @@ function tokensItem() {
   return box;
 }
 
+/**
+ * The privacy notice: what this site stores, why and for how long, and people's rights.
+ * Everything comes from GET /auth/privacy and is inserted as text.
+ */
+function privacyItem() {
+  const box = el("div", { class: "rizo-privacy", "aria-live": "polite" }, el("p", { class: "rizo-empty" }, "Loading…"));
+  const list = (/** @type {string[]} */ lines) => el("ul", {}, ...lines.map((line) => el("li", {}, line)));
+  const STORED = { public: "shown publicly", private: "private: never shown to others", encrypted: "private and encrypted", hashed: "stored only as a hash" };
+  getJson("/auth/privacy").then((raw) => {
+    const n = /** @type {{ regions: { code: string, region: string, law: string, complaint: string }[], contact: string,
+      data: { name: string, account: boolean, fields: { label: string, kind: string, stored: "public" | "private" | "encrypted" | "hashed" }[], kept: string }[],
+      rights: string[], cookies: string, sharing: string[], security: string[], securityLog: string }} */ (raw);
+    box.replaceChildren(
+      el("h2", {}, "What we store"),
+      ...n.data.map((m) => el("section", { class: "rizo-show" },
+        el("h3", {}, m.account ? `${m.name} (your account)` : m.name),
+        list(m.fields.map((f) => `${f.label}: ${STORED[f.stored]}`)),
+        el("p", {}, `Kept: ${m.kept}`))),
+      el("h2", {}, "Cookies"), el("p", {}, n.cookies),
+      el("h2", {}, "Who else handles your data"), list(n.sharing),
+      el("h2", {}, "How we protect it"), list([...n.security, n.securityLog]),
+      el("h2", {}, "Your rights"), list(n.rights),
+      el("h2", {}, "Where these rules apply"), list(n.regions.map((r) => `${r.region}: ${r.law}. ${r.complaint}`)),
+      el("h2", {}, "Contact"), el("p", {}, `Write to ${n.contact} about your data, to use your rights, or to make a complaint.`),
+    );
+  }, (e) => box.replaceChildren(errorBox(e instanceof Error ? e.message : String(e))));
+  return box;
+}
+
 /** Download everything stored about you, or delete your account, for the account page. */
 function yourDataItem() {
   const status = el("p", { class: "rizo-error", role: "alert" });
@@ -734,6 +764,7 @@ function sessionsItem() {
  */
 function menu(data) {
   const nav = el("nav", { class: "rizo-nav" }, el("a", { href: "/" }, "Home"));
+  if (data.privacy) nav.append(el("a", { href: "/privacy" }, "Privacy"));
   if (data.loggedIn) {
     nav.append(el("a", { href: "/account" }, "Account"));
     const logout = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-link" }, "Log out"));
@@ -768,6 +799,7 @@ export function renderPage(data) {
     else if (item.kind === "sessions") main.append(sessionsItem());
     else if (item.kind === "tokens") main.append(tokensItem());
     else if (item.kind === "yourData") main.append(yourDataItem());
+    else if (item.kind === "privacy") main.append(privacyItem());
     else if (item.kind === "verifyEmail") {
       if (token !== null) main.append(verifyEmailItem(token));
     } else if (item.kind === "newPassword") {

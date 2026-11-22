@@ -114,6 +114,16 @@ export function audit(source: string, file: string): AuditResult {
     }
   }
 
+  // With privacy rules, records about people shouldn't be kept forever without a reason.
+  if (compiled.privacy !== undefined && auth !== undefined) {
+    for (const model of models) {
+      if (model === auth.model || model.keep !== undefined || !model.fields.some((f) => f.link === auth.model.name)) continue;
+      const span = program.models.find((m) => m.name === model.name)?.nameSpan ?? { line: 1, col: 1, length: 1 };
+      add("note", "RA08", span, `${model.name} records belong to accounts and are kept until someone deletes them.`,
+        `If they aren't needed forever, add a line such as \`keep 2 years\` to ${model.name}. Privacy laws expect data to be kept only as long as needed.`);
+    }
+  }
+
   findings.sort((a, b) => a.span.line - b.span.line || a.span.col - b.span.col);
   return {
     ok: true,

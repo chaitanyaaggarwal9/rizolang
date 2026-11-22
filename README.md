@@ -59,7 +59,7 @@ Rizo Lang is designed so those mistakes **cannot be written**, not just discoura
 | **Secure by default** | Passwords are hashed and never returned. Input is validated automatically. Login and ownership are part of the syntax. |
 | **AI-first** | The [compact spec](docs/SPEC-COMPACT.md) works as a system prompt, so even small models can write correct Rizo Lang. |
 
-Rizo Lang is part of the [Rizo](https://rizobot.com) ecosystem, alongside **Rizo**, an open-source BYOK AI coding assistant for VS Code. It compiles into technology you already use. Its only runtime is a small, readable library that is copied into your project.
+Rizo Lang is part of the [Rizo](https://rizobot.com) ecosystem, alongside **Rizo**, a source-available BYOK AI coding assistant for VS Code. It compiles into technology you already use. Its only runtime is a small, readable library that is copied into your project.
 
 ---
 
@@ -82,23 +82,23 @@ model Post {
   published: Bool
 }
 
-api GET /posts -> list Post.public {
+api GET /api/posts -> list Post.public {
   public
   return db.Post.list(published = true, order title, limit 20)
 }
 
-api POST /posts -> Post.public {
+api POST /api/posts -> Post.public {
   requires login
   return db.Post.create(body, author = me)
 }
 
-api PATCH /posts/:id -> Post.public {
+api PATCH /api/posts/:id -> Post.public {
   requires login
   requires owner author
   return db.Post.update(id, body)
 }
 
-api DELETE /posts/:id {
+api DELETE /api/posts/:id {
   requires login
   requires owner author
   return db.Post.delete(id)
@@ -107,10 +107,10 @@ api DELETE /posts/:id {
 page / {
   public
   title "My blog"
-  show GET /posts/feed
+  show GET /api/posts/feed
 }
 
-api GET /posts/feed -> list Post.public {
+api GET /api/posts/feed -> list Post.public {
   public
   return db.Post.list(published = true)
 }
@@ -142,16 +142,18 @@ That's a complete backend:
 | `openapi.json` | An OpenAPI 3.1 description of every endpoint, with its access rules, also served at `/_rizo/openapi.json` for agents and tools |
 | `runtime/` | A small Rizo runtime: validation, sessions, password hashing and the HTTP server |
 | `migrate.ts`, `migrations/` | Applies your project's migrations to the database |
+| `Dockerfile`, `.dockerignore` | A container image: Node.js 24 on Alpine, only `pg` installed, a non-root user and a health check |
+| `reencrypt.ts` | Only with `encrypted` fields: moves stored values to a new encryption key |
 | `package.json`, `tsconfig.json` | Installs the only dependency, the [`pg`](https://www.npmjs.com/package/pg) driver, and type-checks the app |
 
-A file with only models (no `auth` or `api`) produces just `schema.sql` and `types.ts`.
+A file with only models (no `auth`, `api` or `page`) produces just `schema.sql` and `types.ts` in `dist/`, plus its migrations. `rizolang check app.rz` checks a file without writing anything.
 
-Part of the `PATCH /posts/:id` route above, as it appears in `routes.ts`:
+Part of the `PATCH /api/posts/:id` route above, as it appears in `routes.ts`:
 
 ```ts
 {
   method: 'PATCH',
-  pattern: '/posts/:id',
+  pattern: '/api/posts/:id',
   access: 'login',
   sql: 'UPDATE "posts" SET "title" = CASE WHEN $3 THEN $4 ELSE "title" END, ... WHERE "id" = $1 AND "author_id" = $2 RETURNING "id", "author_id" AS "author", ...',
   values: [{ from: 'path', name: 'id' }, { from: 'me' }, ...],
@@ -213,7 +215,7 @@ RIZO_PUBLIC_URL=http://localhost:3000 RIZO_EMAIL_DEV=1 node server.ts
 
 When you change your models, run `rizolang build` again. It writes the change as a new file in `migrations/` (commit that folder), and `node migrate.ts` applies it.
 
-Changes that would delete data are refused unless you add `--allow-data-loss`. That covers removing a field or model, changing a field's type, and removing a role.
+Changes that would delete data are refused unless you add `--allow-data-loss`. That covers removing a field or model, changing a field's type, adding or removing `encrypted`, and removing a role.
 
 ### Try it
 
@@ -252,7 +254,9 @@ curl 'http://127.0.0.1:3000/api/posts?limit=10'
 | `PORT` / `HOST` | `3000` / `127.0.0.1` | Where the server listens |
 | `RIZO_ALLOWED_ORIGINS` | none | Extra origins allowed to send POST, PUT, PATCH or DELETE requests (comma-separated) |
 | `RIZO_TRUST_PROXY` | off | `1` to read the client IP from `X-Forwarded-For` (only behind a trusted proxy) |
-| `RIZO_DB_POOL_SIZE` | `10` | Maximum number of database connections |
+| `RIZO_DB_POOL_SIZE` | `10` | Maximum number of database connections (1–1000) |
+| `RIZO_DB_STATEMENT_TIMEOUT_MS` | `5000` | Longest time one query may run, in milliseconds (100–600000) |
+| `RIZO_AUDIT_RETENTION_DAYS` | `365` | How long security audit entries are kept (1–3650 days) |
 | `RIZO_ADMIN_EMAILS` | none | Makes these **existing** accounts admins at startup (sign up first) |
 | `RIZO_DEV_INSECURE_COOKIES` | off | `1` to allow cookies over http. For local development only |
 | `RIZO_PUBLIC_URL` | (required with accounts) | The app's address, used in emailed links, e.g. `https://blog.example` |
@@ -346,7 +350,7 @@ page /posts/new {
 **How pages work:**
 - Pages are generated from your endpoints: lists with "Load more", single records, text and links.
 - **Forms** (`form POST`, `PUT` or `PATCH`) and **delete buttons** (`button "Delete" DELETE ...`) are built from the endpoint's body, with the same limits checked in the browser and on the server. Edit forms start with the current values.
-- Brand the pages with one line: `site "Rizo Blog" color teal logo "logo.png"`.
+- Brand the pages with one line: `site "Rizo Blog" color teal logo "logo.png"` (next release; on `main` now).
 - Apps with an `auth` line get `/login`, `/signup` and a log-in/log-out menu. Pages that need a login send visitors to log in and then bring them back.
 - You never write HTML or browser code. All text is inserted as plain text, and pages are served with a strict Content-Security-Policy.
 - A page is never more open than the data it shows: a page showing a `requires login` endpoint must also say `requires login`.
@@ -366,7 +370,7 @@ api <METHOD> <path> -> Model.public {
 | Action | Method | Example |
 |--------|--------|---------|
 | `find` | GET | `db.Post.find(id)` |
-| `list` | GET | `db.Post.list(author = me, order title desc, limit 20)`, which returns pages: `{ "items": [...], "next": "<cursor>" }`. Filters can also use `!=`, `<`, `>`, `contains` and optional query parameters: `db.Post.list(title contains ?q, views >= ?minViews)`. Add `with author` after the return type to get each linked author's public fields too |
+| `list` | GET | `db.Post.list(author = me, order title desc, limit 20)`, which returns pages: `{ "items": [...], "next": "<cursor>" }`. Filters can also use `!=`, `<`, `>`, `contains` and optional query parameters: `db.Post.list(title contains ?q, views >= ?minViews)`. Add `with author` after the return type to get each linked author's public fields too (next release; on `main` now) |
 | `create` | POST | `db.Post.create(body, author = me)` |
 | `update` | PUT / PATCH | `db.Post.update(id, body)` |
 | `delete` | DELETE | `db.Post.delete(id)` |
@@ -443,7 +447,7 @@ The full list of error codes is in the [spec](docs/SPEC.md#8-errors).
 
 Rizo Lang is designed to be written by AI models as well as people:
 - [`docs/SPEC-COMPACT.md`](docs/SPEC-COMPACT.md) is under 1,500 words. Paste it into any model's system prompt.
-- Error messages include a `fix:` line that a model can apply directly, and `rizolang build app.rz --json` returns them as JSON.
+- Error messages include a `fix:` line that a model can apply directly, and `rizolang build app.rz --json` returns them as JSON. `rizolang check app.rz --json` does the same without writing any files.
 - `rizolang audit app.rz` reviews a file for risky choices that are allowed but often a mistake (public writes, personal data that isn't `private`, loose rate limits…), each with its location and a fix. It exits with 1 on warnings, so it can run in CI.
 - Every generated app describes its API in `openapi.json` (also served at `/_rizo/openapi.json`), and AI agents call it with API tokens limited to the endpoints you choose.
 - The Rizo VS Code extension ([rizobot.com](https://rizobot.com)) will detect `.rz` files and load the spec automatically.
@@ -465,6 +469,7 @@ Rizo Lang is in **early development**, so expect the language to change before 1
   - privacy for the regions you declare (EU, UK, India, California, Brazil): data download and deletion, `keep` retention, a generated privacy page
 - [x] **Milestone 9** ([v0.6.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.6.0)): profile, email and password changes on the account page, search and richer list filters, `rizolang dev`, a health check, graceful shutdown and a generated `Dockerfile`
 - [x] Publish the compiler to npm ([`rizolang`](https://www.npmjs.com/package/rizolang))
+- [ ] **Milestone 10** (in progress): linked records (`with`) and site branding (both on `main`), built-in admin pages, file uploads
 - [ ] A VS Code extension with syntax highlighting
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.

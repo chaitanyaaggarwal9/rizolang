@@ -12,7 +12,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { type CliIo, OUT_DIR, run } from "./cli.js";
 import { compile } from "./compiler.js";
 
@@ -110,7 +110,8 @@ export async function runDev(argv: readonly string[], io: CliIo, env: Readonly<R
       "Start PostgreSQL on this machine, create a database, then run `DATABASE_URL=postgres://localhost:5432/myapp rizolang dev app.rz`.");
   }
   const path = resolve(io.cwd, file);
-  const distDir = join(dirname(path), OUT_DIR);
+  // The same folder `rizolang build` writes to: dist/ in the current folder.
+  const distDir = join(io.cwd, OUT_DIR);
   const buildArgs = ["build", file, ...(flags.includes("--allow-data-loss") ? ["--allow-data-loss"] : [])];
 
   let server: ChildProcess | undefined;

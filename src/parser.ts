@@ -111,7 +111,7 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
         pages.push(parsePage());
       } else if (t.kind === "ident" && FUTURE_BLOCKS.includes(t.text)) {
         fail("RZ0211", t.span, `"${t.text}" blocks are not available yet.`,
-          "This version of Rizo Lang supports model, auth and api blocks. Remove this block for now.");
+          "Rizo Lang supports model, auth, api, page, privacy and site. Remove this block for now.");
       } else if (t.kind === "ident" && MODEL_LOOKALIKES.includes(t.text)) {
         fail("RZ0201", t.span, `Expected "model" but found "${t.text}".`,
           "Start each model with the lowercase keyword model: `model User { ... }`.");
@@ -119,8 +119,8 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
         fail("RZ0201", t.span, `Expected "api" but found "${t.text}".`,
           "Start each endpoint with the lowercase keyword api: `api GET /posts -> list Post.public { ... }`.");
       } else {
-        fail("RZ0201", t.span, `Expected "model", "auth", "api" or "page" but found ${describe(t)}.`,
-          t.kind === "string" ? "Quoted text belongs inside a page block or the site line, for example `title \"Posts\"`." : "Every top-level block starts with model, auth, api or page.");
+        fail("RZ0201", t.span, `Expected "model", "auth", "api", "page", "privacy" or "site" but found ${describe(t)}.`,
+          t.kind === "string" ? "Quoted text belongs inside a page block or the site line, for example `title \"Posts\"`." : "Every top-level line starts with model, auth, api, page, privacy or site.");
       }
     }
     return { models, auths, apis, pages, privacy, sites };

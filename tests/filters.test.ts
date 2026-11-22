@@ -47,10 +47,13 @@ describe("list filters", () => {
     expect(buildApp(r.apis, r.auth).routes[0]).not.toHaveProperty("query");
   });
 
-  it("indexes = columns, then ranges, then the sort column, leaving out contains and !=", () => {
+  it("indexes = columns then the sort column (so the index gives the order), or = columns then ranges without a sort", () => {
     const r = compileOk(SHOP("status = 1, priceCents >= ?min, name contains ?q, note != ?n, order launched"));
     const table = buildSchema(r.models, r.auth, true, r.apis).tables.find((t) => t.name === "products");
-    expect(table?.indexes?.map((i) => i.columns)).toEqual([["status", "price_cents", "launched", "id"]]);
+    expect(table?.indexes?.map((i) => i.columns)).toEqual([["status", "launched", "id"]]);
+    const unsorted = compileOk(SHOP("status = 1, priceCents >= ?min, name contains ?q"));
+    expect(buildSchema(unsorted.models, unsorted.auth, true, unsorted.apis).tables.find((t) => t.name === "products")?.indexes?.map((i) => i.columns))
+      .toEqual([["status", "price_cents", "id"]]);
   });
 
   it("describes the query parameters in openapi.json", () => {
@@ -73,6 +76,16 @@ describe("list filters", () => {
     const e = compileErrors(SHOP(list)).find((d) => d.code === "RZ0325");
     expect(e?.message).toContain(message);
     expect(e?.fix).toContain(fix);
+  });
+
+  it("treats a path parameter used with contains as plain text, not a full email address", () => {
+    const r = compileOk("model Person {\n  email: Email\n}\napi GET /api/people/search/:q -> list Person.public {\n  public\n  return db.Person.list(email contains q)\n}\n");
+    expect(buildApp(r.apis, r.auth).routes[0]?.path).toContainEqual({ param: "q", kind: "Text" });
+  });
+
+  it("allows text compared with = up to the field's own length", () => {
+    const r = compileOk("model Doc {\n  title: Text max 500\n}\napi GET /api/docs -> list Doc.public {\n  public\n  return db.Doc.list(title = ?t)\n}\n");
+    expect(buildApp(r.apis, r.auth).routes[0]?.query).toEqual([{ name: "t", kind: "Text", max: 500 }]);
   });
 
   it("allows query parameters only in list filters", () => {
@@ -153,7 +166,8 @@ describe.skipIf(DATABASE_URL === undefined)("list filters in PostgreSQL", () => 
     expect(await names("?min=cheap")).toMatchObject({ status: 400, body: { error: { field: "min" } } });
     expect(await names("?since=yesterday")).toMatchObject({ status: 400, body: { error: { field: "since" } } });
     expect(await names(`?q=${"x".repeat(201)}`)).toMatchObject({ status: 400, body: { error: { field: "q" } } });
-    expect(await names("?q=")).toMatchObject({ status: 400, body: { error: { field: "q" } } });
+    // An empty value, as a search box sends, counts as left out.
+    expect((await names("?q=&min=")).body.items?.map((x) => x.name)).toEqual(["Red mug", "Blue Mug", "Teapot 100%_off"]);
     expect((await names("?price=1")).status).toBe(400);
     expect((await names("?q=a&q=b")).status).toBe(400);
     expect((await names("?q=' OR 1=1 --")).body.items).toEqual([]);

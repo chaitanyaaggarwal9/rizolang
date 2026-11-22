@@ -1,6 +1,6 @@
 # Rizo Lang: guidance for AI coding sessions
 
-Rizo Lang is a secure, simple, full-stack web language for the AI era. Source files use the `.rz` extension. It belongs to the Rizo ecosystem (https://rizobot.com), alongside Rizo, an open-source BYOK AI coding assistant for VS Code. It compiles into existing technology and does not have its own runtime.
+Rizo Lang is a secure, simple, full-stack web language for the AI era. Source files use the `.rz` extension. It belongs to the Rizo ecosystem (https://rizobot.com), alongside Rizo, a source-available BYOK AI coding assistant for VS Code. It compiles into existing technology and does not have its own runtime.
 
 ## Core design principles (never violate these)
 
@@ -29,14 +29,14 @@ Rizo Lang is a secure, simple, full-stack web language for the AI era. Source fi
 
 ## Project layout
 
-- `src/lexer.ts` → `src/parser.ts` (builds an AST, see `src/ast.ts`) → `src/checker.ts` (models) and `src/check-api.ts` (auth and api) → `src/emit/{sql,typescript,routes}.ts`, orchestrated by `src/compiler.ts`.
-- `src/schema.ts` describes the database schema, including one index per distinct `list` query (filter columns, order column, then `id`). `src/emit/sql.ts` renders it, and `src/migrations.ts` compares it with `migrations/rizo-schema.json` to plan migrations. Anything that would drop data must be listed in `dataLoss`, so that the CLI refuses it without `--allow-data-loss`.
+- `src/lexer.ts` → `src/parser.ts` (builds an AST, see `src/ast.ts`) → `src/checker.ts` (models) and `src/check-api.ts` (auth and api) → `src/emit/{sql,typescript,routes,openapi}.ts`, orchestrated by `src/compiler.ts`.
+- `src/schema.ts` describes the database schema, including one index per distinct `list` query (`=` filter columns, then the order column or, without one, the range filter columns, then `id`; `contains` and `!=` columns are not indexed). `src/emit/sql.ts` renders it, and `src/migrations.ts` compares it with `migrations/rizo-schema.json` to plan migrations. Anything that would drop data must be listed in `dataLoss`, so that the CLI refuses it without `--allow-data-loss`.
 - `src/check-page.ts` checks `page` blocks. `runtime/pages.ts` serves them, and `runtime/client/rizo-client.js` renders them in the browser. That file is plain JavaScript with JSDoc types, checked by `tsconfig.client.json`. It must never use innerHTML, outerHTML, insertAdjacentHTML, document.write or eval: elements are created only through `el()`, and `tests/client.test.ts` enforces this.
 - `runtime/` is copied verbatim into every generated app (`dist/runtime/`). It must stay small, readable, free of dependencies other than `pg`, and use erasable TypeScript only (Node runs it with type stripping). The runtime never builds SQL: all SQL comes from `routes.ts`, generated at compile time.
 - `src/types.ts` is the single source of truth for field types, their SQL/TS mappings and allowed modifiers.
 - `src/diagnostics.ts` holds the error format. Every diagnostic has a code, a span, a message and a fix.
-- `src/cli.ts` and `src/bin.ts` contain the `rizolang build file.rz` command, which writes to `./dist`.
-- `docs/SPEC.md` is the full spec. `docs/SPEC-COMPACT.md` is a version of it under 1,500 words for small-context models.
+- `src/cli.ts` handles `build` (writes `./dist` and `./migrations`), `check`, `audit` and `--version`; `src/dev.ts` runs `rizolang dev`; `src/bin.ts` dispatches. `src/audit.ts` holds the RA01–RA08 rules. `src/version.ts` must match `package.json` (a test checks it).
+- `docs/SPEC.md` is the full spec. `docs/SPEC-COMPACT.md` is a version of it under 1,500 words for small-context models (about 1,460 now, so shorten it when adding to it).
 
 ## Rules for changing the language
 
@@ -59,7 +59,7 @@ Rizo Lang is a secure, simple, full-stack web language for the AI era. Source fi
 
 ## Current milestone
 
-Milestones 1–8 are complete (v0.5.0). Milestones 1–4 (v0.4.0): models, `auth`, `api` blocks, links, `private` fields, roles, pagination, account management, migrations, and web pages with forms. Maintainer decisions that still apply:
+Milestones 1–9 are complete (v0.6.0), and Milestone 10 is in progress (see the end of this section). Milestones 1–4 (v0.4.0): models, `auth`, `api` blocks, links, `private` fields, roles, pagination, account management, migrations, and web pages with forms. Maintainer decisions that still apply:
 - `api` blocks use braces, like `model` blocks.
 - Sessions are server-side, stored as hashed tokens in `_rizo_sessions` and sent in an HttpOnly cookie.
 - Generated apps use `pg` plus the runtime copied into `dist/`.

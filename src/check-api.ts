@@ -63,6 +63,8 @@ export interface FieldValue {
 export interface QueryParam {
   readonly name: string;
   readonly type: "ID" | "Number" | "Bool" | "Text" | "Email" | "Date";
+  /** For Text compared with =: the field's own max length. */
+  readonly max?: number;
 }
 
 export type ResolvedQuery =
@@ -417,7 +419,7 @@ export function checkApis(
       }
       return f;
     };
-    const value = (f: ResolvedField, v: Value, inList = false): ResolvedValue | undefined => {
+    const value = (f: ResolvedField, v: Value, inList = false, paramType?: ParamType): ResolvedValue | undefined => {
       const where = `${model.name}.${f.name}`;
       if (v.kind === "query") {
         if (!inList) {
@@ -452,7 +454,7 @@ export function checkApis(
             "Filter by a Text, Email, Number, Bool, ID or link field instead.");
           return undefined;
         }
-        return useParam(v.name, f.type as ParamType, v.span) ? { kind: "param", name: v.name } : undefined;
+        return useParam(v.name, paramType ?? (f.type as ParamType), v.span) ? { kind: "param", name: v.name } : undefined;
       }
       if (v.kind === "int") {
         if (f.type !== "Number") {
@@ -639,7 +641,7 @@ export function checkApis(
               err("RZ0325", a.value.span, `"contains" needs text from the request.`, `Write \`${f.name} contains ?q\` to search with \`?q=...\`.`);
               continue;
             }
-            const v = value(f, a.value, true);
+            const v = value(f, a.value, true, a.op === "contains" ? "Text" : undefined);
             if (v === undefined) { good = false; continue; }
             const where = `${model.name}.${f.name}`;
             const kind = f.link !== undefined ? `a link (${f.link})` : `a ${f.type}`;
@@ -676,7 +678,8 @@ export function checkApis(
                 err("RZ0325", a.value.span, `?${v.name} is used as both ${prev.type} and ${type}.`, "Use a different name for each.");
                 continue;
               }
-              if (prev === undefined) queryParams.push({ name: v.name, type });
+              const max = a.op !== "contains" && type === "Text" && f.max !== undefined && f.max > 200 ? { max: f.max } : {};
+              if (prev === undefined) queryParams.push({ name: v.name, type, ...max });
             }
             filters.push({ field: f, value: v, op: a.op });
           }

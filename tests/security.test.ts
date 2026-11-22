@@ -13,6 +13,8 @@ import { createPublicKey, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PASSKEY_SQL, challengeHash, newChallenge } from "../runtime/passkeys.ts";
 import { EMAIL_SQL, MESSAGES, newEmailToken } from "../runtime/email.ts";
+import { PAGE_CSP } from "../runtime/pages.ts";
+import { createRequestHandler, poolConfig } from "../runtime/server.ts";
 import { EncryptionError, decryptValue, encryptValue, parseKeys } from "../runtime/encryption.ts";
 import { IDLE_SECONDS, MAX_SECONDS, SQL as SESSION_SQL } from "../runtime/session.ts";
 import { MAX_TOKEN_DAYS, TOKEN_SQL } from "../runtime/tokens.ts";
@@ -538,5 +540,41 @@ describe("security: linked records (with)", () => {
     const route = buildApp(r.apis, r.auth).routes[0];
     expect(route?.sql).not.toMatch(/"email"|password/);
     expect(route?.expanded).toEqual([{ key: "author", publicKeys: ["id", "name"] }]);
+  });
+});
+
+describe("security: guarantees 7 to 10", () => {
+  it("7: rejects cross-site writes before anything runs", async () => {
+    const r = compileOk("model Note {\n  title: Text\n}\napi POST /api/notes -> Note.public {\n  public\n  return db.Note.create(body)\n}\n");
+    const queries: string[] = [];
+    const handler = createRequestHandler(buildApp(r.apis, r.auth), { db: { query: async (sql: string) => (queries.push(sql), { rows: [], rowCount: 0 }) }, log: () => undefined });
+    const server = (await import("node:http")).createServer((req, res) => void handler(req, res));
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const port = (server.address() as { port: number }).port;
+    for (const headers of [{ Origin: "https://evil.example" }, { "Sec-Fetch-Site": "cross-site" }]) {
+      const res = await fetch(`http://127.0.0.1:${port}/api/notes`, { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ title: "x" }) });
+      expect(res.status).toBe(403);
+    }
+    await new Promise((done) => server.close(done));
+    expect(queries.filter((q) => q.startsWith("INSERT INTO \"notes\""))).toEqual([]);
+  });
+
+  it("8: cancels any query after the statement timeout (5 seconds by default)", () => {
+    expect(poolConfig({ DATABASE_URL: "postgres://x" }).statement_timeout).toBe(5000);
+    expect(() => poolConfig({ RIZO_DB_STATEMENT_TIMEOUT_MS: "0" })).toThrow();
+  });
+
+  it("9: writes no output when a file has an error", () => {
+    const result = compile("model User {\n  name: String\n}\n", "bad.rz");
+    expect(result.ok).toBe(false);
+    expect(result).not.toHaveProperty("output");
+  });
+
+  it("10: serves pages with a CSP that allows only the site's own script, styles and images", () => {
+    expect(PAGE_CSP).toBe("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  });
+
+  it("cancels pending emailed links when the email or password changes", () => {
+    expect(EMAIL_SQL.deleteAllTokens).toBe('DELETE FROM "_rizo_email_tokens" WHERE "user_id" = $1');
   });
 });

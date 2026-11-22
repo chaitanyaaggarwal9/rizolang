@@ -57,7 +57,8 @@ export function audit(source: string, file: string): AuditResult {
   const declOf = (api: ResolvedApi): ApiDecl | undefined => program.apis.find((d) => d.method === api.method && d.path === api.path);
   const fieldSpan = (model: ResolvedModel, field: ResolvedField): Span =>
     program.models.find((m) => m.name === model.name)?.fields.find((f) => f.name === field.name)?.nameSpan ?? { line: 1, col: 1, length: 1 };
-  const publicModels = new Set(apis.filter((a) => a.access === "public" && a.returns !== "none").map((a) => a.query.model.name));
+  const publicModels = new Set(apis.filter((a) => a.access === "public" && a.returns !== "none")
+    .flatMap((a) => [a.query.model.name, ...a.expand.map((x) => x.model.name)]));
 
   for (const api of apis) {
     const decl = declOf(api);

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `rizolang check app.rz [--json]` checks a file (and its logo) without writing anything, and exits with 0 when it is valid.
+
 - Milestone 10, part 1: linked records.
   - `-> list Post.public with author, editor` (on `find` and `list`) returns each link as the linked record's public fields, or `null` for an empty optional link. Private and Password fields are never included, and encrypted fields are decrypted. Still one query: each linked record is read by primary key in a subquery.
   - Pages show the linked record's first public text field ("by Ann") instead of its id, and `openapi.json` describes the linked record.
@@ -21,6 +23,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - In dark mode, buttons in the accent color now use dark text, so they stay readable.
+- Changing the login email, changing the password or resetting the password now cancels every pending emailed link of the account. Before, a reset link sent to the old address kept working after an email change, and a pending email change survived a password reset.
+- Every built-in `/auth` endpoint and every page now has the default limit of 120 requests a minute per address, as the spec promised; before, only `api` endpoints (and some `/auth` actions) did.
+- `rizolang dev` uses `dist/` in the current folder, like `build`; with the `.rz` file in another folder it looked in the wrong place.
+- A new login email is checked against the login field's own length limits, and the built-in email forms use them too.
+- Linked records (`with`): dates use the same format as top-level ones (UTC, milliseconds, `Z`), and records with more than 49 public fields no longer fail.
+- List filters: an empty query parameter (`?q=`) counts as left out; text compared with `=` may be as long as the field allows; a path parameter used with `contains` is plain text, not a full email address.
+- Indexes for lists with a sort field now follow the sort, so pages are read in order from the index. Text and Email fields that may be longer than 600 characters are no longer indexed: a long value could overflow PostgreSQL's index row limit and make inserts fail.
+- Pages: a `link` to `/privacy` now needs a `privacy for` line (without one it led to a missing page). RZ0201's message lists every top-level keyword.
+- `rizolang audit` counts models returned through `with` as public (RA04).
+- Documentation: SPEC.md, the compact spec, README, CLAUDE.md and CONTRIBUTING corrected throughout to match the code.
 
 ### Security
 
@@ -62,9 +74,9 @@ Rebuild (`rizolang build app.rz`) and apply the new migration (`node migrate.ts`
 
 ### Changed
 
-- The compact spec is shorter (about 1,300 words instead of 1,480), with the same rules, so there is room for new features under its 1,500-word limit.
+- The compact spec is shorter (about 1,330 words instead of 1,480), with the same rules, so there is room for new features under its 1,500-word limit.
 
-## [0.5.0] - 2026-11-21
+## [0.5.0] - 2026-11-22
 
 Milestones 5 to 8: hardening, accounts, tools for AI agents, and privacy rules for the regions you declare.
 
@@ -215,7 +227,11 @@ Milestone 3: roles, pagination, account management and migrations.
 - Every endpoint now rejects unknown or repeated query parameters with 400.
 - Schema constraints and indexes now have explicit names, which follow PostgreSQL's default pattern.
 
-## [0.2.0] - 2026-11-20
+### Security
+
+- Releases are published to npm from GitHub Actions with trusted publishing (no npm token) and provenance.
+
+## [0.2.0] - 2026-11-21
 
 ### Added
 
@@ -239,7 +255,7 @@ Milestone 3: roles, pagination, account management and migrations.
 
 - Dependency install scripts are disabled (`.npmrc`), and CI verifies npm registry signatures.
 
-## [0.1.0] - 2026-11-20
+## [0.1.0] - 2026-11-21
 
 ### Added
 

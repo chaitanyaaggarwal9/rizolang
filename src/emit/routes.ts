@@ -135,7 +135,8 @@ function authPages(auth: AuthSpec, privacy: boolean): PageRoute[] {
   const page = (path: string, title: string, items: PageItemSpec[]): PageRoute => ({
     pattern: path, path: [{ static: path.slice(1) }], access: "public", roles: [], title, items,
   });
-  const email: FormFieldSpec = { key: auth.loginKey, kind: "Email", required: true, nullable: false, max: 254, label: labelFor(auth.loginKey), multiline: false };
+  const loginSpec = auth.signup.body.find((f) => f.key === auth.loginKey);
+  const email: FormFieldSpec = { ...(loginSpec ?? { kind: "Email", max: 254 }), key: auth.loginKey, required: true, nullable: false, label: labelFor(auth.loginKey), multiline: false };
   const login = { kind: "link", label: "Back to log in", path: "/login" } as const;
   return [
     page("/login", "Log in", [
@@ -403,10 +404,16 @@ function expandedSelect(model: ResolvedModel, expand: ResolvedApi["expand"]): { 
     const alias = q(`l${e + 1}`);
     const inner = publicSelect(linked.model);
     const pairs = inner.keys.map((key, i) => {
-      const col = i === 0 ? "id" : linked.model.fields.find((x) => x.name === key)?.column ?? key;
-      return `'${key}', ${alias}.${q(col)}`;
+      const field = i === 0 ? undefined : linked.model.fields.find((x) => x.name === key);
+      const col = `${alias}.${q(field?.column ?? "id")}`;
+      // Dates in the same format as top-level ones: UTC, milliseconds, "Z".
+      const value = field?.type === "Date" && !field.encrypted ? `to_char(${col} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')` : col;
+      return `'${key}', ${value}`;
     });
-    return `(SELECT json_build_object(${pairs.join(", ")}) FROM ${q(linked.model.table)} AS ${alias} WHERE ${alias}.${q("id")} = ${q(model.table)}.${q(f.column)}) AS ${quoteKey(f.name)}`;
+    // jsonb_build_object takes at most 100 arguments, so large records are built in parts and joined.
+    const parts: string[] = [];
+    for (let i = 0; i < pairs.length; i += 40) parts.push(`jsonb_build_object(${pairs.slice(i, i + 40).join(", ")})`);
+    return `(SELECT ${parts.join(" || ")} FROM ${q(linked.model.table)} AS ${alias} WHERE ${alias}.${q("id")} = ${q(model.table)}.${q(f.column)}) AS ${quoteKey(f.name)}`;
   })];
   return { sql: cols.join(", "), keys: ["id", ...fields.map((f) => f.name)] };
 }
@@ -540,7 +547,7 @@ function route(api: ResolvedApi): Route {
       }
       sql = `SELECT ${select.sql}${cursorSelect} FROM ${table} WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ${p.add({ from: "pageLimit" })}`;
       page = { max: query.limit, order: of === undefined ? null : of.type };
-      if (query.queryParams.length > 0) queryList = query.queryParams.map((x) => ({ name: x.name, kind: x.type }));
+      if (query.queryParams.length > 0) queryList = query.queryParams.map((x) => ({ name: x.name, kind: x.type, ...(x.max !== undefined ? { max: x.max } : {}) }));
       result = "list";
       break;
     }

@@ -153,7 +153,7 @@ export function check(program: Program, file: string): CheckResult {
   if (errors.length > 0) return { ok: false, diagnostics: errors };
   const auth = checkAuth(program.auths, models, err);
   const apis = checkApis(program.apis, models, auth, program.auths.length > 0, err);
-  const pages = checkPages(program.pages, auth, apis, program.auths.length > 0, err);
+  const pages = checkPages(program.pages, auth, apis, program.auths.length > 0, program.privacy.length > 0, err);
   const privacy = checkPrivacy();
   if (program.auths.length === 0 && program.apis.length === 0 && program.pages.length === 0) {
     for (const m of program.models) {

@@ -85,6 +85,11 @@ describe("rizolang audit", () => {
     expect(findings(fixed).findings).toEqual([]);
   });
 
+  it("counts models returned through with as public (RA04 for their emails)", () => {
+    const src = "auth User by email\nmodel User {\n  email: Email unique\n  password: Password\n  name: Text\n}\nmodel Post {\n  author: User\n  title: Text\n}\napi GET /api/posts -> list Post.public with author {\n  public\n  return db.Post.list()\n}\n";
+    expect(findings(src).findings.map((f) => f.code)).toContain("RA04");
+  });
+
   it("returns the compile errors for a file that doesn't build", () => {
     const r = audit("model User {\n  name: String\n}\n", "bad.rz");
     expect(r.ok).toBe(false);

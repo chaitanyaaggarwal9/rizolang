@@ -120,7 +120,7 @@ model User {
 }
 model Post {
   author: User
-  title: Text
+  title: Text max 200
   published: Bool
 }
 api GET /api/posts -> list Post.public {
@@ -163,6 +163,12 @@ api GET /api/all -> list Post.public {
       'CREATE INDEX "posts_published_id_idx" ON "posts" ("published", "id");',
     ]);
     expect(plan.dataLoss).toEqual([]);
+  });
+
+  it("leaves out text that may be longer than 600 characters, which could overflow an index row", () => {
+    const schema = withApis(SRC.replace("  title: Text max 200\n", "  title: Text\n"));
+    const posts = schema.tables.find((t) => t.name === "posts");
+    expect(posts?.indexes?.map((i) => i.columns)).not.toContainEqual(expect.arrayContaining(["title"]));
   });
 
   it("reads snapshots from before indexes existed", () => {

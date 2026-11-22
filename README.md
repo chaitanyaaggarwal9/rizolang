@@ -8,6 +8,7 @@ Write your data models and endpoints in a few readable lines. Rizo Lang compiles
 
 [![CI](https://github.com/chaitanyaaggarwal9/rizolang/actions/workflows/ci.yml/badge.svg)](https://github.com/chaitanyaaggarwal9/rizolang/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/chaitanyaaggarwal9/rizolang/actions/workflows/codeql.yml/badge.svg)](https://github.com/chaitanyaaggarwal9/rizolang/actions/workflows/codeql.yml)
+[![Socket Badge](https://badge.socket.dev/npm/package/rizolang)](https://socket.dev/npm/package/rizolang)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 ![.rz Language](https://img.shields.io/badge/.rz-language-0ea5e9)

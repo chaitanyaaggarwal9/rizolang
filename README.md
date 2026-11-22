@@ -301,7 +301,8 @@ This one line adds signup, login and logout (`/auth/signup`, `/auth/login`, `/au
 - `POST /auth/password` to change your password, which logs out your other sessions,
 - `POST /auth/logout-all` to log out everywhere, and `GET /auth/sessions` / `DELETE /auth/sessions/:id` to see your devices and log out one,
 - `GET /auth/me/export` to download everything stored about you, and `DELETE /auth/me` to delete your account (posts and other records that need an owner stay, credited to "Deleted user"),
-- email confirmation (required before the first login) and password reset by email,
+- email confirmation (required before the first login), password reset by email, and changing the login email (confirmed by a link to the new address),
+- editing the profile and changing the password on the built-in `/account` page,
 - passkeys (fingerprint, face or device PIN), managed on the built-in `/account` page,
 - API tokens for scripts and AI agents (`Authorization: Bearer rzt_...`), each limited to the endpoints you choose, for at most 90 days.
 

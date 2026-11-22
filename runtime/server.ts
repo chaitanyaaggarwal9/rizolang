@@ -15,7 +15,7 @@ import pg from "pg";
 import { BusyError, hashPassword, dummyHash, verifyPassword } from "./password.ts";
 import { Audit, DEFAULT_AUDIT_RETENTION_DAYS } from "./audit.ts";
 import { type Keys, decryptValue, encryptValue, parseKeys } from "./encryption.ts";
-import { EMAIL_SQL, type Mailer, MESSAGES, RESET_SECONDS, type TokenPurpose, VERIFY_SECONDS, emailConfig, emailTokenHash, newEmailToken, readEmailToken } from "./email.ts";
+import { CHANGE_SECONDS, EMAIL_SQL, type Mailer, MESSAGES, RESET_SECONDS, type TokenPurpose, VERIFY_SECONDS, emailConfig, emailTokenHash, newEmailToken, readEmailToken } from "./email.ts";
 import { Limits, limitKey } from "./limits.ts";
 import { CHALLENGE_SECONDS, MAX_PASSKEYS, PASSKEY_SQL, challengeHash, challengeOf, newChallenge } from "./passkeys.ts";
 import { EXPORT_LIMIT, GHOST_SQL, expireRecords, ghostValues, privacyNotice } from "./privacy.ts";
@@ -116,6 +116,8 @@ const AUTH_ROUTES: readonly AuthRoute[] = [
   { path: "/auth/verify-email/resend", methods: ["POST"] },
   { path: "/auth/password-reset", methods: ["POST"] },
   { path: "/auth/password-reset/confirm", methods: ["POST"] },
+  { path: "/auth/email", methods: ["POST"] },
+  { path: "/auth/email/confirm", methods: ["POST"] },
 ];
 
 /** What signup and the email endpoints always answer, whether or not the account exists. */
@@ -1111,6 +1113,54 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         await sendLink(userId, email, "reset");
       }
       return send(res, 202, CHECK_EMAIL);
+    }
+
+    if (path === "/auth/email") {
+      // Change the login email: needs the password, and takes effect only when
+      // the link sent to the new address is opened. The answer is the same
+      // whether or not the new address already has an account.
+      const me = await requireUser(req);
+      await emailGate(ip);
+      const v = validateBody(
+        [{ key: "newEmail", kind: "Email", required: true, nullable: false, max: 254 }, { key: "password", kind: "Text", required: true, nullable: false, max: 128 }],
+        await readJson(req),
+      );
+      if (!v.ok) throw new HttpError(400, "validation_failed", v.message, v.field || undefined);
+      await confirmPassword(me, String(v.values.get("password")), "password");
+      const newEmail = String(v.values.get("newEmail"));
+      if ((await accountFor(newEmail)) === undefined && (await mayEmail(me))) {
+        const { token, hash } = newEmailToken();
+        await db.query(EMAIL_SQL.deleteTokens, [me, "email"]);
+        await db.query(EMAIL_SQL.createEmailChange, [hash, me, CHANGE_SECONDS, newEmail]);
+        deliver(newEmail, MESSAGES.changeEmail(publicUrl, token));
+      }
+      return send(res, 202, CHECK_EMAIL);
+    }
+
+    if (path === "/auth/email/confirm") {
+      const gate = await limited(() => limits.consume(limitKey("email-link", ip), 30, 3600));
+      if (!gate.allowed) throw tooMany(gate.retryAfter, "Too many requests. Try again later.");
+      const raw = await readJson(req) as { token?: unknown } | null;
+      const token = readEmailToken(raw?.token);
+      const row = token === undefined ? undefined : (await db.query(EMAIL_SQL.useEmailChange, [emailTokenHash(token)])).rows[0];
+      const userId = row?.["user_id"];
+      const newEmail = row?.["new_email"];
+      if (typeof userId !== "string" || typeof newEmail !== "string") {
+        throw new HttpError(400, "invalid_link", "This link is not valid or has expired. Ask for a new one on your account page.", "token");
+      }
+      const old = (await db.query(auth.account.emailSql, [userId])).rows[0]?.["email"];
+      try {
+        await run(auth.account.setEmailSql, [userId, newEmail], auth.model);
+      } catch (e) {
+        if (e instanceof HttpError && e.code === "already_exists") throw new HttpError(409, "already_exists", "Another account uses this email now. Choose a different one.");
+        throw e;
+      }
+      // The new address is proven to work, so the account counts as confirmed.
+      await db.query(EMAIL_SQL.markVerified, [userId]);
+      await audit.record({ action: "email_changed", userId, ip });
+      if (typeof old === "string") deliver(old, MESSAGES.emailChanged(publicUrl));
+      res.writeHead(204, SECURITY_HEADERS).end();
+      return 204;
     }
 
     if (path === "/auth/password-reset/confirm") {

@@ -30,6 +30,7 @@ export type AuditAction =
   | "passkey_added"
   | "passkey_removed"
   | "email_verified"
+  | "email_changed"
   | "password_reset_requested"
   | "password_reset"
   | "admin_granted"

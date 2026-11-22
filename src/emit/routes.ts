@@ -139,7 +139,34 @@ function authPages(auth: AuthSpec, privacy: boolean): PageRoute[] {
       { kind: "link", label: "Didn't get the confirmation email?", path: "/verify-email" },
       { kind: "link", label: "No account yet? Sign up", path: "/signup" },
     ]),
-    { ...page("/account", "Your account", [{ kind: "passkeys" }, { kind: "sessions" }, { kind: "tokens" }, { kind: "yourData" }]), access: "login" },
+    {
+      ...page("/account", "Your account", [
+        ...(auth.account.profile === null ? [] : [{
+          kind: "form", method: "PATCH", endpoint: "/auth/me", prefill: "/auth/me", then: null, submit: "Save profile",
+          fields: auth.account.profile.body.map(formField), heading: "Profile", idPrefix: "rizo-profile-", done: "Your profile is saved.",
+        } as const]),
+        {
+          kind: "form", method: "POST", endpoint: "/auth/email", prefill: null, then: null, submit: "Change email",
+          fields: [{ ...email, key: "newEmail", label: "New email" }, { key: "password", kind: "Password", required: true, nullable: false, max: 128, label: "Your password", multiline: false }],
+          heading: "Email", idPrefix: "rizo-email-", done: "Check your new address for a link to confirm the change. Nothing changes until you open it.",
+        },
+        {
+          kind: "form", method: "POST", endpoint: "/auth/password", prefill: null, then: null, submit: "Change password",
+          fields: [
+            { key: "currentPassword", kind: "Password", required: true, nullable: false, max: 128, label: "Current password", multiline: false },
+            { ...auth.account.password, label: "New password", multiline: false },
+          ],
+          heading: "Password", idPrefix: "rizo-password-", done: "Your password is changed, and your other devices are logged out.",
+        },
+        { kind: "passkeys" }, { kind: "sessions" }, { kind: "tokens" }, { kind: "yourData" },
+      ]),
+      access: "login",
+    },
+    page("/confirm-email", "Confirm your new email", [
+      { kind: "confirmEmail" },
+      { kind: "text", text: "Open this page from the link in the email we sent to your new address." },
+      { kind: "link", label: "Your account", path: "/account" },
+    ]),
     page("/signup", "Create an account", [
       {
         kind: "form", method: "POST", endpoint: "/auth/signup", submit: "Create account", prefill: null, then: null, fields: auth.signup.body.map(formField),
@@ -554,6 +581,8 @@ function authSpec(auth: ResolvedAuth, models: readonly ResolvedModel[]): AuthSpe
       password: { ...fieldSpec(auth.passwordField, true), key: "newPassword" },
       hashSql: `SELECT ${q(auth.passwordField.column)} AS "hash" FROM ${table} WHERE ${q("id")} = $1`,
       setPasswordSql: `UPDATE ${table} SET ${q(auth.passwordField.column)} = $2 WHERE ${q("id")} = $1`,
+      emailSql: `SELECT ${q(auth.loginField.column)} AS "email" FROM ${table} WHERE ${q("id")} = $1`,
+      setEmailSql: `UPDATE ${table} SET ${q(auth.loginField.column)} = $2 WHERE ${q("id")} = $1`,
       deleteSql,
       ghost,
       profile: profileFields.length === 0

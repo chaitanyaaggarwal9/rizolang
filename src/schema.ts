@@ -270,6 +270,8 @@ export function buildSchema(
         col("user_id", "UUID", {}),
         col("purpose", "TEXT", {}),
         col("expires_at", "TIMESTAMPTZ", {}),
+        // For a change of login email: the new address, used once the link is opened.
+        col("new_email", "TEXT", { notNull: false }),
       ],
       foreignKeys: [{
         name: constraintName(EMAIL_TOKENS_TABLE, "user_id", "fkey"), column: "user_id", refTable: auth.model.table,

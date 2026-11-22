@@ -165,6 +165,8 @@ It adds these endpoints. Paths under `/auth` are reserved.
 | `GET /auth/me`      | none                              | 200 with `User.public`, or 401                |
 | `PATCH /auth/me`    | Any profile fields                | 200 with `User.public`. Every field is optional. The login email, the password, the role and links to the auth model can't be changed here |
 | `POST /auth/password` | `{ "currentPassword": ..., "newPassword": ... }` | 204. Every other session of the account is logged out |
+| `POST /auth/email`  | `{ "newEmail": ..., "password": ... }` | Login required (cookie). 202, always the same: emails a link to the new address if no account uses it. Nothing changes until the link is opened |
+| `POST /auth/email/confirm` | `{ "token": ... }` (from the emailed link) | 204: the login email is changed, and the old address is told. 400 if the link is invalid, used or expired; 409 if another account took the address meanwhile |
 | `POST /auth/logout-all` | none                          | 204. Every session of the account is deleted, including this one |
 | `GET /auth/sessions` | none                             | Login required. 200 `{ "items": [{ "id", "device", "createdAt", "lastSeenAt", "current" }] }`: the devices you are logged in on |
 | `GET /auth/tokens`  | none                              | Login required (cookie). 200 `{ "items": [...], "endpoints": [...] }`: your API tokens (never the token itself), and the endpoints a token may be made for |
@@ -520,7 +522,7 @@ page /posts/:id/delete {
 ```
 
 **Rules:**
-- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password` and `/privacy` are reserved for the built-in pages.
+- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password`, `/confirm-email` and `/privacy` are reserved for the built-in pages.
 - **Parameters:** a page's `:parameters` fill in the parameters of the endpoint it shows, by name. Every page parameter must be used (RZ0323).
 - **Never more open than its data (RZ0335):**
   - A page that uses (shows, or has a form or button for) a `requires login` endpoint must also `requires login`.
@@ -541,8 +543,9 @@ page /posts/:id/delete {
 **Built-in pages.** In an app with an `auth` line and at least one page:
 - `/login` and `/signup` are generated, with forms for `/auth/login` and `/auth/signup`. `/login` also has "Log in with a passkey", and links to reset the password or get a new confirmation link.
 - `/privacy` (with a `privacy for` line) shows the privacy notice (§4.2), and every page's menu links to it.
+- `/confirm-email` opens from the link that confirms a new login email.
 - `/verify-email` and `/reset-password` open from the emailed links: they confirm the email, or ask for a new password. Opened without a link, they ask for an email address and send a new link.
-- `/account` (login required) lists the user's passkeys, and adds and removes them. It also lists the devices the user is logged in on, with "Log out" for each and "Log out everywhere", lets the user create and revoke API tokens, download their data, and delete their account.
+- `/account` (login required) lists the user's passkeys, and adds and removes them. It starts with forms to edit the profile, change the login email (confirmed by a link sent to the new address) and change the password. It also lists the devices the user is logged in on, with "Log out" for each and "Log out everywhere", lets the user create and revoke API tokens, download their data, and delete their account.
 - Every page shows a menu with a link home, plus "Log in" and "Sign up", or "Account" and "Log out".
 - A page that needs a login sends logged-out visitors to `/login?next=<the page>`. After logging in they return there. `next` is followed only if it is a path on this site.
 
@@ -982,6 +985,4 @@ comment    = "//" { any character except newline } ;
 These are **not** part of the language yet. Using them is an error.
 
 - Filters other than `=`.
-- Changing the login email.
 - Custom page layouts and styling.
-- Changing your profile or password from a page (the API endpoints exist already).

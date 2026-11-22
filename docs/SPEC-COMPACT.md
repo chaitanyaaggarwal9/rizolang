@@ -71,7 +71,7 @@ A field named `password` (or ending in `Password`) must have the type `Password`
 
 ## auth
 
-`auth User by email` turns on accounts. User needs `email: Email unique` and one `Password` field. Everything account-related is built in under `/auth`: signup with email confirmation, login, logout, password reset, profile (`PATCH /auth/me`), sessions and devices, data export and account deletion. Never write your own login or account endpoints. Scripts and AI agents use API tokens (`Authorization: Bearer rzt_...`) limited to chosen endpoints.
+`auth User by email` turns on accounts. User needs `email: Email unique` and one `Password` field. Everything account-related is built in under `/auth`: signup with email confirmation, login, logout, password reset, profile (`PATCH /auth/me`), email and password changes, sessions and devices, data export and account deletion. Never write your own login or account endpoints. Scripts and AI agents use API tokens (`Authorization: Bearer rzt_...`) limited to chosen endpoints.
 
 Roles: `auth User by email roles admin, editor` (must include admin). Admins assign roles with `PUT /auth/users/:id/role`. Never add a `role` field yourself; it is hidden and never comes from request bodies.
 
@@ -129,7 +129,7 @@ page /posts/:id {
 - A page must be at least as strict as what it shows: use `requires login` if the endpoint does.
 - Lists link to a page that shows one record of the same model.
 - `form POST /api/posts` (or PUT or PATCH) builds a form from the endpoint's body. `button "Delete" DELETE /api/posts/:id` deletes. Each page has at most one form or button, followed by `then go /path` (`:id` can be the saved record).
-- With an auth line, `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password`, `/privacy` (with privacy) and a menu are built in and reserved. Never write login, account or email pages.
+- With an auth line, `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password`, `/confirm-email`, `/privacy` (with privacy) and a menu are built in and reserved. Never write login, account or email pages.
 
 ## Migrations
 

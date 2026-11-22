@@ -568,6 +568,66 @@ describe("the privacy page", () => {
   });
 });
 
+describe("account forms", () => {
+  it("an edit form sends only the fields that changed, so blank private fields are never cleared", async () => {
+    const sent: { method: string; body: unknown }[] = [];
+    (globalThis as { fetch?: unknown }).fetch = async (_url: string, init?: { method?: string; body?: string }) => {
+      sent.push({ method: init?.method ?? "GET", body: init?.body === undefined ? undefined : JSON.parse(init.body) });
+      return { ok: true, status: 200, json: async () => ({ name: "Ann", bio: "hi" }) };
+    };
+    const page = client.renderPage({
+      title: "Your account", params: {}, loggedIn: true, auth: false,
+      items: [{
+        kind: "form", method: "PATCH", endpoint: "/auth/me", prefill: "/auth/me", then: null, submit: "Save profile", heading: "Profile", idPrefix: "rizo-profile-", done: "Saved.",
+        fields: [
+          { key: "name", kind: "Text", label: "Name", required: false, nullable: false, max: 100, multiline: false },
+          { key: "bio", kind: "Text", label: "Bio", required: false, nullable: true, max: 500, multiline: false },
+          { key: "phone", kind: "Text", label: "Phone", required: false, nullable: true, max: 30, multiline: false },
+        ],
+      } as never],
+    }) as unknown as FakeElement;
+    await flush();
+    expect(all(page).find((e) => e.tagName === "h2")?.textContent).toBe("Profile");
+    const name = all(page).find((e) => e.attributes.get("id") === "rizo-profile-name");
+    expect(name?.value).toBe("Ann");
+    if (name) name.value = "Ann B";
+    all(page).find((e) => e.tagName === "form")?.onsubmit?.({ preventDefault: () => undefined });
+    await flush();
+    expect(sent.at(-1)).toEqual({ method: "PATCH", body: { name: "Ann B" } });
+    // The form stays, shows that it saved, and the saved values are the new starting point.
+    expect(all(page).find((e) => e.attributes.get("role") === "status" && !e.hidden)?.textContent).toBe("Saved.");
+    all(page).find((e) => e.tagName === "form")?.onsubmit?.({ preventDefault: () => undefined });
+    await flush();
+    expect(sent.at(-1)).toEqual({ method: "PATCH", body: {} });
+  });
+
+  it("marks current passwords for password managers", () => {
+    const page = client.renderPage({
+      title: "Your account", params: {}, loggedIn: true, auth: false,
+      items: [{
+        kind: "form", method: "POST", endpoint: "/auth/password", prefill: null, then: null, submit: "Change password", idPrefix: "rizo-password-",
+        fields: [
+          { key: "currentPassword", kind: "Password", label: "Current password", required: true, nullable: false, multiline: false },
+          { key: "newPassword", kind: "Password", label: "New password", required: true, nullable: false, multiline: false },
+        ],
+      } as never],
+    }) as unknown as FakeElement;
+    const inputs = all(page).filter((e) => e.tagName === "input");
+    expect(inputs.map((e) => e.attributes.get("autocomplete"))).toEqual(["current-password", "new-password"]);
+  });
+
+  it("confirms a new email with the token from the link", async () => {
+    const sent = stubSend(null, 204);
+    fakeLocation.hash = `#token=${"C".repeat(43)}`;
+    byId.set("rizo-page", { textContent: JSON.stringify({ title: "Confirm", items: [{ kind: "confirmEmail" }, { kind: "text", text: "Open the link." }], params: {}, loggedIn: false, auth: true }) });
+    byId.set("app", new FakeElement("main"));
+    client.start();
+    await flush();
+    expect(sent.map((x) => [x.url, x.body])).toEqual([["/auth/email/confirm", { token: "C".repeat(43) }]]);
+    expect(replaced?.textContent).toContain("Your email is changed");
+  });
+});
+
 describe("buttons and the menu", () => {
   const buttonPage = () => client.renderPage({
     title: "Post", params: { id: "7" }, loggedIn: true, auth: false,

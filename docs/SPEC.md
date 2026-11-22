@@ -394,6 +394,12 @@ The return line is `return db.<Model>.<action>(...)`. There are five actions. Ea
 
 Hidden fields (Password or `private`) cannot be used in filters or ordering.
 
+**Linked records: `with`.** A `find` or `list` endpoint can return the records its links point to, after the return type: `api GET /api/posts -> list Post.public with author, editor`.
+- Each listed link comes back as the linked record's public fields, such as `"author": { "id": ..., "name": "Ann" }`, or `null` for an empty optional link. Private and Password fields of the linked record are never included, and its encrypted fields are decrypted.
+- It is still one database query: each linked record is read by its primary key.
+- Pages show the linked record's first public Text or Email field ("Ann") instead of its id.
+- Only public link fields of the returned model can be listed, each once, and only on `find` and `list` (RZ0343).
+
 **Indexes are automatic.** For every `list`, the compiler creates an index on its `=` filter fields, then its `<`/`>` fields, then its order field, then `id`, so each page (including "Load more") is read straight from the index instead of scanning the table. Migrations add and remove these indexes as your endpoints change. `contains` and `!=` can't use such an index, so on a large table combine them with an `=` filter, such as `author = me`.
 
 **Values** on the right of `=`:
@@ -805,6 +811,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0340 | An encrypted field used as unique, as the login field, in a filter or in an order |
 | RZ0341 | Invalid `privacy for` line (unknown or repeated region, more than one line, no `auth` line) |
 | RZ0342 | Invalid `keep` (unknown unit, out of range, repeated, on the auth model, or without a server) |
+| RZ0343 | Invalid `with` (not a public link field of the model, repeated, or on an endpoint that changes records) |
 | RZ0901 | Cannot read the input file                                              |
 | RZ0902 | Input file does not end in `.rz`                                        |
 | RZ0903 | Wrong command-line usage                                                |
@@ -990,7 +997,7 @@ api        = "api" METHOD PATH [ "->" rettype ] "{" { statement NEWLINE } "}" ;
 METHOD     = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" ;
 PATH       = "/" [ segment { "/" segment } ] ;
 segment    = LOWER { LOWER | DIGIT | "-" } | ":" NAME ;
-rettype    = [ "list" ] NAME "." "public" ;
+rettype    = [ "list" ] NAME "." "public" [ "with" NAME { "," NAME } ] ;
 statement  = "public" | "requires" "login" | "requires" "role" NAME { "," NAME }
            | "limit" INT "per" ( "second" | "minute" | "hour" | "day" )
            | "requires" "owner" NAME [ "or" "role" NAME { "," NAME } ] | "return" query ;

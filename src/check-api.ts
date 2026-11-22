@@ -108,6 +108,8 @@ export interface ResolvedApi {
   readonly roles: readonly string[];
   readonly returns: "one" | "list" | "none";
   readonly query: ResolvedQuery;
+  /** `with author`: link fields whose records (their public fields) are returned too. */
+  readonly expand: readonly { readonly field: ResolvedField; readonly model: ResolvedModel }[];
   /** Requests allowed per window, per account (logged in) or per IP address (logged out). */
   readonly rateLimit: RateLimit;
 }
@@ -744,6 +746,30 @@ export function checkApis(
       }
     }
 
+    // --- with: linked records returned too
+    const expand: { field: ResolvedField; model: ResolvedModel }[] = [];
+    for (const w of rt?.with ?? []) {
+      const f = model.fields.find((x) => x.name === w.name);
+      const links = model.fields.filter((x) => x.link !== undefined && !isHidden(x)).map((x) => x.name);
+      const fix = links.length > 0 ? `Links of ${model.name} that can be returned: ${links.join(", ")}.` : `${model.name} has no public links to return.`;
+      if (action !== "find" && action !== "list") {
+        ok = false;
+        err("RZ0343", w.span, `"with" works only on endpoints that read records (find and list).`, `Remove \`with ${w.name}\`.`);
+      } else if (f === undefined || f.link === undefined) {
+        ok = false;
+        err("RZ0343", w.span, `"${w.name}" is not a link field of ${model.name}.`, fix);
+      } else if (isHidden(f)) {
+        ok = false;
+        err("RZ0343", w.span, `"${model.name}.${f.name}" is private, so its record can't be returned.`, fix);
+      } else if (expand.some((x) => x.field === f)) {
+        ok = false;
+        err("RZ0343", w.span, `"${w.name}" is listed twice after "with".`, "Remove the duplicate.");
+      } else {
+        const target = models.find((m) => m.name === f.link);
+        if (target !== undefined) expand.push({ field: f, model: target });
+      }
+    }
+
     // --- every path parameter is used
     for (const p of pathParams) {
       if (!usedParams.has(p) && query !== undefined) {
@@ -766,6 +792,7 @@ export function checkApis(
       rateLimit,
       returns: expected,
       query,
+      expand,
     };
   }
 

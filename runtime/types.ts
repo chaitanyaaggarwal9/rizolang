@@ -91,6 +91,13 @@ export interface Route {
   readonly model: string;
   /** Fields encrypted before they are written and decrypted after they are read. Absent means none. */
   readonly encrypted?: readonly EncryptedField[];
+  /** `with author`: link fields returned as the linked record's public fields. Absent means none. */
+  readonly expanded?: readonly {
+    readonly key: string;
+    /** The only keys ever copied from the linked record. */
+    readonly publicKeys: readonly string[];
+    readonly encrypted?: readonly EncryptedField[];
+  }[];
 }
 
 export interface AuthSpec {
@@ -183,6 +190,8 @@ export interface FieldViewSpec {
   readonly key: string;
   readonly label: string;
   readonly type: FieldKind;
+  /** For a link returned `with` its record: which of its fields to show, such as "name". */
+  readonly display?: string;
 }
 
 /** One input of a form: a body field plus how to show it. */

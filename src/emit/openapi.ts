@@ -17,7 +17,10 @@ import { buildApp } from "./routes.js";
 export function emitOpenApi(apis: readonly ResolvedApi[], auth: ResolvedAuth | undefined, sourceFile: string): string {
   const app = buildApp(apis, auth);
   const models = new Map<string, ResolvedModel>();
-  for (const api of apis) models.set(api.query.model.name, api.query.model);
+  for (const api of apis) {
+    models.set(api.query.model.name, api.query.model);
+    for (const x of api.expand) models.set(x.model.name, x.model);
+  }
 
   const paths: Record<string, Record<string, unknown>> = {};
   const usedIds = new Set<string>();
@@ -55,6 +58,17 @@ export function emitOpenApi(apis: readonly ResolvedApi[], auth: ResolvedAuth | u
       properties: { id: { type: "string", format: "uuid" }, ...Object.fromEntries(fields.map((f) => [f.name, fieldSchema(f)])) },
       additionalProperties: false,
     };
+  }
+  // Endpoints that return linked records (`with author`) get their own schema, with the link as the linked record.
+  for (const api of apis) {
+    if (api.expand.length === 0) continue;
+    const base = schemas[`${api.query.model.name}Public`] as { properties: Record<string, unknown> };
+    const properties = { ...base.properties };
+    for (const x of api.expand) {
+      const linked = { $ref: `#/components/schemas/${x.model.name}Public` };
+      properties[x.field.name] = x.field.optional ? { anyOf: [linked, { type: "null" }] } : linked;
+    }
+    schemas[expandedName(api)] = { ...(base as object), description: `${api.query.model.name}.public, with ${api.expand.map((x) => x.field.name).join(" and ")} as the linked record.`, properties };
   }
 
   const doc = {
@@ -99,7 +113,7 @@ function operation(api: ResolvedApi, route: Route, operationId: string): Record<
     "503": "The server is busy, or the request took too long. Retry after Retry-After seconds.",
   };
   const responses: Record<string, unknown> = {};
-  const ref = { $ref: `#/components/schemas/${model.name}Public` };
+  const ref = { $ref: `#/components/schemas/${api.expand.length > 0 ? expandedName(api) : `${model.name}Public`}` };
   if (route.result === "list") {
     responses["200"] = {
       description: `A page of ${model.name} records. Pass next as ?after= to get the following page.`,
@@ -238,4 +252,9 @@ function uniqueId(api: ResolvedApi, used: Set<string>): string {
   for (let n = 2; used.has(id); n++) id = `${camel}${n}`;
   used.add(id);
   return id;
+}
+
+/** Schema name for a model returned with linked records, e.g. PostPublicWithAuthor. */
+function expandedName(api: ResolvedApi): string {
+  return `${api.query.model.name}PublicWith${api.expand.map((x) => x.field.name.charAt(0).toUpperCase() + x.field.name.slice(1)).join("And")}`;
 }

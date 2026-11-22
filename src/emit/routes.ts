@@ -232,7 +232,10 @@ function pageRoute(page: ResolvedPage): PageRoute {
         endpoint: item.api.path,
         mode: item.mode,
         model: item.api.query.model.name,
-        fields: item.fields.map((f) => ({ key: f.key, label: f.label, type: f.type })),
+        fields: item.fields.map((f) => {
+          const linked = item.api.expand.find((x) => x.field.name === f.key);
+          return { key: f.key, label: f.label, type: f.type, ...(linked !== undefined ? { display: displayField(linked.model) } : {}) };
+        }),
         detail: item.detail ?? null,
       };
     }),
@@ -377,6 +380,33 @@ const quoteKey = (key: string): string => {
   return `"${key}"`;
 };
 
+/**
+ * Public columns, with each expanded link (`with author`) as a JSON object of
+ * the linked record's public fields, read by primary key in a subquery: still
+ * one query, and no join to make column names ambiguous.
+ */
+function expandedSelect(model: ResolvedModel, expand: ResolvedApi["expand"]): { sql: string; keys: string[] } {
+  const fields = model.fields.filter((f) => !isHidden(f));
+  const cols = [`${q(model.table)}.${q("id")}`, ...fields.map((f) => {
+    const e = expand.findIndex((x) => x.field === f);
+    const linked = expand[e];
+    if (linked === undefined) return `${q(model.table)}.${q(f.column)} AS ${quoteKey(f.name)}`;
+    const alias = q(`l${e + 1}`);
+    const inner = publicSelect(linked.model);
+    const pairs = inner.keys.map((key, i) => {
+      const col = i === 0 ? "id" : linked.model.fields.find((x) => x.name === key)?.column ?? key;
+      return `'${key}', ${alias}.${q(col)}`;
+    });
+    return `(SELECT json_build_object(${pairs.join(", ")}) FROM ${q(linked.model.table)} AS ${alias} WHERE ${alias}.${q("id")} = ${q(model.table)}.${q(f.column)}) AS ${quoteKey(f.name)}`;
+  })];
+  return { sql: cols.join(", "), keys: ["id", ...fields.map((f) => f.name)] };
+}
+
+/** The first public text field of a model, shown for its records on pages ("by Alice"); "id" if none. */
+function displayField(model: ResolvedModel): string {
+  return model.fields.find((f) => !isHidden(f) && f.link === undefined && (f.type === "Text" || f.type === "Email"))?.name ?? "id";
+}
+
 /** `"id", "title", "author_id" AS "author"`: only public columns, renamed to JSON keys. */
 function publicSelect(model: ResolvedModel): { sql: string; keys: string[] } {
   const fields = model.fields.filter((f) => !isHidden(f));
@@ -443,7 +473,7 @@ function route(api: ResolvedApi): Route {
   const { query } = api;
   const model = query.model;
   const table = q(model.table);
-  const select = publicSelect(model);
+  const select = api.expand.length > 0 ? expandedSelect(model, api.expand) : publicSelect(model);
   const p = new Params();
 
   const path: PathPart[] = api.segments.map((s) => {
@@ -549,6 +579,9 @@ function route(api: ResolvedApi): Route {
     publicKeys: select.keys,
     model: model.name,
     ...(queryList !== undefined ? { query: queryList } : {}),
+    ...(api.expand.length > 0
+      ? { expanded: api.expand.map((x) => ({ key: x.field.name, publicKeys: publicSelect(x.model).keys, ...encryptedOf(x.model) })) }
+      : {}),
     ...(encryptedFields(model).length > 0 ? { encrypted: encryptedFields(model) } : {}),
   };
 }

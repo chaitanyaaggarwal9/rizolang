@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-22
+
+Milestone 9: everyday app features: the account page, search and richer list filters, `rizolang dev`, and deployment basics.
+
+### Upgrading from 0.5.0
+
+Rebuild (`rizolang build app.rz`) and apply the new migration (`node migrate.ts`). There are no new required settings.
+- **Newly reserved page path:** `/confirm-email`.
+- **Edit forms (PATCH) send only the fields that changed.** Clients of your API are not affected.
+- **Docker:** `dist/` now also contains a `Dockerfile` and `.dockerignore`.
+
 ### Added
 
 - Milestone 9, part 2: the account page.
@@ -219,7 +230,8 @@ Milestone 3: roles, pagination, account management and migrations.
 - Language spec (`docs/SPEC.md`) and compact spec for AI system prompts (`docs/SPEC-COMPACT.md`).
 - CI on Node 22, 24 and 26, plus a PostgreSQL schema check.
 
-[Unreleased]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.3.0...v0.3.1

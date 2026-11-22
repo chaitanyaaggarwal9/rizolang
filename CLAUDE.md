@@ -81,4 +81,4 @@ Milestone 8 (privacy) is done: `GET /auth/me/export` and account deletion that c
 
 All of this shipped in v0.5.0. Show a plan before each new milestone.
 
-Milestone 9 (everyday app features) is done, not yet released (it becomes v0.6.0): a shorter compact spec, profile, email and password changes on /account (`POST /auth/email`, `/confirm-email`), list filters beyond `=` (`!=`, `<`, `>`, `contains`, optional `?name` query parameters), `rizolang dev` (`src/dev.ts`), and deployment basics (`/_rizo/health`, graceful shutdown, a generated Dockerfile). Keep the compact spec well under 1,500 words.
+Milestone 9 (everyday app features) is done and released as v0.6.0: a shorter compact spec, profile, email and password changes on /account (`POST /auth/email`, `/confirm-email`), list filters beyond `=` (`!=`, `<`, `>`, `contains`, optional `?name` query parameters), `rizolang dev` (`src/dev.ts`), and deployment basics (`/_rizo/health`, graceful shutdown, a generated Dockerfile). Keep the compact spec well under 1,500 words.

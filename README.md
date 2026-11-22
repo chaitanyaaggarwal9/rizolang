@@ -430,7 +430,7 @@ Build failed with 2 errors. No files were written.
 For editors and AI agents, `rizolang build app.rz --json` prints the same errors as one line of JSON:
 
 ```json
-{"rizolang":"0.5.0","ok":false,"errors":[{"code":"RZ0318","message":"Endpoint \"GET /posts\" does not say who may call it.","fix":"Add `requires login` for logged-in users only, or `public` if anyone may call it.","file":"app.rz","line":14,"column":5,"length":3}]}
+{"rizolang":"0.6.0","ok":false,"errors":[{"code":"RZ0318","message":"Endpoint \"GET /posts\" does not say who may call it.","fix":"Add `requires login` for logged-in users only, or `public` if anyone may call it.","file":"app.rz","line":14,"column":5,"length":3}]}
 ```
 
 The full list of error codes is in the [spec](docs/SPEC.md#8-errors).
@@ -461,6 +461,7 @@ Rizo Lang is in **early development**, so expect the language to change before 1
   - accounts: passkeys, email confirmation and password reset, `encrypted` fields, sessions and devices,
   - AI agents: scoped API tokens, OpenAPI, `build --json`, `rizolang audit`,
   - privacy for the regions you declare (EU, UK, India, California, Brazil): data download and deletion, `keep` retention, a generated privacy page
+- [x] **Milestone 9** ([v0.6.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.6.0)): profile, email and password changes on the account page, search and richer list filters, `rizolang dev`, a health check, graceful shutdown and a generated `Dockerfile`
 - [x] Publish the compiler to npm ([`rizolang`](https://www.npmjs.com/package/rizolang))
 - [ ] A VS Code extension with syntax highlighting
 

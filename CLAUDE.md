@@ -78,4 +78,6 @@ Milestone 7 (AI agents) is done: API tokens scoped per endpoint, expiring within
 
 Milestone 8 (privacy) is done: `GET /auth/me/export` and account deletion that credits records to a "Deleted user" account; `privacy for EU, UK, IN, US-CA, BR`; `keep N days|months|years` retention; and a generated privacy notice (`GET /auth/privacy`, `/privacy`), with the contact from `RIZO_PRIVACY_CONTACT` and no consent banner (maintainer decisions).
 
-All of this shipped in v0.5.0. Show a plan before each new milestone. The compact spec is close to its 1,500-word limit, so trim it when adding to the language.
+All of this shipped in v0.5.0. Show a plan before each new milestone.
+
+Milestone 9 (everyday app features) is in progress, approved by the maintainer: (1) trim the compact spec to about 1,300 words, (2) edit profile, change password and change login email on /account, (3) list filters beyond `=`, (4) `rizolang dev`, (5) a health endpoint, a generated Dockerfile and graceful shutdown. Keep the compact spec well under 1,500 words.

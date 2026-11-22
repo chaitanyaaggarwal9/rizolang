@@ -1,6 +1,6 @@
 # Rizo Lang (compact spec, v0.5)
 
-You are writing Rizo Lang (`.rz` files). Follow these rules exactly. A file contains `model` blocks, at most one `auth` line, `api` blocks and `page` blocks. Never write SQL, HTML or JavaScript in `.rz` files.
+You are writing Rizo Lang (`.rz` files). Follow these rules exactly. A file contains `model` blocks, at most one `auth` line, at most one `privacy` line, `api` blocks and `page` blocks. Never write SQL, HTML or JavaScript.
 
 ## Example
 
@@ -26,11 +26,6 @@ api GET /posts -> list Post.public {
   return db.Post.list(published = true, order title, limit 20)
 }
 
-api GET /posts/:id -> Post.public {
-  public
-  return db.Post.find(id)
-}
-
 api POST /posts -> Post.public {
   requires login
   return db.Post.create(body, author = me)
@@ -51,9 +46,8 @@ api DELETE /posts/:id {
 
 ## Models
 
-- Write `model Name {` with a PascalCase name, one field per line as `name: Type modifiers`, then `}`. No commas or semicolons.
-- Field names are camelCase. Names contain only letters and digits.
-- Every model gets `id: ID` automatically. Never declare `id`.
+- `model Name {` (PascalCase), one field per line as `name: Type modifiers`, then `}`. No commas or semicolons.
+- Field names are camelCase, letters and digits only. Every model gets `id: ID` automatically; never declare it.
 
 | Type       | Meaning                                         | Modifiers allowed                   |
 |------------|-------------------------------------------------|-------------------------------------|
@@ -70,20 +64,20 @@ Modifiers:
 - `unique`: no two records share the value.
 - `optional`: the value may be null.
 - `private`: never returned by the API.
-- `encrypted`: stored encrypted; the API still sees the plain value. Never use it with unique, on the login field, or in list filters or order. Use it for sensitive data such as phone numbers.
+- `encrypted`: stored encrypted; the API sees the plain value. Use it for sensitive data such as phone numbers. Never with unique, on the login field, or in list filters or order.
 - `min N` / `max N`: the length for text, the value for Number.
 
 A field named `password` (or ending in `Password`) must have the type `Password`.
 
 ## auth
 
-`auth User by email` turns on accounts. User needs `email: Email unique` and one `Password` field. It adds `POST /auth/signup` (emails a confirmation link; login works after it is confirmed), password reset by email, `POST /auth/login`, `POST /auth/logout`, `POST /auth/logout-all`, `GET /auth/sessions` and `DELETE /auth/sessions/:id` (devices), `GET /auth/me`, `PATCH /auth/me` (edit profile), `POST /auth/password`, `GET /auth/me/export` (all your data) and `DELETE /auth/me` (records that need an owner stay, credited to "Deleted user"). Sessions use a secure cookie and end after 7 days unused or 30 days in total. The build also writes `openapi.json` (served at `/_rizo/openapi.json`). Scripts and AI agents use API tokens (`Authorization: Bearer rzt_...`), each limited to chosen login endpoints for at most 90 days. Don't write your own login endpoints.
+`auth User by email` turns on accounts. User needs `email: Email unique` and one `Password` field. Everything account-related is built in under `/auth`: signup with email confirmation, login, logout, password reset, profile (`PATCH /auth/me`), sessions and devices, data export and account deletion. Never write your own login or account endpoints. Scripts and AI agents use API tokens (`Authorization: Bearer rzt_...`) limited to chosen endpoints.
 
 Roles: `auth User by email roles admin, editor` (must include admin). Admins assign roles with `PUT /auth/users/:id/role`. Never add a `role` field yourself; it is hidden and never comes from request bodies.
 
 ## privacy
 
-`privacy for EU, UK, IN, US-CA, BR` (one top-level line, needs auth) names the regions the app serves. It needs `RIZO_PRIVACY_CONTACT` and publishes a /privacy page. In a model, a line `keep 2 years` (or days, months) deletes its records that long after creation; not on the auth model. Use keep for data that shouldn't be kept forever, such as messages or logs.
+`privacy for EU, UK, IN, US-CA, BR` (one line, needs auth) names the regions served and publishes a /privacy page. In a model, a line `keep 2 years` (or days, months) deletes records that long after creation; not on the auth model. Use it for data such as messages or logs.
 
 ## api
 
@@ -98,8 +92,8 @@ api METHOD /path/:param -> Model.public {
 
 - Every endpoint has **exactly one** of `public` or `requires login`.
 - `requires role admin` gives 403 to users without that role.
-- Every endpoint is rate-limited (120 per minute by default). Add `limit 10 per minute` (units: second, minute, hour, day) for endpoints that need a tighter limit, such as comments or messages.
-- `requires owner author` lets only the record's owner act; others get 404. It needs `requires login`, and it works with find, update and delete. It is **required** on update and delete of a model that links to the auth model.
+- Endpoints allow 120 requests a minute by default. Add `limit 10 per minute` (second, minute, hour, day) where a tighter limit fits, such as comments.
+- `requires owner author` lets only the record's owner act (others get 404). It works with find, update and delete, and is **required** on update and delete of a model that links to the auth model.
 - The return type is `-> Model.public` or `-> list Model.public`, and there is none for delete. Only `.public` can be returned.
 - Paths use lowercase segments and `:camelCase` parameters. Every parameter must be used. `/auth` is reserved.
 
@@ -130,20 +124,20 @@ page /posts/:id {
 ```
 
 - Pages are generated from endpoints. Never write HTML. Quoted text is only allowed in pages: one line, at most 200 characters.
-- Put endpoints under `/api`. A page can't share a path with an endpoint. `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password` and `/privacy` are reserved.
+- Put endpoints under `/api`. A page can't share a path with an endpoint.
 - `show` takes one GET endpoint from the file. Page `:params` fill the endpoint's params by name, and every page param must be used.
 - A page must be at least as strict as what it shows: use `requires login` if the endpoint does.
 - Lists link to a page that shows one record of the same model.
 - `form POST /api/posts` (or PUT or PATCH) builds a form from the endpoint's body. `button "Delete" DELETE /api/posts/:id` deletes. Each page has at most one form or button, followed by `then go /path` (`:id` can be the saved record).
-- With an auth line, `/login`, `/signup`, `/account` (passkeys, devices, API tokens, data download, account deletion), `/verify-email`, `/reset-password`, `/privacy` (with privacy for) and a log-in/log-out menu are built in. Don't write login, passkey or email pages.
+- With an auth line, `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password`, `/privacy` (with privacy) and a menu are built in and reserved. Never write login, account or email pages.
 
 ## Migrations
 
-`rizolang build` writes `migrations/NNNN_*.sql` when models change. Removing a model or field, changing a field's type, or removing a role is refused (RZ0904). Never rename a field; add a new one instead. Apply migrations with `node migrate.ts`. Use `rizolang build app.rz --json` to get errors as JSON (code, line, column, message, fix). Run `rizolang audit app.rz` and fix every warning it reports.
+`rizolang build` writes `migrations/NNNN_*.sql` when models change. Removing a model or field, changing a type, or removing a role is refused (RZ0904). Never rename a field; add a new one. Run `rizolang audit app.rz` and fix every warning.
 
 ## Errors
 
-The format is `file.rz:LINE:COL error RZxxxx: message`, followed by a `fix:` line. Apply the fix exactly as written.
+`file.rz:LINE:COL error RZxxxx: message`, then a `fix:` line. Apply the fix exactly. `--json` prints errors as JSON.
 
 ## Wrong → Right
 
@@ -153,7 +147,6 @@ age: Int              →  age: Number
 active: Boolean       →  active: Bool
 createdAt: DateTime   →  createdAt: Date
 userId: UUID          →  userId: ID
-email: Email,         →  email: Email
 name: Text(100)       →  name: Text max 100
 email: Email @unique  →  email: Email unique
 nickname?: Text       →  nickname: Text optional
@@ -164,19 +157,13 @@ password: Text        →  password: Password
 password: Password unique  →  password: Password
 password: Password min 4   →  password: Password min 8
 price: Number min 0.5      →  priceCents: Number min 50
-isAdmin: Bool max 1        →  isAdmin: Bool
 ```
 
-In api blocks:
-- Every endpoint needs `public` or `requires login`; never leave it out.
-- Write `db.Post.create(body, author = me)`, not `db.Post.create(body)`.
-- Write `-> Post.public`, not `-> Post`.
-- Use `api DELETE /posts/:id`, not `api GET /posts/:id/delete`.
-- Write `requires owner author` on update and delete of user-owned records.
+In api blocks: write `-> Post.public`, not `-> Post`, and `api DELETE /posts/:id`, not `api GET /posts/:id/delete`.
 
 ## Checklist before answering
 
-1. Only `model`, `auth`, `api` and `page` blocks, with one item per line.
+1. Only `model`, `auth`, `privacy`, `api` and `page`, with one item per line.
 2. Every type is Text, Number, Bool, Email, Password, Date, ID or a model name.
 3. Model names are PascalCase, field names are camelCase, and no field is named `id`.
 4. Every endpoint has `public` or `requires login`, a matching method and one `return` line.

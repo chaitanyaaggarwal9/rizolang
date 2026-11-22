@@ -420,6 +420,119 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     });
   });
 
+  describe("built-in admin pages", () => {
+    let dana: { cookie: string; id: string };
+    let danaPost: string;
+    const page = async (path: string, cookie?: string) => {
+      const r = await fetch(base + path, { redirect: "manual", ...(cookie ? { headers: { Cookie: cookie } } : {}) });
+      return { status: r.status, html: await r.text() };
+    };
+
+    beforeAll(async () => {
+      dana = await join({ email: "dana@example.com", password: "danas long password", name: "Dana Admintest", bio: "likes tea" } as never, "198.51.100.40");
+      danaPost = ((await call("POST", "/api/posts", { cookie: dana.cookie, body: { title: "Dana's hidden draft", body: "d", published: false } })).body as { id: string }).id;
+    });
+
+    it("lets only admins use the admin endpoints, and only with the session cookie", async () => {
+      expect((await call("GET", "/auth/admin/posts")).status).toBe(401);
+      // A real, valid API token of an admin still can't use them.
+      const made = await call("POST", "/auth/tokens", { cookie: alice, headers: { "X-Forwarded-For": "198.51.100.41" }, body: { name: "Admin agent", endpoints: ["GET /api/admin/posts"], days: 1 } });
+      expect(made.status).toBe(201);
+      const bearer = { Authorization: `Bearer ${(made.body as { token: string }).token}` };
+      expect((await call("GET", "/api/admin/posts", { headers: bearer })).status).toBe(200);
+      expect((await call("GET", "/auth/admin/posts", { headers: bearer })).status).toBe(401);
+      expect((await call("DELETE", `/auth/admin/posts/${danaPost}`, { headers: bearer })).status).toBe(401);
+      expect((await call("GET", "/auth/admin/posts", { cookie: bob })).status).toBe(403);
+      expect((await call("DELETE", `/auth/admin/posts/${danaPost}`, { cookie: bob })).status).toBe(403);
+      expect((await call("GET", "/auth/admin/nothing", { cookie: alice })).status).toBe(404);
+      expect((await call("POST", "/auth/admin/posts", { cookie: alice })).status).toBe(405);
+      expect((await call("GET", `/auth/admin/posts/${danaPost}`, { cookie: alice })).status).toBe(405);
+    });
+
+    it("lists records with public fields only, and searches by id or text", async () => {
+      const r = await call("GET", "/auth/admin/users", { cookie: alice });
+      expect(r.status).toBe(200);
+      const d = items(r).find((u) => u["id"] === dana.id);
+      expect(Object.keys(d ?? {}).sort()).toEqual(["bio", "id", "name", "role"]);
+      // The email is private and the password is hashed: neither is ever sent.
+      expect(JSON.stringify(r.body)).not.toContain("@example.com");
+      expect(JSON.stringify(r.body)).not.toMatch(/password|hash/i);
+      expect(items(await call("GET", "/auth/admin/users?q=ADMINTEST", { cookie: alice })).map((u) => u["id"])).toEqual([dana.id]);
+      expect(items(await call("GET", `/auth/admin/users?q=${dana.id.toUpperCase()}`, { cookie: alice })).map((u) => u["id"])).toEqual([dana.id]);
+      // Private fields can't be searched either, so a search can't reveal them.
+      expect(items(await call("GET", "/auth/admin/users?q=dana%40example", { cookie: alice }))).toEqual([]);
+      // Unpublished posts are listed too.
+      expect(items(await call("GET", "/auth/admin/posts?q=hidden%20draft", { cookie: alice })).map((p) => p["id"])).toEqual([danaPost]);
+      expect((await call("GET", "/auth/admin/posts?q=", { cookie: alice })).status).toBe(200);
+      expect((await call("GET", `/auth/admin/posts?q=${"x".repeat(201)}`, { cookie: alice })).status).toBe(400);
+      expect((await call("GET", "/auth/admin/posts?limit=5", { cookie: alice })).status).toBe(400);
+      expect((await call("GET", "/auth/admin/posts?q=a&q=b", { cookie: alice })).status).toBe(400);
+      expect((await call("GET", "/auth/admin/posts?after=nope", { cookie: alice })).status).toBe(400);
+    });
+
+    it("pages through records 50 at a time, in id order", async () => {
+      await pool.query(`INSERT INTO "posts" ("author_id", "title", "body", "published") SELECT $1, 'Bulk ' || g, 'b', false FROM generate_series(1, 60) AS g`, [dana.id]);
+      const first = await call("GET", "/auth/admin/posts?q=bulk", { cookie: alice });
+      const next = (first.body as { next: string | null }).next;
+      expect(items(first)).toHaveLength(50);
+      expect(next).not.toBeNull();
+      const second = await call("GET", `/auth/admin/posts?q=bulk&after=${next}`, { cookie: alice });
+      expect(items(second)).toHaveLength(10);
+      expect((second.body as { next: string | null }).next).toBeNull();
+      const ids = [...items(first), ...items(second)].map((p) => String(p["id"]));
+      expect(new Set(ids).size).toBe(60);
+      expect([...ids].sort()).toEqual(ids);
+    });
+
+    it("deletes records, refuses ones others need, and records it in the audit log", async () => {
+      const needed = ((await call("POST", "/api/posts", { cookie: dana.cookie, body: { title: "Has comments", body: "c", published: true } })).body as { id: string }).id;
+      expect((await call("POST", "/api/comments", { cookie: bob, body: { post: needed, body: "nice" } })).status).toBe(201);
+      expect((await call("DELETE", `/auth/admin/posts/${needed}`, { cookie: alice })).status).toBe(409);
+      expect((await call("DELETE", `/auth/admin/posts/${danaPost}`, { cookie: alice })).status).toBe(204);
+      expect((await call("DELETE", `/auth/admin/posts/${danaPost}`, { cookie: alice })).status).toBe(404);
+      expect((await call("DELETE", "/auth/admin/posts/not-an-id", { cookie: alice })).status).toBe(400);
+      const entry = (await pool.query(`SELECT "user_id", "detail" FROM "_rizo_audit" WHERE "action" = 'record_deleted' AND "target_id" = $1`, [danaPost])).rows;
+      expect(entry).toEqual([{ user_id: aliceId, detail: "Post" }]);
+    });
+
+    it("deletes accounts as self-deletion does, but never your own or another admin's", async () => {
+      expect((await call("DELETE", `/auth/admin/users/${aliceId}`, { cookie: alice })).status).toBe(403);
+      expect((await call("PUT", `/auth/users/${dana.id}/role`, { cookie: alice, body: { role: "admin" } })).status).toBe(200);
+      expect((await call("DELETE", `/auth/admin/users/${dana.id}`, { cookie: alice })).status).toBe(403);
+      // Even if the role changes after the server's check, the delete statement itself skips admins
+      // and moves none of their records.
+      const usersAdmin = app.admin?.find((m) => m.account);
+      const raced = await pool.query(usersAdmin?.deleteSql ?? "", [dana.id, aliceId]);
+      expect(raced.rowCount).toBe(0);
+      expect((await pool.query(`SELECT count(*)::int AS "n" FROM "posts" WHERE "author_id" = $1`, [dana.id])).rows[0].n).toBeGreaterThan(0);
+      expect((await call("DELETE", "/auth/admin/users/00000000-0000-4000-8000-000000000000", { cookie: alice })).status).toBe(404);
+      expect((await call("PUT", `/auth/users/${dana.id}/role`, { cookie: alice, body: { role: null } })).status).toBe(200);
+      const remaining = (await pool.query(`SELECT count(*)::int AS "n" FROM "posts" WHERE "author_id" = $1`, [dana.id])).rows[0].n as number;
+      expect(remaining).toBeGreaterThan(0);
+      expect((await call("DELETE", `/auth/admin/users/${dana.id}`, { cookie: alice })).status).toBe(204);
+      // Her session ends with the account, and her posts are credited to "Deleted user".
+      expect((await call("GET", "/auth/me", { cookie: dana.cookie })).status).toBe(401);
+      const ghost = (await pool.query(`SELECT "user_id" FROM "_rizo_deleted_user" WHERE "one"`)).rows[0]?.user_id as string;
+      expect((await pool.query(`SELECT count(*)::int AS "n" FROM "posts" WHERE "author_id" = $1`, [ghost])).rows[0].n).toBeGreaterThanOrEqual(remaining);
+      expect((await call("DELETE", `/auth/admin/users/${ghost}`, { cookie: alice })).status).toBe(409);
+      const entry = (await pool.query(`SELECT "user_id", "detail" FROM "_rizo_audit" WHERE "action" = 'account_deleted' AND "target_id" = $1`, [dana.id])).rows;
+      expect(entry).toEqual([{ user_id: aliceId, detail: "admin" }]);
+    });
+
+    it("serves the /admin pages only to admins, and links to them in the menu", async () => {
+      expect((await page("/admin")).status).toBe(302);
+      expect((await page("/admin/posts", bob)).status).toBe(403);
+      const index = await page("/admin", alice);
+      expect(index.status).toBe(200);
+      expect(index.html).toContain('"path":"/admin/posts"');
+      expect(index.html).toContain('"admin":true');
+      const posts = await page("/admin/posts", alice);
+      expect(posts.html).toContain('"kind":"admin","slug":"posts"');
+      expect((await page("/admin/nothing", alice)).status).toBe(404);
+      expect((await page("/", bob)).html).not.toContain('"admin":true');
+    });
+  });
+
   describe("pagination", () => {
     const titles = ["d", "a", "c", "b", "e", "c"]; // includes a duplicate title
     beforeAll(async () => {

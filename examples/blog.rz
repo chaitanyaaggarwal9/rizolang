@@ -126,7 +126,8 @@ page /posts/:id/delete {
   then go /
 }
 
-page /admin {
+// Admins also get the built-in /admin pages, to search and delete any record.
+page /drafts {
   requires login
   requires role admin, editor
   title "All posts"

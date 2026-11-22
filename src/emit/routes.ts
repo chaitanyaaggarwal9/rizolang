@@ -2,7 +2,7 @@ import type { FieldValue, ResolvedApi, ResolvedAuth, ResolvedValue } from "../ch
 import { type ResolvedField, type ResolvedModel, type ResolvedSite, isHidden } from "../checker.js";
 import { FIELD_TYPES, type FieldTypeName } from "../types.js";
 import { VERSION } from "../version.js";
-import type { App, AuthSpec, EncryptedColumn, EncryptedField, FieldSpec, GhostSpec, GhostValue, PrivacySpec, RetentionSpec, FormFieldSpec, PageItemSpec, PageRoute, PathPart, Route, ValueSource } from "../../runtime/types.ts";
+import type { AdminModel, App, AuthSpec, EncryptedColumn, EncryptedField, FieldSpec, FieldViewSpec, GhostSpec, GhostValue, PrivacySpec, RetentionSpec, FormFieldSpec, PageItemSpec, PageRoute, PathPart, Route, ValueSource } from "../../runtime/types.ts";
 import { type ResolvedPage, labelFor } from "../check-page.js";
 import { q, roleLiteral } from "./sql.js";
 import { CREATED_COLUMN, UNVERIFIED_TABLE } from "../schema.js";
@@ -47,15 +47,75 @@ export function buildApp(
   const builtIn = authSpecs === null || pages.length === 0 ? [] : authPages(authSpecs, privacy !== undefined);
   const models = [...new Set([...(auth === undefined ? [] : [auth.model]), ...apis.map((a) => a.query.model)])];
   const encrypted = models.flatMap(encryptedColumns);
+  const admin = auth !== undefined && authSpecs !== null && auth.roles.includes("admin") ? adminModels(known, auth, authSpecs.account.ghost !== null) : undefined;
+  const adminPageRoutes = admin !== undefined && pages.length > 0 ? adminPages(admin, known, auth?.roles ?? []) : [];
   return {
     auth: authSpecs,
     routes: apis.map(route),
-    pages: [...pages.map(pageRoute), ...builtIn],
+    pages: [...pages.map(pageRoute), ...builtIn, ...adminPageRoutes],
+    ...(admin !== undefined ? { admin } : {}),
     ...(encrypted.length > 0 ? { encrypted } : {}),
     ...(retention(known).length > 0 ? { retention: retention(known) } : {}),
     ...(privacy !== undefined ? { privacy: privacySpec(privacy, known, auth) } : {}),
     ...(site !== undefined ? { site: { name: site.name, color: site.color, ...(site.logo !== undefined ? { logo: logoPath(site.logo) } : {}) } } : {}),
   };
+}
+
+/** The address of a model on the admin pages: its table name with "-" for "_". */
+export function adminSlug(model: ResolvedModel): string {
+  return model.table.replace(/_/g, "-");
+}
+
+/** The fields an admin sees: the same public fields as everyone, plus the id. */
+function adminFields(model: ResolvedModel): FieldViewSpec[] {
+  return [
+    { key: "id", label: "ID", type: "ID" },
+    ...model.fields.filter((f) => !isHidden(f)).map((f) => ({ key: f.name, label: labelFor(f.name), type: f.type })),
+  ];
+}
+
+/**
+ * For apps with the admin role: every model, with SQL to search and list it
+ * (public fields only, in id order) and to delete one record.
+ */
+function adminModels(models: readonly ResolvedModel[], auth: ResolvedAuth, ghost: boolean): AdminModel[] {
+  return models.map((m) => {
+    const account = m === auth.model;
+    const select = publicSelect(m);
+    const table = q(m.table);
+    // Search: the exact id, or text anywhere in a public Text or Email field (not encrypted ones), ignoring case.
+    const searchable = m.fields.filter((f) => !isHidden(f) && !f.encrypted && (f.type === "Text" || f.type === "Email"));
+    const match = [`${q("id")}::text = lower($1::text)`, ...searchable.map((f) => `strpos(lower(${q(f.column)}), lower($1::text)) > 0`)].join(" OR ");
+    return {
+      name: m.name,
+      slug: adminSlug(m),
+      account,
+      publicKeys: [...select.keys, ...(account ? ["role"] : [])],
+      ...encryptedOf(m),
+      listSql: `SELECT ${select.sql}${account ? `, ${q("role")}` : ""} FROM ${table} WHERE ($1::text IS NULL OR ${match}) AND ($2::uuid IS NULL OR ${q("id")} > $2::uuid) ORDER BY ${q("id")} LIMIT $3`,
+      deleteSql: account ? accountDeleteSql(m, models, ghost, true) : `DELETE FROM ${table} WHERE ${q("id")} = $1`,
+    };
+  });
+}
+
+/** The built-in /admin pages: a list of models, and one page per model. Admins only. */
+function adminPages(admin: readonly AdminModel[], models: readonly ResolvedModel[], roles: readonly string[]): PageRoute[] {
+  const page = (segments: string[], title: string, items: PageItemSpec[]): PageRoute => ({
+    pattern: `/${segments.join("/")}`, path: segments.map((s) => ({ static: s })), access: "login", roles: ["admin"], title, items,
+  });
+  return [
+    page(["admin"], "Admin", [
+      { kind: "text", text: "Search, browse and delete records. Only public fields are shown, and every deletion is recorded in the security audit log." },
+      ...admin.map((a) => ({ kind: "link", label: a.account ? `${a.name} (accounts)` : a.name, path: `/admin/${a.slug}` } as const)),
+    ]),
+    ...admin.map((a) => {
+      const model = models.find((m) => m.name === a.name);
+      return page(["admin", a.slug], a.account ? `${a.name} (accounts)` : a.name, [
+        { kind: "link", label: "All models", path: "/admin" },
+        { kind: "admin", slug: a.slug, model: a.name, account: a.account, fields: model === undefined ? [] : adminFields(model), roles: a.account ? [...roles] : [] },
+      ]);
+    }),
+  ];
 }
 
 /** Where the server serves the logo: /_rizo/logo.png, .jpg or .webp. */
@@ -635,6 +695,23 @@ function ghostValue(f: ResolvedField): GhostValue | null | undefined {
   }
 }
 
+/**
+ * Deletes an account ($1). With `ghost`, its records that need an owner are
+ * first given to the "Deleted user" account ($2), in the same statement.
+ * With `notAdmin` (admin pages), nothing happens if the account is an admin,
+ * checked in the statement itself, so a role change can't slip in between.
+ */
+function accountDeleteSql(model: ResolvedModel, models: readonly ResolvedModel[], ghost: boolean, notAdmin: boolean): string {
+  const table = q(model.table);
+  const guard = notAdmin ? ` AND ${q("role")} IS DISTINCT FROM ${roleLiteral("admin")}` : "";
+  const target = notAdmin ? ` AND EXISTS (SELECT 1 FROM ${table} WHERE ${q("id")} = $1${guard})` : "";
+  const requiredLinks = models.filter((m) => m !== model).flatMap((m) => m.fields.filter((f) => f.link === model.name && !f.optional).map((f) => ({ m, f })));
+  const moves = requiredLinks.map(({ m, f }, i) => `"moved${i + 1}" AS (UPDATE ${q(m.table)} SET ${q(f.column)} = $2 WHERE ${q(f.column)} = $1${target})`);
+  return ghost
+    ? `WITH ${moves.join(", ")} DELETE FROM ${table} WHERE ${q("id")} = $1${guard}`
+    : `DELETE FROM ${table} WHERE ${q("id")} = $1${guard}`;
+}
+
 function authSpec(auth: ResolvedAuth, models: readonly ResolvedModel[]): AuthSpec {
   const model = auth.model;
   const table = q(model.table);
@@ -670,10 +747,7 @@ function authSpec(auth: ResolvedAuth, models: readonly ResolvedModel[]): AuthSpe
       removeSql: `DELETE FROM ${table} WHERE ${q("id")} = $1`,
     };
   }
-  const moves = requiredLinks.map(({ m, f }, i) => `"moved${i + 1}" AS (UPDATE ${q(m.table)} SET ${q(f.column)} = $2 WHERE ${q(f.column)} = $1)`);
-  const deleteSql = ghost === null
-    ? `DELETE FROM ${table} WHERE ${q("id")} = $1`
-    : `WITH ${moves.join(", ")} DELETE FROM ${table} WHERE ${q("id")} = $1`;
+  const deleteSql = accountDeleteSql(model, models, ghost !== null, false);
   return {
     model: model.name,
     account: {

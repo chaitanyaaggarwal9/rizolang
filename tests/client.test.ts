@@ -27,6 +27,7 @@ class FakeElement {
   checked = false;
   value = "";
   onclick: (() => void) | null = null;
+  onchange: (() => void) | null = null;
   onsubmit: ((e: { preventDefault(): void }) => void) | null = null;
   readonly tagName: string;
   constructor(tagName: string) {
@@ -50,6 +51,9 @@ class FakeElement {
   replaceChildren(...nodes: (FakeElement | FakeText)[]): void {
     this.children = [];
     this.append(...nodes);
+  }
+  remove(): void {
+    if (this.parent !== undefined) this.parent.children = this.parent.children.filter((c) => c !== this);
   }
   replaceWith(node: FakeElement): void {
     replaced = node;
@@ -696,5 +700,95 @@ describe("buttons and the menu", () => {
     await flush();
     expect(sent.map((s) => `${s.method} ${s.url}`)).toEqual(["POST /auth/logout"]);
     expect(navigation).toEqual(["/"]);
+  });
+});
+
+describe("admin pages", () => {
+  const usersItem = {
+    kind: "admin" as const, slug: "users", model: "User", account: true, roles: ["admin", "editor"],
+    fields: [{ key: "id", label: "ID", type: "ID" as const }, { key: "name", label: "Name", type: "Text" as const }],
+  };
+
+  function stubAdmin(): Sent[] {
+    const sent: Sent[] = [];
+    (globalThis as { fetch?: unknown }).fetch = async (url: string, init?: { method?: string; body?: string }) => {
+      const method = init?.method ?? "GET";
+      sent.push({ url, method, body: init?.body === undefined ? undefined : JSON.parse(init.body), headers: {} });
+      const body = url === "/auth/me" ? { id: "me" }
+        : method === "GET" ? { items: [{ id: "me", name: "Me", role: "admin" }, { id: "u/2", name: HOSTILE, role: "editor" }], next: null }
+        : { id: "u/2", role: null };
+      return { ok: true, status: method === "DELETE" ? 204 : 200, json: async () => body };
+    };
+    return sent;
+  }
+
+  it("shows records as text, with no buttons on your own account", async () => {
+    stubAdmin();
+    const page = client.renderPage({ title: "User", params: {}, loggedIn: true, auth: true, admin: true, items: [usersItem] }) as unknown as FakeElement;
+    await flush();
+    await flush();
+    expect(texts(page)).toContain(HOSTILE);
+    expect(texts(page)).toContain("This is your account.");
+    expect(all(page).filter((e) => e.tagName === "select")).toHaveLength(1);
+    expect(all(page).filter((e) => e.tagName === "button" && e.textContent === "Delete")).toHaveLength(1);
+    expect(all(page).some((e) => e.tagName === "a" && e.attributes.get("href") === "/admin")).toBe(true);
+  });
+
+  it("changes roles and deletes records through the admin endpoints, after confirming", async () => {
+    const sent = stubAdmin();
+    const page = client.renderPage({ title: "User", params: {}, loggedIn: true, auth: true, items: [usersItem] }) as unknown as FakeElement;
+    await flush();
+    await flush();
+    const select = all(page).find((e) => e.tagName === "select");
+    expect(select?.value).toBe("editor");
+    if (select !== undefined) select.value = "";
+    select?.onchange?.();
+    await flush();
+    const del = all(page).find((e) => e.tagName === "button" && e.textContent === "Delete");
+    confirmAnswer = false;
+    del?.onclick?.();
+    await flush();
+    confirmAnswer = true;
+    del?.onclick?.();
+    await flush();
+    expect(sent.filter((x) => x.method !== "GET").map((x) => [x.method, x.url, x.body])).toEqual([
+      ["PUT", "/auth/users/u%2F2/role", { role: null }],
+      ["DELETE", "/auth/admin/users/u%2F2", undefined],
+    ]);
+    expect(texts(page)).not.toContain(HOSTILE);
+  });
+
+  it("shows only the newest search, even when an older answer arrives later", async () => {
+    const pending: { url: string; done: (body: unknown) => void }[] = [];
+    (globalThis as { fetch?: unknown }).fetch = (url: string) => {
+      if (url === "/auth/me") return Promise.resolve({ ok: true, status: 200, json: async () => ({ id: "me" }) });
+      return new Promise((resolve) => pending.push({ url, done: (body) => resolve({ ok: true, status: 200, json: async () => body }) }));
+    };
+    const page = client.renderPage({ title: "User", params: {}, loggedIn: true, auth: true, items: [usersItem] }) as unknown as FakeElement;
+    await flush();
+    const input = all(page).find((e) => e.tagName === "input");
+    const form = all(page).find((e) => e.tagName === "form");
+    if (input !== undefined) input.value = "new";
+    form?.onsubmit?.({ preventDefault: () => undefined });
+    expect(pending.map((p) => p.url)).toEqual(["/auth/admin/users", "/auth/admin/users?q=new"]);
+    pending[1]?.done({ items: [{ id: "n", name: "Newest", role: null }], next: null });
+    await flush();
+    pending[0]?.done({ items: [{ id: "o", name: "Stale", role: null }], next: null });
+    await flush();
+    expect(texts(page)).toContain("Newest");
+    expect(texts(page)).not.toContain("Stale");
+  });
+
+  it("searches with ?q", async () => {
+    const sent = stubAdmin();
+    const page = client.renderPage({ title: "User", params: {}, loggedIn: true, auth: true, items: [usersItem] }) as unknown as FakeElement;
+    await flush();
+    await flush();
+    const input = all(page).find((e) => e.tagName === "input");
+    const form = all(page).find((e) => e.tagName === "form");
+    if (input !== undefined) input.value = " a&b ";
+    form?.onsubmit?.({ preventDefault: () => undefined });
+    await flush();
+    expect(sent.map((x) => x.url)).toEqual(["/auth/me", "/auth/admin/users", "/auth/admin/users?q=a%26b"]);
   });
 });

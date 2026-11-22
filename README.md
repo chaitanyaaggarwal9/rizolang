@@ -322,7 +322,7 @@ This one line adds signup, login and logout (`/auth/signup`, `/auth/login`, `/au
 
 Changing the password and deleting the account need the current password.
 
-Add roles with `auth User by email roles admin, editor`, then protect endpoints with `requires role admin`, or with `requires owner author or role admin` so admins can act on anyone's records. Admins assign roles through `PUT /auth/users/:id/role`. To make the first admin, sign up, then restart the server with `RIZO_ADMIN_EMAILS=you@example.com`.
+Add roles with `auth User by email roles admin, editor`, then protect endpoints with `requires role admin`, or with `requires owner author or role admin` so admins can act on anyone's records. Admins assign roles through `PUT /auth/users/:id/role`, and get built-in `/admin` pages to search, browse and delete the records of every model (public fields only, with every deletion in the audit log; next release, on `main` now). To make the first admin, sign up, then restart the server with `RIZO_ADMIN_EMAILS=you@example.com`.
 
 **Built in:**
 - Secure session cookies, with only a hash of each token stored in the database. Sessions end after 7 days unused, or 30 days after login.
@@ -469,7 +469,7 @@ Rizo Lang is in **early development**, so expect the language to change before 1
   - privacy for the regions you declare (EU, UK, India, California, Brazil): data download and deletion, `keep` retention, a generated privacy page
 - [x] **Milestone 9** ([v0.6.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.6.0)): profile, email and password changes on the account page, search and richer list filters, `rizolang dev`, a health check, graceful shutdown and a generated `Dockerfile`
 - [x] Publish the compiler to npm ([`rizolang`](https://www.npmjs.com/package/rizolang))
-- [ ] **Milestone 10** (in progress): linked records (`with`) and site branding (both on `main`), built-in admin pages, file uploads
+- [ ] **Milestone 10** (in progress): linked records (`with`), site branding and built-in admin pages (all on `main`), file uploads
 - [ ] A VS Code extension with syntax highlighting
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.

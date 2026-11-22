@@ -257,7 +257,19 @@ export type PageItemSpec =
   /** Confirms a new login email when the page was opened from the emailed link (built-in /confirm-email). */
   | { readonly kind: "confirmEmail" }
   /** Asks for a new password when the page was opened from the emailed link (built-in /reset-password). */
-  | { readonly kind: "newPassword"; readonly field: FormFieldSpec };
+  | { readonly kind: "newPassword"; readonly field: FormFieldSpec }
+  /** Search, browse and delete the records of one model (built-in /admin pages). */
+  | {
+      readonly kind: "admin";
+      /** The model's address on /auth/admin, e.g. "posts". */
+      readonly slug: string;
+      readonly model: string;
+      /** True for the auth model: shows a role picker, and deleting deletes the account. */
+      readonly account: boolean;
+      readonly fields: readonly FieldViewSpec[];
+      /** For accounts: the roles an admin can give. */
+      readonly roles: readonly string[];
+    };
 
 export interface PageRoute {
   /** Original path, used in logs. */
@@ -297,6 +309,22 @@ export interface PrivacySpec {
   }[];
 }
 
+/** One model on the built-in admin pages (`GET /auth/admin/<slug>`, `DELETE /auth/admin/<slug>/:id`). */
+export interface AdminModel {
+  readonly name: string;
+  /** The model's table name with "-" for "_", e.g. "blog-posts". */
+  readonly slug: string;
+  /** True for the auth model: deleting a record deletes the account, as DELETE /auth/me does. */
+  readonly account: boolean;
+  /** The only keys ever copied into a response: id, the public fields and, for accounts, "role". */
+  readonly publicKeys: readonly string[];
+  readonly encrypted?: readonly EncryptedField[];
+  /** $1: search text or null, $2: the id to continue after or null, $3: the page size plus one. */
+  readonly listSql: string;
+  /** `DELETE FROM <table> WHERE id = $1`. For accounts, auth.account.deleteSql that also skips admins ($2: "Deleted user"). */
+  readonly deleteSql: string;
+}
+
 /** A model whose records are deleted some time after they were created (`keep 2 years`). */
 export interface RetentionSpec {
   readonly model: string;
@@ -317,4 +345,6 @@ export interface App {
   readonly site?: SiteSpec;
   /** Every encrypted column the app writes. Absent means none. */
   readonly encrypted?: readonly EncryptedColumn[];
+  /** With the admin role: every model, for the built-in admin endpoints and pages. Absent otherwise. */
+  readonly admin?: readonly AdminModel[];
 }

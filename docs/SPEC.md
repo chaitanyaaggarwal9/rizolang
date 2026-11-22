@@ -223,7 +223,7 @@ auth User by email roles admin, editor
 
 Each account has at most one role, or none.
 - **Storage:** the role is kept in a hidden `role` column that only accepts the declared names.
-- **Never from or to clients:** the role is never accepted in a request body and never appears in a public type or in any response, except the person's own data export.
+- **Never from or to clients:** the role is never accepted in a request body and never appears in a public type or in any response, except the person's own data export and the admin endpoints below.
 - **Checked on every request:** a role change applies to existing sessions immediately.
 
 **Assigning roles.** Admins use a built-in endpoint:
@@ -231,6 +231,19 @@ Each account has at most one role, or none.
 | Endpoint | Body | Result |
 |----------|------|--------|
 | `PUT /auth/users/:id/role` | `{ "role": "editor" }` or `{ "role": null }` | 200 `{ "id", "role" }`. Admins only: 401 if not logged in, 403 if not an admin or if it's your own account |
+
+**Admin pages.** Every app with roles gets built-in admin endpoints, and pages at `/admin` if it has pages. Admins (and nobody else, not even other roles) can search, browse and delete the records of every model, with nothing to write:
+
+| Endpoint | Result |
+|----------|--------|
+| `GET /auth/admin/<model>?q=&after=` | 200 `{ "items", "next" }`: 50 records at a time, in id order, with `id` and the public fields only (plus `role` for accounts). `q` (optional, at most 200 characters) finds the exact id, or text anywhere in a public Text or Email field, ignoring case. Private and Password fields are never shown or searched; encrypted public fields are shown (decrypted, as on any endpoint) but never searched |
+| `DELETE /auth/admin/<model>/:id` | 204. 404 if there is no such record, 409 if other records need it |
+
+- **`<model>`** is the model's table name with `-` for `_`: `posts` for `Post`, `blog-posts` for `BlogPost`. Other names answer 404.
+- **Access:** login with the session cookie (never an API token), then 403 unless the account has the admin role. Deletes are audit-logged like any other.
+- **Accounts:** deleting an account works like `DELETE /auth/me`: its sessions, passkeys and tokens go with it, and records that need an owner are credited to "Deleted user". Admins can't delete their own account here (403), another admin (403: remove their admin role first, checked inside the delete statement) or "Deleted user" (409).
+- **Pages:** `/admin` lists the models, and `/admin/<model>` has a search box, the records, "Load more", a Delete button (after a confirmation) and, for accounts, a role picker. Admins see an "Admin" link in the menu.
+- **Reserved paths:** with roles, pages and endpoints can't use paths under `/admin` (RZ0334, RZ0322). Pages may link to `/admin`.
 
 **The first admin.** Sign up normally, then start the server with `RIZO_ADMIN_EMAILS=you@example.com`. At startup, accounts that **already exist** with a listed email become admins. Accounts created later are never promoted this way, so nobody can claim admin by signing up with a listed email.
 
@@ -539,7 +552,7 @@ page /posts/:id/delete {
 ```
 
 **Rules:**
-- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. With an auth line, `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password`, `/confirm-email` and `/privacy` are reserved for the built-in pages.
+- **Paths:** page paths follow the endpoint path rules (§5.1). A page and an endpoint can never share a path (RZ0334), so the convention is to put endpoints under `/api`. With an auth line, `/login`, `/signup`, `/account`, `/verify-email`, `/reset-password`, `/confirm-email` and `/privacy` are reserved for the built-in pages, and with roles, so is everything under `/admin` (§4.1).
 - **Parameters:** a page's `:parameters` fill in the parameters of the endpoint it shows, by name. Every page parameter must be used (RZ0323).
 - **Never more open than its data (RZ0335):**
   - A page that uses (shows, or has a form or button for) a `requires login` endpoint must also `requires login`.

@@ -85,6 +85,8 @@ export function checkPages(
   err: Err,
 ): ResolvedPage[] {
   const apiShapes = new Set(apis.map((a) => pathShape(a.segments)));
+  // With the admin role, /admin and the pages under it are built in.
+  const adminDeclared = auth?.roles.includes("admin") === true;
   const seen = new Map<string, PageDecl>();
   const parsed: { decl: PageDecl; segments: PathSegment[] }[] = [];
 
@@ -105,6 +107,11 @@ export function checkPages(
     }
     if (authDeclared && RESERVED_PAGES.includes(shape)) {
       err("RZ0334", decl.pathSpan, `Page "${decl.path}" is reserved for the built-in ${shape.slice(1)} page.`, "Choose a different path.");
+      continue;
+    }
+    const first = segments[0];
+    if (adminDeclared && first?.kind === "static" && first.value === "admin") {
+      err("RZ0334", decl.pathSpan, `Page "${decl.path}" is reserved for the built-in admin pages, because the auth line has the admin role.`, "Choose a different path.");
       continue;
     }
     seen.set(shape, decl);
@@ -206,7 +213,7 @@ export function checkPages(
         if (target === undefined) { ok = false; continue; }
         const exists = parsed.some((p) => pathShape(p.segments) === pathShape(target));
         const shape = pathShape(target);
-        const builtIn = authDeclared && RESERVED_PAGES.includes(shape) && (shape !== "/privacy" || privacyDeclared);
+        const builtIn = (authDeclared && RESERVED_PAGES.includes(shape) && (shape !== "/privacy" || privacyDeclared)) || (adminDeclared && shape === "/admin");
         if (!exists && !builtIn) {
           ok = false;
           const guess = didYouMean(s.path, parsed.map((p) => p.decl.path));

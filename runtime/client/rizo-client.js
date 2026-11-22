@@ -27,8 +27,10 @@
  *   | { kind: "privacy" }
  *   | { kind: "verifyEmail" }
  *   | { kind: "confirmEmail" }
- *   | { kind: "newPassword", field: FormField }} PageItem
- * @typedef {{ title: string, items: PageItem[], params: Record<string, string>, loggedIn: boolean, auth: boolean, privacy?: boolean, site?: { name: string, logo?: string } }} PageData
+ *   | { kind: "newPassword", field: FormField }
+ *   | AdminItem} PageItem
+ * @typedef {{ kind: "admin", slug: string, model: string, account: boolean, fields: FieldView[], roles: string[] }} AdminItem
+ * @typedef {{ title: string, items: PageItem[], params: Record<string, string>, loggedIn: boolean, auth: boolean, privacy?: boolean, admin?: boolean, site?: { name: string, logo?: string } }} PageData
  */
 
 const ALLOWED_ATTRIBUTES = new Set([
@@ -814,6 +816,130 @@ function sessionsItem() {
   return box;
 }
 
+// ----------------------------------------------------------------- admin
+
+/**
+ * The records of one model, for admins: search, load more, delete and, for
+ * accounts, change the role. The server checks every action again.
+ * @param {AdminItem} item
+ */
+function adminItem(item) {
+  const endpoint = `/auth/admin/${encodeURIComponent(item.slug)}`;
+  const noun = item.account ? "account" : item.model;
+  const box = el("section", { class: "rizo-show", "aria-live": "polite" });
+  const status = el("p", { class: "rizo-error", role: "alert" });
+  status.hidden = true;
+  const fail = (/** @type {unknown} */ e) => {
+    status.textContent = e instanceof Error ? e.message : String(e);
+    status.hidden = false;
+  };
+
+  const search = /** @type {HTMLInputElement} */ (el("input", { id: "rizo-admin-search", name: "q", type: "search", maxlength: "200", autocomplete: "off" }));
+  const form = el("form", { class: "rizo-form", role: "search" },
+    el("div", { class: "rizo-field" }, el("label", { for: "rizo-admin-search" }, "Search by id or text"), search),
+    el("button", { type: "submit", class: "rizo-submit" }, "Search"));
+  const list = el("ul", { class: "rizo-list" });
+  const more = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-more" }, "Load more"));
+  more.hidden = true;
+  box.append(form, status, list, more);
+
+  /** The admin's own id, so their own account has no delete or role buttons. */
+  let myId = "";
+  let n = 0;
+  /** Only the newest search or page is shown: answers to older requests are dropped. */
+  let latest = 0;
+
+  /** @param {Record<string, unknown>} record */
+  const card = (record) => {
+    const id = String(record["id"]);
+    const li = el("li", { class: "rizo-card" }, el("strong", {}, id), recordView(record, item.fields));
+    if (item.account && id === myId) {
+      li.append(el("p", {}, "This is your account."));
+      return li;
+    }
+    if (item.account && item.roles.length > 0) {
+      const selectId = `rizo-admin-role-${++n}`;
+      const select = /** @type {HTMLSelectElement} */ (el("select", { id: selectId }));
+      for (const value of ["", ...item.roles]) {
+        const option = /** @type {HTMLOptionElement} */ (el("option", {}, value === "" ? "No role" : value));
+        option.value = value;
+        select.append(option);
+      }
+      const current = typeof record["role"] === "string" ? record["role"] : "";
+      select.value = current;
+      let saved = current;
+      select.onchange = () => {
+        status.hidden = true;
+        select.disabled = true;
+        sendJson("PUT", `/auth/users/${encodeURIComponent(id)}/role`, { role: select.value === "" ? null : select.value }).then(
+          () => { saved = select.value; },
+          (e) => { select.value = saved; fail(e); },
+        ).finally(() => { select.disabled = false; });
+      };
+      li.append(el("div", { class: "rizo-field" }, el("label", { for: selectId }, "Role"), select));
+    }
+    const remove = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-danger" }, "Delete"));
+    remove.onclick = () => {
+      const warning = item.account
+        ? "Delete this account? This can't be undone. Records others may rely on stay, credited to \"Deleted user\"."
+        : `Delete this ${item.model}? This can't be undone.`;
+      if (!window.confirm(warning)) return;
+      status.hidden = true;
+      remove.disabled = true;
+      sendJson("DELETE", `${endpoint}/${encodeURIComponent(id)}`, undefined).then(() => li.remove(), (e) => {
+        remove.disabled = false;
+        fail(e);
+      });
+    };
+    li.append(el("div", { class: "rizo-actions" }, remove));
+    return li;
+  };
+
+  /**
+   * @param {string} q
+   * @param {string | null} after
+   */
+  const load = (q, after) => {
+    const request = ++latest;
+    more.hidden = true;
+    box.setAttribute("aria-busy", "true");
+    const query = new URLSearchParams();
+    if (q !== "") query.set("q", q);
+    if (after !== null) query.set("after", after);
+    const url = query.toString() === "" ? endpoint : `${endpoint}?${query.toString()}`;
+    getJson(url).then((page) => {
+      if (request !== latest) return;
+      const { items, next } = /** @type {{ items: Record<string, unknown>[], next: string | null }} */ (page);
+      if (after === null) list.replaceChildren(...(items.length === 0 ? [el("li", { class: "rizo-empty" }, q === "" ? `No ${noun} records yet.` : "Nothing matches this search.")] : []));
+      for (const record of items) list.append(card(record));
+      if (next !== null) {
+        more.hidden = false;
+        more.onclick = () => load(q, next);
+      }
+    }, (e) => {
+      if (request === latest) fail(e);
+    }).finally(() => {
+      if (request === latest) box.setAttribute("aria-busy", "false");
+    });
+  };
+
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    status.hidden = true;
+    load(search.value.trim(), null);
+  };
+  const start = () => load("", null);
+  if (item.account) {
+    getJson("/auth/me").then((me) => {
+      const id = /** @type {Record<string, unknown>} */ (me)["id"];
+      myId = typeof id === "string" ? id : "";
+    }, () => undefined).finally(start);
+  } else {
+    start();
+  }
+  return box;
+}
+
 /**
  * The menu at the top of every page of an app with accounts.
  * @param {PageData} data
@@ -826,6 +952,7 @@ function menu(data) {
   if (data.privacy) nav.append(el("a", { href: "/privacy" }, "Privacy"));
   if (!data.auth) return nav;
   if (data.loggedIn) {
+    if (data.admin === true) nav.append(el("a", { href: "/admin" }, "Admin"));
     nav.append(el("a", { href: "/account" }, "Account"));
     const logout = /** @type {HTMLButtonElement} */ (el("button", { type: "button", class: "rizo-link" }, "Log out"));
     logout.onclick = () => {
@@ -860,6 +987,7 @@ export function renderPage(data) {
     else if (item.kind === "tokens") main.append(tokensItem());
     else if (item.kind === "yourData") main.append(yourDataItem());
     else if (item.kind === "privacy") main.append(privacyItem());
+    else if (item.kind === "admin") main.append(adminItem(item));
     else if (item.kind === "verifyEmail") {
       if (token !== null) main.append(verifyEmailItem(token));
     } else if (item.kind === "confirmEmail") {

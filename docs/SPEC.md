@@ -1,6 +1,6 @@
 # Rizo Lang Specification
 
-Version 0.5 (draft) · Milestone 5: hardening
+Version 0.5 · Milestones 1–8
 
 Rizo Lang is a secure, simple, full-stack web language. Source files end in `.rz`. The compiler, `rizolang`, turns Rizo Lang into existing technology: a PostgreSQL schema, TypeScript types and a Node.js server. HTML and TypeScript frontends come later.
 

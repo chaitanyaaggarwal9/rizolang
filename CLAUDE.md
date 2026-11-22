@@ -58,7 +58,7 @@ Rizo Lang is a secure, simple, full-stack web language for the AI era. Source fi
 
 ## Current milestone
 
-Milestones 1–4 are complete (v0.4.0): models, `auth`, `api` blocks, links, `private` fields, roles, pagination, account management, migrations, and web pages with forms. Maintainer decisions that still apply:
+Milestones 1–8 are complete (v0.5.0). Milestones 1–4 (v0.4.0): models, `auth`, `api` blocks, links, `private` fields, roles, pagination, account management, migrations, and web pages with forms. Maintainer decisions that still apply:
 - `api` blocks use braces, like `model` blocks.
 - Sessions are server-side, stored as hashed tokens in `_rizo_sessions` and sent in an HttpOnly cookie.
 - Generated apps use `pg` plus the runtime copied into `dist/`.
@@ -74,4 +74,8 @@ Milestone 5 (hardening) is done: rate limits on every endpoint, with sliding win
 
 Milestone 6 (accounts) is done: passkeys, required email confirmation and password reset through Resend (`RIZO_PUBLIC_URL`, `RIZO_EMAIL_API_KEY`, `RIZO_EMAIL_FROM`, or `RIZO_EMAIL_DEV=1`), signup that doesn't reveal existing emails, the `encrypted` modifier (`RIZO_ENCRYPTION_KEYS`, `node reencrypt.ts`), and sessions that end after 7 days idle or 30 days in total, with a device list.
 
-Milestone 7 (AI agents) is done: API tokens scoped per endpoint, expiring within 90 days (decided by the maintainer), `openapi.json`, `rizolang build --json`, and `rizolang audit` (RA01–RA07). Next: Milestone 8, privacy rules per country the developer declares, then the single final release. The maintainer wants a single final release after Milestone 8. Show a plan before each milestone.
+Milestone 7 (AI agents) is done: API tokens scoped per endpoint, expiring within 90 days (decided by the maintainer), `openapi.json`, `rizolang build --json`, and `rizolang audit` (RA01–RA08).
+
+Milestone 8 (privacy) is done: `GET /auth/me/export` and account deletion that credits records to a "Deleted user" account; `privacy for EU, UK, IN, US-CA, BR`; `keep N days|months|years` retention; and a generated privacy notice (`GET /auth/privacy`, `/privacy`), with the contact from `RIZO_PRIVACY_CONTACT` and no consent banner (maintainer decisions).
+
+All of this shipped in v0.5.0. Show a plan before each new milestone. The compact spec is close to its 1,500-word limit, so trim it when adding to the language.

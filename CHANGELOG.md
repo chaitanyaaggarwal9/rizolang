@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-21
+
+Milestones 5 to 8: hardening, accounts, tools for AI agents, and privacy rules for the regions you declare.
+
+### Upgrading from 0.4.0
+
+This release has breaking changes. Rebuild your app (`rizolang build app.rz`), apply the new migration (`node migrate.ts`), then check the following.
+- **New required settings** for apps with an `auth` line: `RIZO_PUBLIC_URL`, plus `RIZO_EMAIL_API_KEY` and `RIZO_EMAIL_FROM` for [Resend](https://resend.com) (or `RIZO_EMAIL_DEV=1` for local development). Apps with `encrypted` fields need `RIZO_ENCRYPTION_KEYS`, and apps with `privacy for` need `RIZO_PRIVACY_CONTACT`. The server refuses to start without them and says which one to fix.
+- **Signup** answers 202 and no longer logs in: new accounts confirm their email first. Existing accounts count as confirmed.
+- **Deleting an account** no longer refuses while records link to it: those records are credited to a "Deleted user" account.
+- **Sessions** end after 7 days without use, or 30 days after login.
+- **Every endpoint is rate-limited** (120 requests a minute by default; set your own with `limit 20 per minute`).
+- **Newly reserved page paths:** `/account`, `/verify-email`, `/reset-password` and `/privacy`.
+
 ### Added
 
 - Milestone 5, part 1: abuse protection.
@@ -178,7 +192,8 @@ Milestone 3: roles, pagination, account management and migrations.
 - Language spec (`docs/SPEC.md`) and compact spec for AI system prompts (`docs/SPEC-COMPACT.md`).
 - CI on Node 22, 24 and 26, plus a PostgreSQL schema check.
 
-[Unreleased]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.2.0...v0.3.0

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- Defense in depth for migrations, after a Socket.dev AI review of `build/src/migrations.js`. Migration files now clean the source file name themselves (it was already cleaned by the CLI), and the schema snapshot is refused if a check expression or default isn't text. Snapshot check expressions and defaults were already never written into SQL; a test now proves that even a tampered snapshot can't add SQL to a migration.
+
 ## [0.6.0] - 2026-11-22
 
 Milestone 9: everyday app features: the account page, search and richer list filters, `rizolang dev`, and deployment basics.

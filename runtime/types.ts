@@ -264,6 +264,14 @@ export interface PageRoute {
   readonly items: readonly PageItemSpec[];
 }
 
+export interface SiteSpec {
+  readonly name: string;
+  /** One of the palette colors in styles.css. */
+  readonly color: string;
+  /** e.g. "/_rizo/logo.png"; absent without a logo. */
+  readonly logo?: string;
+}
+
 /** What the privacy notice (`GET /auth/privacy`, the /privacy page) says the app stores. */
 export interface PrivacySpec {
   /** Region codes from `privacy for`, e.g. "EU" or "US-CA". */
@@ -300,6 +308,8 @@ export interface App {
   readonly retention?: readonly RetentionSpec[];
   /** From `privacy for`: the regions, and what the app stores. Absent without that line. */
   readonly privacy?: PrivacySpec;
+  /** From the `site` line: the name and accent color on every page, and the logo's address. Absent without that line. */
+  readonly site?: SiteSpec;
   /** Every encrypted column the app writes. Absent means none. */
   readonly encrypted?: readonly EncryptedColumn[];
 }

@@ -31,7 +31,7 @@ This document is the complete language reference. It is written for people and f
 - **One item per line.** Each field, and each statement in an `api` block, goes on its own line. Commas appear only between query arguments.
 - Names contain only ASCII letters and digits and start with a letter. Underscores and hyphens are not allowed in names.
 - Numbers are whole numbers, optionally negative: `100`, `0`, `-5`. Decimals are not allowed.
-- Quoted text (`"Latest posts"`) is allowed only in `page` blocks. It stays on one line, has at most 200 characters, and can only escape `\"` and `\\`.
+- Quoted text (`"Latest posts"`) is allowed only in `page` blocks and the `site` line. It stays on one line, has at most 200 characters, and can only escape `\"` and `\\`.
 - Lines and columns in error messages start at 1. A tab counts as one column.
 
 ---
@@ -565,6 +565,17 @@ page /posts/:id/delete {
 - Every page shows a menu with a link home, plus "Log in" and "Sign up", or "Account" and "Log out".
 - A page that needs a login sends logged-out visitors to `/login?next=<the page>`. After logging in they return there. `next` is followed only if it is a path on this site.
 
+**Branding: the `site` line.** One top-level line names the app and sets its look:
+
+```
+site "Rizo Blog" color teal logo "logo.png"
+```
+
+- The name appears in every page's title ("Write a post · Rizo Blog") and as the home link in the menu (1–60 characters).
+- `color` sets the accent color for links and buttons: `blue` (the default), `teal`, `green`, `purple`, `pink`, `red`, `orange` or `gray`, each tuned for light and dark mode.
+- `logo` is a PNG, JPEG or WebP file in the same folder as the `.rz` file (or a folder inside it), at most 256 KB. The build checks that its content really is such an image and serves it at `/_rizo/logo.png` (or `.jpg`, `.webp`). SVG is refused because SVG files can contain scripts.
+- At most one `site` line (RZ0344). A logo that can't be read, isn't a real image or is too big stops the build (RZ0908).
+
 **How pages are served:**
 - The generated server answers `GET` for every page with a small HTML document.
 - The browser runtime (`/_rizo/client.js`) builds the page from data in an inert JSON block, and fetches the data from the API with the same login cookie.
@@ -768,7 +779,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0220 | Unknown or incomplete line in a `page` block                            |
 | RZ0221 | Missing quoted text (after `title`, `text` or `link`)                   |
 | RZ0222 | Invalid `limit` line (expected `limit <number> per <unit>`)             |
-| RZ0223 | Malformed `privacy for` or `keep` line                                  |
+| RZ0223 | Malformed `privacy for`, `keep` or `site` line                          |
 | RZ0301 | Unknown field type                                                      |
 | RZ0302 | Modifier not allowed on this type                                       |
 | RZ0303 | Modifier repeated                                                       |
@@ -812,6 +823,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0341 | Invalid `privacy for` line (unknown or repeated region, more than one line, no `auth` line) |
 | RZ0342 | Invalid `keep` (unknown unit, out of range, repeated, on the auth model, or without a server) |
 | RZ0343 | Invalid `with` (not a public link field of the model, repeated, or on an endpoint that changes records) |
+| RZ0344 | Invalid `site` line (repeated, name length, unknown color, or a logo path that isn't a PNG, JPEG or WebP file in the project) |
 | RZ0901 | Cannot read the input file                                              |
 | RZ0902 | Input file does not end in `.rz`                                        |
 | RZ0903 | Wrong command-line usage                                                |
@@ -819,6 +831,7 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0905 | `migrations/rizo-schema.json` is missing or damaged                     |
 | RZ0906 | `rizolang dev` has no database (`DATABASE_URL` is not set), or can't install `pg` |
 | RZ0907 | `rizolang dev` was given a file with no server to run                   |
+| RZ0908 | The logo file can't be read, isn't a real PNG, JPEG or WebP image, or is over 256 KB |
 
 ---
 
@@ -984,7 +997,8 @@ page /posts {
 ## 10. Grammar
 
 ```ebnf
-file       = { model | auth | api | page | privacy } ;
+file       = { model | auth | api | page | privacy | site } ;
+site       = "site" TEXT [ "color" NAME ] [ "logo" TEXT ] NEWLINE ;
 model      = "model" NAME "{" { field | keep } "}" ;
 keep       = "keep" INT ( "day" | "days" | "month" | "months" | "year" | "years" ) NEWLINE ;
 privacy    = "privacy" "for" REGION { "," REGION } NEWLINE ;

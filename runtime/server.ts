@@ -386,7 +386,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       const p = page.path[i];
       if (p === undefined || !("param" in p)) continue;
       const r = validatePathParam(p, parts[i] ?? "");
-      if ("error" in r) return html(404, renderMessage("Page not found", "There is no page at this address."));
+      if ("error" in r) return html(404, renderMessage("Page not found", "There is no page at this address.", app.site));
       params[p.param] = String(r.value);
     }
     const me = await currentUser(req);
@@ -397,15 +397,15 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         res.end();
         return 302;
       }
-      return html(401, renderMessage("Please log in", "You need to log in to see this page."));
+      return html(401, renderMessage("Please log in", "You need to log in to see this page.", app.site));
     }
     if (page.roles.length > 0) {
       const role = me === undefined ? null : await roleOf(me);
       if (role === null || !page.roles.includes(role)) {
-        return html(403, renderMessage("Not allowed", "You don't have permission to see this page."));
+        return html(403, renderMessage("Not allowed", "You don't have permission to see this page.", app.site));
       }
     }
-    return html(200, renderPage(page, params, me !== undefined, app.auth !== null, app.privacy !== undefined));
+    return html(200, renderPage(page, params, me !== undefined, app.auth !== null, app.privacy !== undefined, app.site));
   }
 
   function match(method: string, pathname: string): Matched {

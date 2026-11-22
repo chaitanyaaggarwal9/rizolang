@@ -135,6 +135,14 @@ export function run(argv: readonly string[], io: CliIo): number {
     return 1;
   }
 
+  // Check the logo before writing anything, so a bad logo leaves no files behind.
+  let logo: { bytes: Buffer; ext: string } | undefined;
+  if (result.site?.logo !== undefined && result.output.server !== undefined) {
+    const checked = readLogo(join(dirname(resolve(io.cwd, file)), result.site.logo));
+    if ("error" in checked) return usageError("RZ0908", checked.error, checked.fix, file);
+    logo = checked;
+  }
+
   // Plan the migration before writing anything, so a refused build leaves no files behind.
   const migDir = join(io.cwd, MIGRATIONS_DIR);
   const schema = buildSchema(result.models, result.auth, result.output.server !== undefined, result.apis);
@@ -235,6 +243,7 @@ export function run(argv: readonly string[], io: CliIo): number {
     for (const f of ["rizo-client.js", "styles.css"]) {
       writeFileSync(join(outDir, RUNTIME_DIR, "client", f), readFileSync(join(src, "client", f)));
     }
+    if (logo !== undefined) writeFileSync(join(outDir, RUNTIME_DIR, "client", `logo.${logo.ext}`), logo.bytes);
     written.push(`${OUT_DIR}/server.ts`, `${OUT_DIR}/routes.ts`, `${OUT_DIR}/openapi.json`, `${OUT_DIR}/Dockerfile`, `${OUT_DIR}/runtime/`);
   }
   if (output.server !== undefined) {
@@ -298,4 +307,31 @@ function runAudit(
     : `${summary.warnings} warning${summary.warnings === 1 ? "" : "s"} and ${summary.notes} note${summary.notes === 1 ? "" : "s"}.`;
   io.stdout(`${lines.length > 0 ? `${lines.join("\n\n")}\n\n` : ""}Audited ${file}: ${counts}. ${verdict}\n`);
   return summary.warnings === 0 ? 0 : 1;
+}
+
+/** Largest logo file. */
+const MAX_LOGO_BYTES = 256 * 1024;
+
+/**
+ * Read and check the logo: a real PNG, JPEG or WebP image (by its first
+ * bytes, not just its name), at most 256 KB.
+ */
+export function readLogo(path: string): { bytes: Buffer; ext: string } | { error: string; fix: string } {
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(path);
+  } catch {
+    return { error: `Cannot read the logo file "${path}".`, fix: "Put the logo next to the .rz file and check the name in the site line." };
+  }
+  if (bytes.length > MAX_LOGO_BYTES) {
+    return { error: `The logo is ${Math.ceil(bytes.length / 1024)} KB; at most 256 KB is allowed.`, fix: "Use a smaller image, such as a 256 x 256 PNG." };
+  }
+  const png = bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  const jpg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const webp = bytes.subarray(0, 4).toString("latin1") === "RIFF" && bytes.subarray(8, 12).toString("latin1") === "WEBP";
+  const wanted = /\.png$/i.test(path) ? png : /\.webp$/i.test(path) ? webp : jpg;
+  if (!wanted) {
+    return { error: "The logo file's content doesn't match its name: it isn't a real PNG, JPEG or WebP image.", fix: "Export the logo again as a PNG, JPEG or WebP file." };
+  }
+  return { bytes, ext: /\.png$/i.test(path) ? "png" : /\.webp$/i.test(path) ? "webp" : "jpg" };
 }

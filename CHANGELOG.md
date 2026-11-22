@@ -12,6 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `-> list Post.public with author, editor` (on `find` and `list`) returns each link as the linked record's public fields, or `null` for an empty optional link. Private and Password fields are never included, and encrypted fields are decrypted. Still one query: each linked record is read by primary key in a subquery.
   - Pages show the linked record's first public text field ("by Ann") instead of its id, and `openapi.json` describes the linked record.
   - New error RZ0343.
+- Milestone 10, part 2: site branding.
+  - A `site` line, such as `site "Rizo Blog" color teal logo "logo.png"`, puts the name in every page title and in the menu as the home link, sets the accent color from a palette tuned for light and dark mode, and adds a logo.
+  - The logo must be a PNG, JPEG or WebP file next to the `.rz` file, at most 256 KB; the build checks its real content and serves it at `/_rizo/logo.png` (or `.jpg`, `.webp`). SVG is refused because it can contain scripts.
+  - The browser runtime allows an image `src` only for that logo.
+  - New errors RZ0344 and RZ0908.
+
+### Fixed
+
+- In dark mode, buttons in the accent color now use dark text, so they stay readable.
 
 ### Security
 

@@ -1,4 +1,5 @@
 import {
+  type SiteDecl,
   type CompareOp,
   type PrivacyDecl,
   type KeepDecl,
@@ -93,9 +94,12 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
     const apis: ApiDecl[] = [];
     const pages: PageDecl[] = [];
     const privacy: PrivacyDecl[] = [];
+    const sites: SiteDecl[] = [];
     while (peek().kind !== "eof") {
       const t = peek();
-      if (isWord(t, "privacy")) {
+      if (isWord(t, "site")) {
+        sites.push(parseSite());
+      } else if (isWord(t, "privacy")) {
         privacy.push(parsePrivacy());
       } else if (isWord(t, "model")) {
         models.push(parseModel());
@@ -116,10 +120,37 @@ export function parse(tokens: readonly Token[], file: string): ParseResult {
           "Start each endpoint with the lowercase keyword api: `api GET /posts -> list Post.public { ... }`.");
       } else {
         fail("RZ0201", t.span, `Expected "model", "auth", "api" or "page" but found ${describe(t)}.`,
-          t.kind === "string" ? "Quoted text belongs inside a page block, for example `title \"Posts\"`." : "Every top-level block starts with model, auth, api or page.");
+          t.kind === "string" ? "Quoted text belongs inside a page block or the site line, for example `title \"Posts\"`." : "Every top-level block starts with model, auth, api or page.");
       }
     }
-    return { models, auths, apis, pages, privacy };
+    return { models, auths, apis, pages, privacy, sites };
+  }
+
+  // ------------------------------------------------------------------ site
+
+  function parseSite(): SiteDecl {
+    const kw = next(); // `site`
+    const name = parseText(kw, 'site "My App"');
+    let color: { name: string; span: Span } | undefined;
+    let logo: TextRef | undefined;
+    let last = name.span;
+    const usage = 'Write `site "My App"`, optionally followed by `color teal` and `logo "logo.png"`.';
+    while (peek().span.line === kw.span.line && peek().kind !== "eof") {
+      const t = next();
+      if (isWord(t, "color") && color === undefined) {
+        const c = peek();
+        if (c.kind !== "ident" || c.span.line !== kw.span.line) fail("RZ0223", t.span, 'Expected a color after "color".', usage);
+        next();
+        color = { name: c.text, span: c.span };
+        last = c.span;
+      } else if (isWord(t, "logo") && logo === undefined) {
+        logo = parseText(t, 'logo "logo.png"');
+        last = logo.span;
+      } else {
+        fail("RZ0223", t.span, `Unexpected ${describe(t)} in the site line.`, usage);
+      }
+    }
+    return { span: { line: kw.span.line, col: kw.span.col, length: last.col + last.length - kw.span.col }, name, color, logo };
   }
 
   // --------------------------------------------------------------- privacy

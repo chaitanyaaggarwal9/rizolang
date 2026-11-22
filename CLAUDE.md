@@ -66,7 +66,7 @@ Milestones 1–8 are complete (v0.5.0). Milestones 1–4 (v0.4.0): models, `auth
 - List endpoints return `{ items, next }` with keyset pagination.
 - Changes that would delete data need `--allow-data-loss`.
 - `RIZO_ADMIN_EMAILS` only promotes accounts that already exist.
-- Pages are generated from endpoints (`show`, `form`, `button`); there are no HTML templates. Quoted text is allowed only in pages.
+- Pages are generated from endpoints (`show`, `form`, `button`); there are no HTML templates. Quoted text is allowed only in pages and the `site` line.
 - The browser runtime is plain JavaScript with JSDoc types (no build step, no new dependencies), served by the same Node server as the API. It navigates only by setting `location.pathname`.
 
 Releases are published to npm by `.github/workflows/publish.yml`: the workflow stages the version, and the maintainer approves it on npm with two-factor authentication (see CONTRIBUTING.md, "Releasing").

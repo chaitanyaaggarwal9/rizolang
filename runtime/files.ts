@@ -264,7 +264,8 @@ export function s3Store(config: S3Config, fetcher: typeof fetch = fetch, now: ()
     const authorization = signV4({ method, path: url.pathname, headers, payloadHash, region: config.region, service: "s3", accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey });
     const { host: _host, ...sent } = headers;
     try {
-      return await fetcher(url, { method, headers: { ...sent, authorization }, ...(body !== undefined ? { body } : {}), signal: AbortSignal.timeout(15_000) });
+      // A plain Uint8Array copy: a valid fetch body under every TypeScript lib setting.
+      return await fetcher(url, { method, headers: { ...sent, authorization }, ...(body !== undefined ? { body: new Uint8Array(body) } : {}), signal: AbortSignal.timeout(15_000) });
     } catch {
       throw new StorageError(`${method} to file storage failed`);
     }

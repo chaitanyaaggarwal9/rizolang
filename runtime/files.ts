@@ -10,7 +10,9 @@
  *   Signature V4 using node:crypto only. They are always served through the app.
  */
 import { createHash, createHmac } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { Readable } from "node:stream";
 import { join, resolve } from "node:path";
 import { crc32 } from "node:zlib";
 
@@ -22,6 +24,8 @@ export const FILE_SQL = {
   /** Is $1 a file that $3 uploaded for field $2? */
   owned: `SELECT 1 FROM ${FILES_TABLE} WHERE "id" = $1 AND "field" = $2 AND "user_id" = $3`,
   find: `SELECT "type" FROM ${FILES_TABLE} WHERE "id" = $1`,
+  /** A file whose stored copy couldn't be deleted: tracked again, for no field, so the next sweep retries. */
+  retry: `INSERT INTO ${FILES_TABLE} ("id", "user_id", "field", "type", "size", "created_at") VALUES ($1, NULL, $3, $2, 0, now() - make_interval(days => 1)) ON CONFLICT ("id") DO NOTHING`,
 } as const;
 
 /** A stored file's name: 128 random bits as hex, and the extension of its real type. */
@@ -62,8 +66,8 @@ export function scrubExif(t: Buffer): void {
     return;
   }
   const le = order === "II";
-  const u16 = (at: number): number => (at + 2 <= block.length ? (le ? block.readUInt16LE(at) : block.readUInt16BE(at)) : -1);
-  const u32 = (at: number): number => (at + 4 <= block.length ? (le ? block.readUInt32LE(at) : block.readUInt32BE(at)) : -1);
+  const u16 = (at: number): number => (at >= 0 && at + 2 <= block.length ? (le ? block.readUInt16LE(at) : block.readUInt16BE(at)) : -1);
+  const u32 = (at: number): number => (at >= 0 && at + 4 <= block.length ? (le ? block.readUInt32LE(at) : block.readUInt32BE(at)) : -1);
   const ifd0 = u32(4);
   const count = u16(ifd0);
   if (ifd0 < 8 || count < 0 || ifd0 + 2 + count * 12 > block.length) {
@@ -115,6 +119,16 @@ export function removeLocation(input: Buffer, ext: string): Buffer {
       }
       i = end;
     }
+    // Phones may append more images (MPF, gain maps) after the first, each with its own metadata.
+    for (const ns of ["Exif\0\0", ...XMP_JPEG]) {
+      for (let k = b.indexOf(ns, i, "latin1"); k !== -1; k = b.indexOf(ns, k + 1, "latin1")) {
+        if (k < 4 || b[k - 4] !== 0xff || b[k - 3] !== 0xe1) continue;
+        const end = Math.min(b.length, k - 2 + b.readUInt16BE(k - 2));
+        const data = b.subarray(k, end);
+        if (ns.startsWith("Exif")) scrubExif(data);
+        else data.fill(0x20, ns.length);
+      }
+    }
   } else if (ext === "png") {
     let i = 8;
     while (i + 12 <= b.length) {
@@ -122,8 +136,10 @@ export function removeLocation(input: Buffer, ext: string): Buffer {
       const type = b.toString("latin1", i + 4, i + 8);
       const end = i + 8 + length;
       if (end + 4 > b.length || type === "IEND") break;
-      const isXmp = type === "iTXt" && b.toString("latin1", i + 8, i + 8 + 18) === "XML:com.adobe.xmp\0";
-      if (type === "eXIf" || isXmp) {
+      // XMP, and EXIF or XMP that some tools store as text ("Raw profile type exif").
+      const keyword = b.toString("latin1", i + 8, Math.min(end, i + 8 + 80)).split("\0")[0] ?? "";
+      const isMetadata = ["tEXt", "zTXt", "iTXt"].includes(type) && (keyword === "XML:com.adobe.xmp" || keyword.startsWith("Raw profile type"));
+      if (type === "eXIf" || isMetadata) {
         // Turn it into a private chunk that every decoder skips, with no content.
         b.write("rzMt", i + 4, "latin1");
         b.fill(0, i + 8, end);
@@ -154,8 +170,8 @@ export interface FileStore {
   /** "local" or "S3-compatible storage", for messages. */
   readonly kind: string;
   put(name: string, body: Buffer, type: string): Promise<void>;
-  /** The file, or undefined if it doesn't exist. */
-  get(name: string): Promise<Buffer | undefined>;
+  /** The file as a stream (never read whole into memory), or undefined if it doesn't exist. */
+  open(name: string): Promise<{ readonly stream: Readable; readonly size: number } | undefined>;
   remove(name: string): Promise<void>;
 }
 
@@ -173,10 +189,12 @@ export function localStore(dir: string): FileStore {
       await mkdir(root, { recursive: true, mode: 0o700 });
       await writeFile(join(root, name), body, { flag: "wx", mode: 0o600 });
     },
-    async get(name) {
+    async open(name) {
       checkName(name);
+      const path = join(root, name);
       try {
-        return await readFile(join(root, name));
+        const { size } = await stat(path);
+        return { stream: createReadStream(path), size };
       } catch (e) {
         if ((e as { code?: string }).code === "ENOENT") return undefined;
         throw e;
@@ -257,11 +275,12 @@ export function s3Store(config: S3Config, fetcher: typeof fetch = fetch, now: ()
       const r = await request("PUT", name, body, type);
       if (!r.ok) throw new StorageError(`file storage answered ${r.status} to PUT`);
     },
-    async get(name) {
+    async open(name) {
       const r = await request("GET", name);
       if (r.status === 404) return undefined;
-      if (!r.ok) throw new StorageError(`file storage answered ${r.status} to GET`);
-      return Buffer.from(await r.arrayBuffer());
+      if (!r.ok || r.body === null) throw new StorageError(`file storage answered ${r.status} to GET`);
+      const size = Number(r.headers.get("content-length") ?? "-1");
+      return { stream: Readable.fromWeb(r.body as import("node:stream/web").ReadableStream), size };
     },
     async remove(name) {
       const r = await request("DELETE", name);

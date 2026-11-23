@@ -598,7 +598,7 @@ function fileSweepSql(models: readonly ResolvedModel[]): string {
   const files = q(FILES_TABLE);
   const unused = models.flatMap((m) => m.fields.filter((f) => f.type === "File").map((f) =>
     ` AND NOT EXISTS (SELECT 1 FROM ${q(m.table)} WHERE ${q(m.table)}.${q(f.column)} = "f".${q("id")})`));
-  return `DELETE FROM ${files} WHERE ${q("id")} IN (SELECT "f".${q("id")} FROM ${files} AS "f" WHERE "f".${q("created_at")} < now() - interval '1 day'${unused.join("")} ORDER BY "f".${q("created_at")} LIMIT 100) RETURNING ${q("id")}`;
+  return `DELETE FROM ${files} WHERE ${q("id")} IN (SELECT "f".${q("id")} FROM ${files} AS "f" WHERE "f".${q("created_at")} < now() - interval '1 day'${unused.join("")} ORDER BY "f".${q("created_at")} LIMIT 100) RETURNING ${q("id")}, ${q("type")}`;
 }
 
 function route(api: ResolvedApi): Route {

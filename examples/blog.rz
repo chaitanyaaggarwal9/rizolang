@@ -10,6 +10,7 @@ model User {
   password: Password min 12
   name: Text max 100
   bio: Text max 500 optional
+  avatar: File image max 2mb optional
 }
 
 model Post {

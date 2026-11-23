@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Files are served from unguessable addresses with `nosniff` and a sandbox policy (PDFs as downloads), never logged, and as public as the endpoints that return them. GPS data is removed from photos.
   - Storage on disk (`RIZO_UPLOAD_DIR`) or in S3-compatible storage (`RIZO_S3_BUCKET` and friends), signed with Signature V4 using only Node's crypto: still no dependencies besides `pg`.
   - Files no record uses are deleted after a day. Pages get file pickers and show images; `openapi.json`, the privacy notice and the Dockerfile (an uploads volume) cover files.
+  - The example blog has post images and profile photos.
   - New errors RZ0345 and RZ0346.
 
 ### Changed

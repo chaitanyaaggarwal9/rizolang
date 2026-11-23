@@ -230,6 +230,12 @@ a.rizo-card:hover {
   margin: 1.5rem 0;
 }
 
+.rizo-hint {
+  margin: 0;
+  font-size: 0.9rem;
+  opacity: 0.8;
+}
+
 .rizo-image {
   display: block;
   max-width: 100%;

@@ -1,4 +1,5 @@
 import {
+  FILES_TABLE,
   type ForeignKey,
   type Schema,
   type Table,
@@ -54,14 +55,13 @@ export function planMigration(prev: Schema, next: Schema): MigrationPlan {
   const nextTables = new Map(next.tables.map((t) => [t.name, t]));
   const fkKey = (fk: ForeignKey): string => `${fk.name}|${fk.column}|${fk.refTable}|${fk.onDelete}`;
 
-  // 1. Drop foreign keys that change or disappear, before any table or column goes.
+  // 1. Drop foreign keys that change or disappear, before any table or column goes,
+  //    so a table can be dropped while another table (or a column about to go) still pointed at it.
   for (const t of prev.tables) {
     const nt = nextTables.get(t.name);
     for (const fk of t.foreignKeys) {
       const kept = nt?.foreignKeys.find((x) => fkKey(x) === fkKey(fk));
-      if (kept === undefined && nt !== undefined && nt.columns.some((c) => c.name === fk.column)) {
-        statements.push(`ALTER TABLE ${q(t.name)} DROP CONSTRAINT ${q(fk.name)};`);
-      }
+      if (kept === undefined) statements.push(`ALTER TABLE ${q(t.name)} DROP CONSTRAINT ${q(fk.name)};`);
     }
   }
 
@@ -71,6 +71,9 @@ export function planMigration(prev: Schema, next: Schema): MigrationPlan {
       statements.push(`DROP TABLE ${q(t.name)};`);
       summary.push(`drop table ${t.name}`);
       if (!t.name.startsWith("_rizo_")) dataLoss.push(`table "${t.name}" and all its rows would be deleted`);
+      if (t.name === FILES_TABLE) {
+        dataLoss.push(`the list of uploaded files would be deleted, but not the files themselves: delete them from RIZO_UPLOAD_DIR or the S3 bucket yourself`);
+      }
     }
   }
 

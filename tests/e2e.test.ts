@@ -151,7 +151,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
 
     const login = await call("POST", "/auth/login", { body: { email: ALICE.email, password: ALICE.password } });
     expect(login.status).toBe(200);
-    expect(Object.keys(login.body as object).sort()).toEqual(["bio", "id", "name"]);
+    expect(Object.keys(login.body as object).sort()).toEqual(["avatar", "bio", "id", "name"]);
     expect(login.headers.get("set-cookie") ?? "").toMatch(/^rizo_session=[A-Za-z0-9_-]{43}; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=2592000$/);
     alice = login.cookie ?? "";
     aliceId = (login.body as { id: string }).id;
@@ -213,7 +213,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
     expect(r.status).toBe(200);
     alice = r.cookie ?? "";
     const me = await call("GET", "/auth/me", { cookie: alice });
-    expect(me.body).toEqual({ id: aliceId, name: "Alice", bio: "hi" });
+    expect(me.body).toEqual({ id: aliceId, name: "Alice", bio: "hi", avatar: null });
     expect((await call("GET", "/auth/me")).status).toBe(401);
   });
 
@@ -281,7 +281,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
   });
 
   it("never returns private or secret fields", async () => {
-    expect((await call("GET", `/api/users/${aliceId}`)).body).toEqual({ id: aliceId, name: "Alice", bio: "hi" });
+    expect((await call("GET", `/api/users/${aliceId}`)).body).toEqual({ id: aliceId, name: "Alice", bio: "hi", avatar: null });
   });
 
   describe("roles", () => {
@@ -461,7 +461,7 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       const r = await call("GET", "/auth/admin/users", { cookie: alice });
       expect(r.status).toBe(200);
       const d = items(r).find((u) => u["id"] === dana.id);
-      expect(Object.keys(d ?? {}).sort()).toEqual(["bio", "id", "name", "role"]);
+      expect(Object.keys(d ?? {}).sort()).toEqual(["avatar", "bio", "id", "name", "role"]);
       // The email is private and the password is hashed: neither is ever sent.
       expect(JSON.stringify(r.body)).not.toContain("@example.com");
       expect(JSON.stringify(r.body)).not.toMatch(/password|hash/i);
@@ -574,6 +574,8 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       expect(readdirSync(uploadDir)).toContain(String(r.body.url).split("/").pop());
       // The address is the key to the file, so it never appears in the logs.
       expect(logs.join("\n")).not.toContain(String(r.body.url).split("/").pop());
+      // The log line is written once the file has been streamed, which can be just after the body arrives.
+      for (let i = 0; i < 50 && !logs.some((l) => l.startsWith("GET /_rizo/files/:name 200")); i++) await new Promise((r) => setTimeout(r, 10));
       expect(logs.some((l) => l.startsWith("GET /_rizo/files/:name 200"))).toBe(true);
       expect((await fetch(`${base}/_rizo/files/${"0".repeat(32)}.png`)).status).toBe(404);
       expect((await fetch(`${base}/_rizo/files/..%2F..%2Fetc%2Fpasswd`)).status).toBe(404);
@@ -636,6 +638,42 @@ describe.skipIf(DATABASE_URL === undefined)("end to end (PostgreSQL)", () => {
       expect((await fetch(base + used)).status).toBe(200);
       expect((await fetch(base + unused)).status).toBe(404);
       expect((await call("GET", `/api/posts/${post.id}`)).body).toMatchObject({ image: used });
+    });
+
+    it("removes GPS data from photos before storing them", async () => {
+      // A JPEG whose EXIF has a GPS latitude of 51/1 30/1 1234/100.
+      const tiff = Buffer.alloc(92);
+      tiff.write("MM", 0, "latin1"); tiff.writeUInt16BE(42, 2); tiff.writeUInt32BE(8, 4);
+      tiff.writeUInt16BE(1, 8); tiff.writeUInt16BE(0x8825, 10); tiff.writeUInt16BE(4, 12); tiff.writeUInt32BE(1, 14); tiff.writeUInt32BE(26, 18);
+      tiff.writeUInt16BE(1, 26); tiff.writeUInt16BE(2, 28); tiff.writeUInt16BE(5, 30); tiff.writeUInt32BE(3, 32); tiff.writeUInt32BE(44, 36);
+      [51, 1, 30, 1, 1234, 100].forEach((v, i) => tiff.writeUInt32BE(v, 44 + i * 4));
+      const exif = Buffer.concat([Buffer.from("Exif\0\0", "latin1"), tiff]);
+      const head = Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0, 0]);
+      head.writeUInt16BE(exif.length + 2, 4);
+      const jpeg = Buffer.concat([head, exif, Buffer.from([0xff, 0xda, 0x00, 0x02, 0xff, 0xd9])]);
+      const lat = Buffer.from([0x00, 0x00, 0x04, 0xd2]);
+      expect(jpeg.includes(lat)).toBe(true);
+      const r = await upload(jpeg, { cookie: ann.cookie });
+      expect(r.body).toMatchObject({ type: "image/jpeg", size: jpeg.length });
+      const stored = Buffer.from(await (await fetch(base + String(r.body.url))).arrayBuffer());
+      expect(stored.length).toBe(jpeg.length);
+      expect(stored.includes(lat)).toBe(false);
+    });
+
+    it("sets a profile photo on the account, and deletes it with the account", async () => {
+      const cid = await join({ email: "cid.files@example.com", password: "cids long password", name: "Cid" } as never, "198.51.100.52");
+      const photo = String((await upload(PNG, { cookie: cid.cookie, path: "/_rizo/uploads/users/avatar" })).body.url);
+      // A post image can't be used as an avatar, nor someone else's avatar.
+      const postImage = String((await upload(PNG, { cookie: cid.cookie })).body.url);
+      expect((await call("PATCH", "/auth/me", { cookie: cid.cookie, body: { avatar: postImage } })).status).toBe(400);
+      expect((await call("PATCH", "/auth/me", { cookie: ann.cookie, body: { avatar: photo } })).status).toBe(400);
+      expect((await call("PATCH", "/auth/me", { cookie: cid.cookie, body: { avatar: photo } })).body).toMatchObject({ avatar: photo });
+      expect((await call("GET", "/auth/me", { cookie: cid.cookie })).body).toMatchObject({ avatar: photo });
+      expect((await call("DELETE", "/auth/me", { cookie: cid.cookie, body: { password: "cids long password" } })).status).toBe(204);
+      await pool.query(`UPDATE "_rizo_files" SET "created_at" = now() - interval '2 days'`);
+      await sweepFiles(app, { query: (sql, v) => pool.query(sql, v) }, fileStore, () => undefined);
+      expect((await fetch(base + photo)).status).toBe(404);
+      expect(readdirSync(uploadDir)).not.toContain(photo.split("/").pop());
     });
 
     it("shows a file picker on the post form, uploading to the field's address", async () => {

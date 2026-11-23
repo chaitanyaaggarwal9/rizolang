@@ -20,7 +20,7 @@ import { EncryptionError, decryptValue, encryptValue, parseKeys } from "../runti
 import { IDLE_SECONDS, MAX_SECONDS, SQL as SESSION_SQL } from "../runtime/session.ts";
 import { MAX_TOKEN_DAYS, TOKEN_SQL } from "../runtime/tokens.ts";
 import { ghostValue } from "../runtime/privacy.ts";
-import { FILE_SQL, detectFile } from "../runtime/files.ts";
+import { FILE_SQL, detectFile, removeLocation } from "../runtime/files.ts";
 import { validateValue } from "../runtime/validate.ts";
 import { PasskeyError, verifyAssertion, verifyRegistration } from "../runtime/webauthn.ts";
 import { SoftAuthenticator } from "./authenticator.js";
@@ -389,6 +389,20 @@ api GET /api/posts -> list Post.public {
   const r = compileOk(source);
   const app = buildApp(r.apis, r.auth, r.pages, r.models);
 
+  it("removes the location (GPS) from photos before they are stored", () => {
+    // A big-endian EXIF block with only a GPS directory holding a latitude of 1234/100.
+    const t = Buffer.alloc(80);
+    t.write("MM", 0, "latin1"); t.writeUInt16BE(42, 2); t.writeUInt32BE(8, 4);
+    t.writeUInt16BE(1, 8); t.writeUInt16BE(0x8825, 10); t.writeUInt16BE(4, 12); t.writeUInt32BE(1, 14); t.writeUInt32BE(26, 18);
+    t.writeUInt16BE(1, 26); t.writeUInt16BE(2, 28); t.writeUInt16BE(5, 30); t.writeUInt32BE(1, 32); t.writeUInt32BE(44, 36);
+    t.writeUInt32BE(1234, 44); t.writeUInt32BE(100, 48);
+    const exif = Buffer.concat([Buffer.from("Exif\0\0", "latin1"), t]);
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0, exif.length + 2]), exif, Buffer.from([0xff, 0xd9])]);
+    const lat = Buffer.from([0, 0, 0x04, 0xd2]);
+    expect(jpeg.includes(lat)).toBe(true);
+    expect(removeLocation(jpeg, "jpg").includes(lat)).toBe(false);
+  });
+
   it("recognises files by content only, so scripts (SVG, HTML) can never be stored", () => {
     for (const text of ["<svg onload=alert(1)>", "<!doctype html>", "<script>", "GIF8", "%PDF"]) expect(detectFile(Buffer.from(text, "latin1"))).toBeUndefined();
   });
@@ -407,7 +421,7 @@ api GET /api/posts -> list Post.public {
 
   it("keeps a file only while a record uses it, and builds every file query from parameters", () => {
     expect(r.output.sql).toContain('REFERENCES "_rizo_files" ("id") ON DELETE RESTRICT');
-    expect(app.files?.sweepSql).toMatch(/^DELETE FROM "_rizo_files" WHERE "id" IN \(SELECT .* "f"."created_at" < now\(\) - interval '1 day'.* LIMIT 100\) RETURNING "id"$/);
+    expect(app.files?.sweepSql).toMatch(/^DELETE FROM "_rizo_files" WHERE "id" IN \(SELECT .* "f"."created_at" < now\(\) - interval '1 day'.* LIMIT 100\) RETURNING "id", "type"$/);
     for (const sql of Object.values(FILE_SQL)) expect(sql).not.toMatch(/'[^']*'/);
   });
 });

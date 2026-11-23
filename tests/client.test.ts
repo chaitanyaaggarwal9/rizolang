@@ -836,6 +836,28 @@ describe("file fields in forms", () => {
     expect(JSON.parse(String(sent[1]?.body))).toEqual({ title: "Cat", image: "/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png" });
   });
 
+  it("uploads a file once, even when the form has to be sent again", async () => {
+    const sent: string[] = [];
+    let saves = 0;
+    (globalThis as { fetch?: unknown }).fetch = async (url: string) => {
+      sent.push(url);
+      if (url.startsWith("/_rizo/uploads/")) return { ok: true, status: 201, json: async () => ({ url: "/_rizo/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png" }) };
+      saves++;
+      return saves === 1
+        ? { ok: false, status: 400, json: async () => ({ error: { message: "title is too short.", field: "title" } }) }
+        : { ok: true, status: 201, json: async () => ({ id: "p1" }) };
+    };
+    const page = client.renderPage({ title: "New", params: {}, loggedIn: true, auth: true, items: [fileForm] }) as unknown as FakeElement;
+    (all(page).find((e) => e.attributes.get("type") === "file") as unknown as { files: unknown[] }).files = [{ name: "cat.png" }];
+    const form = all(page).find((e) => e.tagName === "form");
+    for (let i = 0; i < 2; i++) {
+      form?.onsubmit?.({ preventDefault: () => undefined });
+      await flush();
+      await flush();
+    }
+    expect(sent).toEqual(["/_rizo/uploads/posts/image", "/api/posts", "/api/posts"]);
+  });
+
   it("shows a failed upload on its field and sends nothing", async () => {
     const sent: string[] = [];
     (globalThis as { fetch?: unknown }).fetch = async (url: string) => {

@@ -11,6 +11,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
+import type { Readable } from "node:stream";
 import pg from "pg";
 import { BusyError, hashPassword, dummyHash, verifyPassword } from "./password.ts";
 import { Audit, DEFAULT_AUDIT_RETENTION_DAYS } from "./audit.ts";
@@ -138,6 +139,9 @@ interface Page {
 /** Uploads allowed per account per hour, and file downloads per address per minute. */
 const UPLOADS_PER_HOUR = 60;
 const FILE_READS_PER_MINUTE = 600;
+/** At most this many uploads (held in memory while checked) and file downloads at once, per process. */
+const MAX_UPLOADS_IN_FLIGHT = 8;
+const MAX_DOWNLOADS_IN_FLIGHT = 200;
 
 /** "5 MB" or "500 KB". */
 export function formatBytes(n: number): string {
@@ -239,6 +243,8 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     return out;
   }
   const audit = new Audit(db, log);
+  let uploadsInFlight = 0;
+  let downloadsInFlight = 0;
   const LOGIN_WINDOW = 15 * 60;
 
   /**
@@ -626,6 +632,17 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     }
     const gate = await limited(() => limits.consume(limitKey("upload", me), UPLOADS_PER_HOUR, 3600));
     if (!gate.allowed) throw tooMany(gate.retryAfter, `You can upload ${UPLOADS_PER_HOUR} files an hour. Try again later.`);
+    // Uploads are held in memory while they are checked, so only a few run at once.
+    if (uploadsInFlight >= MAX_UPLOADS_IN_FLIGHT) throw new HttpError(503, "busy", "The server is busy. Try again in a moment.", undefined, { "Retry-After": "2" });
+    uploadsInFlight++;
+    try {
+      return await receiveUpload(req, res, spec, store, me);
+    } finally {
+      uploadsInFlight--;
+    }
+  }
+
+  async function receiveUpload(req: IncomingMessage, res: ServerResponse, spec: UploadSpec, store: FileStore, me: string): Promise<number> {
     const tooBig = new HttpError(413, "file_too_large", `The file is too large. The limit is ${formatBytes(spec.max)}.`);
     if (Number(req.headers["content-length"] ?? "0") > spec.max) throw tooBig;
     const chunks: Buffer[] = [];
@@ -650,7 +667,13 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       throw new HttpError(503, "storage_unavailable", "The file couldn't be stored. Please try again.", undefined, { "Retry-After": "5" });
     }
     const url = `/_rizo/files/${name}`;
-    await db.query(FILE_SQL.insert, [url, me, spec.field, kind.type, stored.length]);
+    try {
+      await db.query(FILE_SQL.insert, [url, me, spec.field, kind.type, stored.length]);
+    } catch (e) {
+      // Without its row, nothing would ever delete the stored file.
+      await store.remove(name).catch(() => undefined);
+      throw e;
+    }
     return send(res, 201, { url, type: kind.type, size: stored.length });
   }
 
@@ -663,18 +686,22 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     if (!gate.allowed) throw tooMany(gate.retryAfter, `Too many requests. Try again in ${gate.retryAfter} seconds.`);
     const row = (await db.query(FILE_SQL.find, [pathname])).rows[0];
     if (row === undefined) throw notFound;
-    let data: Buffer | undefined;
+    // Files are streamed, so a slow reader holds little memory; still, only so many are sent at once.
+    if (downloadsInFlight >= MAX_DOWNLOADS_IN_FLIGHT) throw new HttpError(503, "busy", "The server is busy. Try again in a moment.", undefined, { "Retry-After": "2" });
+    let file: { readonly stream: Readable; readonly size: number } | undefined;
     try {
-      data = await options.fileStore.get(name);
+      file = await options.fileStore.open(name);
     } catch (e) {
       log(`error file storage (${options.fileStore.kind}): ${e instanceof StorageError ? e.message : describeError(e)}`);
       throw new HttpError(503, "storage_unavailable", "The file can't be read right now. Please try again.", undefined, { "Retry-After": "5" });
     }
-    if (data === undefined) throw notFound;
+    if (file === undefined) throw notFound;
+    const { stream, size } = file;
+    downloadsInFlight++;
     const type = String(row["type"]);
     res.writeHead(200, {
       "Content-Type": type,
-      "Content-Length": String(data.length),
+      ...(size >= 0 ? { "Content-Length": String(size) } : {}),
       // Files can never run as a page: no scripts, a sandbox, and PDFs are downloaded rather than opened here.
       "Content-Security-Policy": "default-src 'none'; sandbox; frame-ancestors 'none'",
       "Content-Disposition": type === "application/pdf" ? `attachment; filename="${name}"` : "inline",
@@ -683,7 +710,20 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       "Referrer-Policy": "no-referrer",
       "Cache-Control": "private, max-age=3600",
     });
-    res.end(data);
+    // A reader that stops reading is dropped after a minute.
+    res.setTimeout(60_000, () => res.destroy());
+    await new Promise<void>((done) => {
+      res.once("close", () => {
+        downloadsInFlight--;
+        stream.destroy();
+        done();
+      });
+      stream.once("error", (e) => {
+        log(`error file storage (${options.fileStore?.kind ?? "-"}): ${describeError(e)}`);
+        res.destroy();
+      });
+      stream.pipe(res);
+    });
     return 200;
   }
 
@@ -1701,6 +1741,8 @@ export async function sweepFiles(app: App, db: Db, store: FileStore, log: (line:
         await store.remove(name);
       } catch (e) {
         log(`could not delete a file from ${store.kind}: ${e instanceof Error ? e.message : String(e)}`);
+        // Put back a row that nothing can use (it is for no field), so the next run tries again.
+        await db.query(FILE_SQL.retry, [row["id"], row["type"] ?? "application/octet-stream", ""]).catch(() => undefined);
       }
     }
     total += rows.length;

@@ -323,6 +323,10 @@ function formItem(item, params, extra = {}) {
   const isLogin = item.endpoint === "/auth/login";
   /** @type {Map<string, { field: FormField, input: HTMLInputElement | HTMLTextAreaElement, error: HTMLElement }>} */
   const inputs = new Map();
+  /** @type {Map<string, HTMLElement>} */
+  const fileHints = new Map();
+  /** Files already uploaded from this form, so sending it again doesn't upload them twice. */
+  const uploaded = new WeakMap();
 
   for (const field of item.fields) {
     const id = `${item.idPrefix ?? "rizo-field-"}${field.key}`;
@@ -346,9 +350,17 @@ function formItem(item, params, extra = {}) {
       ? /** @type {HTMLTextAreaElement} */ (el("textarea", { ...attrs, rows: "6" }))
       : /** @type {HTMLInputElement} */ (el("input", { ...attrs, type: INPUT_TYPES[field.kind] }));
     const error = el("p", { class: "rizo-field-error", id: `${id}-error`, "aria-live": "polite" });
-    const optional = item.method === "PATCH" && field.kind === "File" ? " (choose one to replace the current file)" : field.required || field.kind === "Bool" ? "" : " (optional)";
-    const label = el("label", { for: id }, field.label, optional);
-    form.append(el("div", { class: field.kind === "Bool" ? "rizo-field rizo-check" : "rizo-field" }, label, input, error));
+    const label = el("label", { for: id }, field.label, field.required || field.kind === "Bool" ? "" : " (optional)");
+    const wrap = el("div", { class: field.kind === "Bool" ? "rizo-field rizo-check" : "rizo-field" }, label, input);
+    if (field.kind === "File") {
+      // Shown once an edit form finds a saved file.
+      const hint = el("p", { class: "rizo-hint" }, "A file is saved. Choose another one to replace it.");
+      hint.hidden = true;
+      fileHints.set(field.key, hint);
+      wrap.append(hint);
+    }
+    wrap.append(error);
+    form.append(wrap);
     inputs.set(field.key, { field, input, error });
   }
 
@@ -368,6 +380,10 @@ function formItem(item, params, extra = {}) {
         for (const { field, input } of inputs.values()) {
           const value = r[field.key];
           // A file input can't be filled in: the current file stays unless a new one is chosen.
+          if (field.kind === "File" && typeof value === "string") {
+            const hint = fileHints.get(field.key);
+            if (hint !== undefined) hint.hidden = false;
+          }
           if (value === undefined || value === null || field.kind === "File") continue;
           if (field.kind === "Bool") /** @type {HTMLInputElement} */ (input).checked = value === true;
           else input.value = field.kind === "Date" ? toLocalInput(String(value)) : String(value);
@@ -397,13 +413,19 @@ function formItem(item, params, extra = {}) {
       if (value !== undefined && !unchanged) body[field.key] = value;
     }
     submit.disabled = true;
-    uploadFiles(inputs, body).then(() => sendJson(item.method, fillPath(item.endpoint, params), body)).then(
+    uploadFiles(inputs, body, uploaded).then(() => sendJson(item.method, fillPath(item.endpoint, params), body)).then(
       (result) => {
         if (item.done !== undefined && item.method === "PATCH") {
           // An edit form stays, so it can be used again; what was saved is the new starting point.
           submit.disabled = false;
           savedNote.textContent = item.done;
           savedNote.hidden = false;
+          for (const { field, input } of inputs.values()) {
+            if (field.kind !== "File" || body[field.key] === undefined) continue;
+            input.value = ""; // saved: the picker starts empty again
+            const hint = fileHints.get(field.key);
+            if (hint !== undefined) hint.hidden = false;
+          }
           for (const { field, input } of inputs.values()) initial.set(field.key, JSON.stringify(readField(field, input, false) ?? null));
           return;
         }
@@ -438,11 +460,17 @@ function formItem(item, params, extra = {}) {
  * it returns into the body. A failed upload is reported on its field.
  * @param {Map<string, { field: FormField, input: HTMLInputElement | HTMLTextAreaElement, error: HTMLElement }>} inputs
  * @param {Record<string, unknown>} body
+ * @param {WeakMap<object, string>} uploaded  file → address, for files this form already uploaded
  */
-async function uploadFiles(inputs, body) {
+async function uploadFiles(inputs, body, uploaded) {
   for (const { field, input } of inputs.values()) {
     const file = field.kind === "File" ? /** @type {HTMLInputElement} */ (input).files?.[0] : undefined;
     if (file === undefined || field.upload === undefined) continue;
+    const done = uploaded.get(file);
+    if (done !== undefined) {
+      body[field.key] = done;
+      continue;
+    }
     const res = await fetch(field.upload, { method: "POST", body: file, headers: { Accept: "application/json" }, credentials: "same-origin" });
     /** @type {{ url?: unknown, error?: { message?: unknown } }} */
     let parsed = {};
@@ -456,6 +484,7 @@ async function uploadFiles(inputs, body) {
       /** @type {Error & { field?: string }} */ (error).field = field.key;
       throw error;
     }
+    uploaded.set(file, parsed.url);
     body[field.key] = parsed.url;
   }
 }

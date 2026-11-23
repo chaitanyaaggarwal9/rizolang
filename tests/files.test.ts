@@ -9,7 +9,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32 } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { detectFile, fileStoreFromEnv, localStore, removeLocation, s3Store, signV4 } from "../runtime/files.ts";
+import { type FileStore, detectFile, fileStoreFromEnv, localStore, removeLocation, s3Store, scrubExif, signV4 } from "../runtime/files.ts";
+
+/** A stored file read whole, or undefined. */
+async function read(store: FileStore, name: string): Promise<Buffer | undefined> {
+  const f = await store.open(name);
+  return f === undefined ? undefined : Buffer.concat(await f.stream.toArray());
+}
 import { sweepFiles } from "../runtime/server.ts";
 import { buildSchema } from "../src/schema.js";
 import { planMigration } from "../src/migrations.js";
@@ -242,6 +248,33 @@ describe("File fields: content and location data", () => {
     expect(webp.toString("latin1")).not.toContain("GPS 51N");
   });
 
+  it("never throws on a tiny or hostile EXIF block", () => {
+    for (const tiff of ["II*\0", "MM", "II*\0\xff\xff\xff\xff", "Exif\0\0II", ""]) expect(() => scrubExif(Buffer.from(tiff, "latin1"))).not.toThrow();
+    const tiny = Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0x00, 0x0c, ...Buffer.from("Exif\0\0II*\0", "latin1"), 0xff, 0xd9]);
+    expect(() => removeLocation(tiny, "jpg")).not.toThrow();
+    for (let n = 0; n < 2000; n++) {
+      const junk = Buffer.from(Array.from({ length: 4 + (n % 60) }, (_, i) => (n * 31 + i * 17) & 0xff));
+      junk.write(n % 2 === 0 ? "II" : "MM", 0, "latin1");
+      expect(() => scrubExif(junk)).not.toThrow();
+    }
+  });
+
+  it("also cleans images appended after the first (MPF), and EXIF or XMP stored as PNG text", () => {
+    const second = jpegWithGps(true);
+    const both = removeLocation(Buffer.concat([jpegWithGps(false), second]), "jpg");
+    expect(latitudeLeft(both)).toBe(false);
+    const raw = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk("IHDR", Buffer.from([0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0])),
+      pngChunk("tEXt", Buffer.from("Raw profile type exif\0GPSLatitude 51N", "latin1")),
+      pngChunk("tEXt", Buffer.from("Comment\0kept", "latin1")),
+      pngChunk("IEND", Buffer.alloc(0)),
+    ]);
+    const cleaned = removeLocation(raw, "png").toString("latin1");
+    expect(cleaned).not.toContain("GPSLatitude");
+    expect(cleaned).toContain("Comment\0kept");
+  });
+
   it("zeroes an EXIF block it can't read, and survives truncated files", () => {
     const broken = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0x00, 0x10]), Buffer.from("Exif\0\0XX\0\0\0\0\0\0\0\0", "latin1"), Buffer.from([0xff, 0xd9])]);
     expect(removeLocation(broken, "jpg").subarray(12, 20)).toEqual(Buffer.alloc(8));
@@ -269,7 +302,7 @@ describe("File fields: storage", () => {
     let status = 200;
     const fake = (async (url: URL, init: RequestInit) => {
       calls.push({ url: String(url), method: String(init.method), headers: init.headers as Record<string, string> });
-      return new Response(init.method === "GET" && status === 200 ? "data" : null, { status });
+      return new Response(init.method === "GET" && status === 200 ? "data" : null, { status, headers: init.method === "GET" && status === 200 ? { "content-length": "4" } : {} });
     }) as unknown as typeof fetch;
     const store = s3Store({ endpoint: "https://r2.example.com", bucket: "my-files", region: "auto", accessKeyId: "AK", secretAccessKey: "SK" }, fake, () => Date.UTC(2026, 10, 22));
     const name = `${"a".repeat(32)}.png`;
@@ -277,13 +310,13 @@ describe("File fields: storage", () => {
     expect(calls[0]).toMatchObject({ url: `https://r2.example.com/my-files/${name}`, method: "PUT" });
     expect(calls[0]?.headers["x-amz-date"]).toBe("20261122T000000Z");
     expect(calls[0]?.headers["authorization"]).toMatch(/^AWS4-HMAC-SHA256 Credential=AK\/20261122\/auto\/s3\/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/);
-    expect((await store.get(name))?.toString()).toBe("data");
+    expect((await read(store, name))?.toString()).toBe("data");
     status = 404;
-    expect(await store.get(name)).toBeUndefined();
+    expect(await read(store, name)).toBeUndefined();
     await store.remove(name);
     status = 500;
     await expect(store.put(name, Buffer.from("x"), "image/png")).rejects.toThrow("file storage answered 500");
-    await expect(store.get("../../etc/passwd")).rejects.toThrow("invalid file name");
+    await expect(store.open("../../etc/passwd")).rejects.toThrow("invalid file name");
   });
 
   it("keeps local files under their random name only, and never overwrites one", async () => {
@@ -292,9 +325,9 @@ describe("File fields: storage", () => {
     const name = `${"b".repeat(32)}.pdf`;
     await store.put(name, Buffer.from("%PDF-1"), "application/pdf");
     await expect(store.put(name, Buffer.from("other"), "application/pdf")).rejects.toThrow();
-    expect((await store.get(name))?.toString()).toBe("%PDF-1");
-    expect(await store.get(`${"c".repeat(32)}.pdf`)).toBeUndefined();
-    await expect(store.get("../secret.pdf")).rejects.toThrow("invalid file name");
+    expect((await read(store, name))?.toString()).toBe("%PDF-1");
+    expect(await read(store, `${"c".repeat(32)}.pdf`)).toBeUndefined();
+    await expect(store.open("../secret.pdf")).rejects.toThrow("invalid file name");
     await store.remove(name);
     expect(readdirSync(join(dir, "uploads"))).toEqual([]);
   });
@@ -309,19 +342,27 @@ describe("File fields: storage", () => {
     expect("store" in fileStoreFromEnv({ ...full, RIZO_S3_ENDPOINT: "http://localhost:9000" })).toBe(true);
   });
 
-  it("deletes swept files from storage, and keeps going if storage fails", async () => {
+  it("deletes swept files from storage, and tracks a file again when storage fails, so the next run retries", async () => {
     const r = compileOk("auth User by email\nmodel User {\n  email: Email unique\n  password: Password\n  avatar: File optional\n}");
     const app = buildApp(r.apis, r.auth, r.pages, r.models);
     const removed: string[] = [];
     const lines: string[] = [];
+    const queries: { sql: string; values: unknown[] }[] = [];
     const names = [`${"d".repeat(32)}.png`, `${"e".repeat(32)}.pdf`];
-    const db = { query: async () => ({ rows: names.map((n) => ({ id: `/_rizo/files/${n}` })), rowCount: 2 }) };
+    const db = {
+      query: async (sql: string, values: unknown[]) => {
+        queries.push({ sql, values });
+        return sql.startsWith("DELETE") ? { rows: names.map((n) => ({ id: `/_rizo/files/${n}`, type: "image/png" })), rowCount: 2 } : { rows: [], rowCount: 1 };
+      },
+    };
     const store = {
-      kind: "test", put: async () => undefined, get: async () => undefined,
+      kind: "test", put: async () => undefined, open: async () => undefined,
       remove: async (n: string) => { removed.push(n); if (n.endsWith(".pdf")) throw new Error("down"); },
     };
     expect(await sweepFiles(app, db, store, (l) => lines.push(l))).toBe(2);
     expect(removed).toEqual(names);
     expect(lines).toEqual(["could not delete a file from test: down"]);
+    expect(queries.filter((q) => q.sql.startsWith("INSERT")).map((q) => q.values)).toEqual([[`/_rizo/files/${names[1]}`, "image/png", ""]]);
   });
+
 });

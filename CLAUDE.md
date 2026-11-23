@@ -60,7 +60,7 @@ Rizo Lang is a secure, simple, full-stack web language for the AI era. Source fi
 
 ## Current milestone
 
-Milestones 1–9 are complete (v0.6.0), and Milestone 10 is in progress (see the end of this section). Milestones 1–4 (v0.4.0): models, `auth`, `api` blocks, links, `private` fields, roles, pagination, account management, migrations, and web pages with forms. Maintainer decisions that still apply:
+Milestones 1–10 are complete (v0.7.0). Milestones 1–4 (v0.4.0): models, `auth`, `api` blocks, links, `private` fields, roles, pagination, account management, migrations, and web pages with forms. Maintainer decisions that still apply:
 - `api` blocks use braces, like `model` blocks.
 - Sessions are server-side, stored as hashed tokens in `_rizo_sessions` and sent in an HttpOnly cookie.
 - Generated apps use `pg` plus the runtime copied into `dist/`.
@@ -84,4 +84,4 @@ All of this shipped in v0.5.0. Show a plan before each new milestone.
 
 Milestone 9 (everyday app features) is done and released as v0.6.0: a shorter compact spec, profile, email and password changes on /account (`POST /auth/email`, `/confirm-email`), list filters beyond `=` (`!=`, `<`, `>`, `contains`, optional `?name` query parameters), `rizolang dev` (`src/dev.ts`), and deployment basics (`/_rizo/health`, graceful shutdown, a generated Dockerfile). Keep the compact spec well under 1,500 words.
 
-Milestone 10 is in progress, approved by the maintainer with all four parts: (1) linked records (`-> list Post.public with author`), (2) site branding (a `site` line), (3) built-in /admin pages for the admin role (maintainer decisions: public fields only, browse, search, delete and roles, no editing; deleting an account works like self-deletion, never your own or another admin's), (4) file uploads (maintainer decisions: local disk by default and S3-compatible storage with `RIZO_S3_BUCKET`, files served from unguessable addresses, two-step upload, GPS removed, images and PDF up to 10 MB, unused files deleted after a day; see `runtime/files.ts`).
+Milestone 10 is done and released as v0.7.0, with all four parts: (1) linked records (`-> list Post.public with author`), (2) site branding (a `site` line), (3) built-in /admin pages for the admin role (maintainer decisions: public fields only, browse, search, delete and roles, no editing; deleting an account works like self-deletion, never your own or another admin's), (4) file uploads (maintainer decisions: local disk by default and S3-compatible storage with `RIZO_S3_BUCKET`, files served from unguessable addresses, two-step upload, GPS removed, images and PDF up to 10 MB, unused files deleted after a day; see `runtime/files.ts`).

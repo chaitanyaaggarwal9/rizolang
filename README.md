@@ -8,6 +8,7 @@ Write your data models and endpoints in a few readable lines. Rizo Lang compiles
 
 [![CI](https://github.com/chaitanyaaggarwal9/rizolang/actions/workflows/ci.yml/badge.svg)](https://github.com/chaitanyaaggarwal9/rizolang/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/chaitanyaaggarwal9/rizolang/actions/workflows/codeql.yml/badge.svg)](https://github.com/chaitanyaaggarwal9/rizolang/actions/workflows/codeql.yml)
+[![npm](https://img.shields.io/npm/v/rizolang)](https://www.npmjs.com/package/rizolang)
 [![Socket Badge](https://badge.socket.dev/npm/package/rizolang)](https://socket.dev/npm/package/rizolang)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
@@ -295,7 +296,7 @@ model User {
 | `Password` | salted scrypt hash | Never stored as plain text and never returned |
 | `Date` | date and time (UTC) | ISO 8601 in JSON |
 | `ID` | UUID | |
-| `File` | an uploaded image or PDF | `photo: File image max 5mb optional`. Stored on disk or in S3-compatible storage (next release; on `main` now) |
+| `File` | an uploaded image or PDF | `photo: File image max 5mb optional`. Stored on disk or in S3-compatible storage |
 | *a model name* | a link, e.g. `author: User` | A foreign key to that model |
 
 Every model gets an `id` automatically.
@@ -328,7 +329,7 @@ This one line adds signup, login and logout (`/auth/signup`, `/auth/login`, `/au
 
 Changing the password and deleting the account need the current password.
 
-Add roles with `auth User by email roles admin, editor`, then protect endpoints with `requires role admin`, or with `requires owner author or role admin` so admins can act on anyone's records. Admins assign roles through `PUT /auth/users/:id/role`, and get built-in `/admin` pages to search, browse and delete the records of every model (public fields only, with every deletion in the audit log; next release, on `main` now). To make the first admin, sign up, then restart the server with `RIZO_ADMIN_EMAILS=you@example.com`.
+Add roles with `auth User by email roles admin, editor`, then protect endpoints with `requires role admin`, or with `requires owner author or role admin` so admins can act on anyone's records. Admins assign roles through `PUT /auth/users/:id/role`, and get built-in `/admin` pages to search, browse and delete the records of every model (public fields only, with every deletion in the audit log). To make the first admin, sign up, then restart the server with `RIZO_ADMIN_EMAILS=you@example.com`.
 
 **Built in:**
 - Secure session cookies, with only a hash of each token stored in the database. Sessions end after 7 days unused, or 30 days after login.
@@ -356,7 +357,7 @@ page /posts/new {
 **How pages work:**
 - Pages are generated from your endpoints: lists with "Load more", single records, text and links.
 - **Forms** (`form POST`, `PUT` or `PATCH`) and **delete buttons** (`button "Delete" DELETE ...`) are built from the endpoint's body, with the same limits checked in the browser and on the server. Edit forms start with the current values.
-- Brand the pages with one line: `site "Rizo Blog" color teal logo "logo.png"` (next release; on `main` now).
+- Brand the pages with one line: `site "Rizo Blog" color teal logo "logo.png"`.
 - Apps with an `auth` line get `/login`, `/signup` and a log-in/log-out menu. Pages that need a login send visitors to log in and then bring them back.
 - You never write HTML or browser code. All text is inserted as plain text, and pages are served with a strict Content-Security-Policy.
 - A page is never more open than the data it shows: a page showing a `requires login` endpoint must also say `requires login`.
@@ -376,7 +377,7 @@ api <METHOD> <path> -> Model.public {
 | Action | Method | Example |
 |--------|--------|---------|
 | `find` | GET | `db.Post.find(id)` |
-| `list` | GET | `db.Post.list(author = me, order title desc, limit 20)`, which returns pages: `{ "items": [...], "next": "<cursor>" }`. Filters can also use `!=`, `<`, `>`, `contains` and optional query parameters: `db.Post.list(title contains ?q, views >= ?minViews)`. Add `with author` after the return type to get each linked author's public fields too (next release; on `main` now) |
+| `list` | GET | `db.Post.list(author = me, order title desc, limit 20)`, which returns pages: `{ "items": [...], "next": "<cursor>" }`. Filters can also use `!=`, `<`, `>`, `contains` and optional query parameters: `db.Post.list(title contains ?q, views >= ?minViews)`. Add `with author` after the return type to get each linked author's public fields too |
 | `create` | POST | `db.Post.create(body, author = me)` |
 | `update` | PUT / PATCH | `db.Post.update(id, body)` |
 | `delete` | DELETE | `db.Post.delete(id)` |
@@ -443,7 +444,7 @@ Build failed with 2 errors. No files were written.
 For editors and AI agents, `rizolang build app.rz --json` prints the same errors as one line of JSON:
 
 ```json
-{"rizolang":"0.6.0","ok":false,"errors":[{"code":"RZ0318","message":"Endpoint \"GET /posts\" does not say who may call it.","fix":"Add `requires login` for logged-in users only, or `public` if anyone may call it.","file":"app.rz","line":14,"column":5,"length":3}]}
+{"rizolang":"0.7.0","ok":false,"errors":[{"code":"RZ0318","message":"Endpoint \"GET /posts\" does not say who may call it.","fix":"Add `requires login` for logged-in users only, or `public` if anyone may call it.","file":"app.rz","line":14,"column":5,"length":3}]}
 ```
 
 The full list of error codes is in the [spec](docs/SPEC.md#8-errors).
@@ -476,7 +477,7 @@ Rizo Lang is in **early development**, so expect the language to change before 1
   - privacy for the regions you declare (EU, UK, India, California, Brazil): data download and deletion, `keep` retention, a generated privacy page
 - [x] **Milestone 9** ([v0.6.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.6.0)): profile, email and password changes on the account page, search and richer list filters, `rizolang dev`, a health check, graceful shutdown and a generated `Dockerfile`
 - [x] Publish the compiler to npm ([`rizolang`](https://www.npmjs.com/package/rizolang))
-- [ ] **Milestone 10** (in progress): linked records (`with`), site branding, built-in admin pages and file uploads (all on `main`); release next
+- [x] **Milestone 10** ([v0.7.0](https://github.com/chaitanyaaggarwal9/rizolang/releases/tag/v0.7.0)): linked records (`with`), site branding, built-in admin pages and file uploads
 - [ ] A VS Code extension with syntax highlighting
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.

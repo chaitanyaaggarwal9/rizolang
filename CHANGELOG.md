@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-23
+
+Milestone 10: linked records, site branding, built-in admin pages and file uploads. Also a full audit of the docs and code (fixes below), and `rizolang check`.
+
+### Upgrading from 0.6.0
+
+Rebuild (`rizolang build app.rz`) and apply the new migration (`node migrate.ts`): list indexes changed (see Fixed).
+- **Newly reserved paths:** with roles on the auth line, pages and endpoints under `/admin` are refused (RZ0334, RZ0322). Move your own, for example to `/api/admin/...` or `/drafts`.
+- **New settings, only if you add `File` fields:** files go to `RIZO_UPLOAD_DIR` (default `./uploads`), or to S3-compatible storage with `RIZO_S3_BUCKET`, `RIZO_S3_REGION`, `RIZO_S3_ACCESS_KEY_ID` and `RIZO_S3_SECRET_ACCESS_KEY` (and `RIZO_S3_ENDPOINT` outside AWS). In Docker, mount a volume at `/app/uploads`.
+- **`rizolang dev`** now uses `dist/` in the current folder, like `build`.
+
 ### Added
 
 - `rizolang check app.rz [--json]` checks a file (and its logo) without writing anything, and exits with 0 when it is valid.
@@ -282,7 +293,8 @@ Milestone 3: roles, pagination, account management and migrations.
 - Language spec (`docs/SPEC.md`) and compact spec for AI system prompts (`docs/SPEC-COMPACT.md`).
 - CI on Node 22, 24 and 26, plus a PostgreSQL schema check.
 
-[Unreleased]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/chaitanyaaggarwal9/rizolang/compare/v0.3.1...v0.4.0

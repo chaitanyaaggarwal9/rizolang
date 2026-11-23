@@ -8,9 +8,10 @@
  * Logs contain the method, the route pattern (not the concrete URL), the
  * status, the duration and a request id. Never bodies, cookies or values.
  */
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
+import type { Readable } from "node:stream";
 import pg from "pg";
 import { BusyError, hashPassword, dummyHash, verifyPassword } from "./password.ts";
 import { Audit, DEFAULT_AUDIT_RETENTION_DAYS } from "./audit.ts";
@@ -23,7 +24,8 @@ import { MAX_TOKENS, MAX_TOKEN_DAYS, TOKEN_SQL, agentTokenHash, newAgentToken, p
 import { PasskeyError, SUPPORTED_ALGORITHMS, verifyAssertion, verifyRegistration } from "./webauthn.ts";
 import { IDLE_SECONDS, MAX_SECONDS, SQL, clearedCookie, deviceLabel, hashToken, newToken, readToken, sessionCookie } from "./session.ts";
 import { PAGE_HEADERS, asset, renderMessage, renderPage } from "./pages.ts";
-import type { AdminModel, App, EncryptedField, FieldKind, FieldSpec, PageRoute, PathPart, Route, ValueSource } from "./types.ts";
+import { FILE_NAME, FILE_SQL, type FileStore, StorageError, detectFile, fileStoreFromEnv, removeLocation } from "./files.ts";
+import type { AdminModel, App, EncryptedField, FieldKind, FileField, UploadSpec, FieldSpec, PageRoute, PathPart, Route, ValueSource } from "./types.ts";
 import { validateBody, validatePathParam, validateQueryParam, validateValue } from "./validate.ts";
 
 export interface QueryResult {
@@ -63,6 +65,8 @@ export interface ServerOptions {
   readonly emailService?: "Resend" | "development";
   /** Keys for encrypted fields (from RIZO_ENCRYPTION_KEYS). Required when the app has any. */
   readonly encryptionKeys?: Keys;
+  /** Where uploaded files are kept (local folder or S3-compatible storage). Required when the app has File fields. */
+  readonly fileStore?: FileStore;
 }
 
 /** Largest accepted request body. */
@@ -130,6 +134,18 @@ interface Page {
   readonly filters: ReadonlyMap<string, unknown>;
   readonly limit: number;
   readonly cursor?: { readonly value?: string; readonly id: string };
+}
+
+/** Uploads allowed per account per hour, and file downloads per address per minute. */
+const UPLOADS_PER_HOUR = 60;
+const FILE_READS_PER_MINUTE = 600;
+/** At most this many uploads (held in memory while checked) and file downloads at once, per process. */
+const MAX_UPLOADS_IN_FLIGHT = 8;
+const MAX_DOWNLOADS_IN_FLIGHT = 200;
+
+/** "5 MB" or "500 KB". */
+export function formatBytes(n: number): string {
+  return n >= 1024 * 1024 && n % (1024 * 1024) === 0 ? `${n / (1024 * 1024)} MB` : `${Math.round(n / 1024)} KB`;
 }
 
 /** Records per page on the admin pages. */
@@ -227,6 +243,8 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     return out;
   }
   const audit = new Audit(db, log);
+  let uploadsInFlight = 0;
+  let downloadsInFlight = 0;
   const LOGIN_WINDOW = 15 * 60;
 
   /**
@@ -259,6 +277,15 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       if (auth !== null && url.pathname.startsWith("/auth/")) {
         pattern = url.pathname;
         status = await handleAuth(req, res, url.pathname, method);
+      } else if (method === "POST" && url.pathname.startsWith("/_rizo/uploads/")) {
+        const spec = app.files?.uploads.find((u) => `/_rizo/uploads/${u.path}` === url.pathname);
+        if (spec === undefined) throw new HttpError(404, "not_found", "No upload address matches this path.");
+        pattern = url.pathname;
+        status = await upload(req, res, spec);
+      } else if (method === "GET" && url.pathname.startsWith("/_rizo/files/")) {
+        // Never log the address itself: knowing it is what gives access to the file.
+        pattern = "/_rizo/files/:name";
+        status = await serveFile(req, res, url.pathname);
       } else if (method === "GET" && url.pathname === "/_rizo/health") {
         pattern = url.pathname;
         status = await health(res);
@@ -552,6 +579,154 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     return { limit, cursor, filters };
   }
 
+  // ---------------------------------------------------------------- files
+
+  /**
+   * A File value in a body must be a file the caller uploaded for this field,
+   * or (on update) the record's current file. Otherwise anyone could attach,
+   * and keep alive, a file someone else uploaded.
+   */
+  async function checkFiles(files: readonly FileField[] | undefined, bodyValues: ReadonlyMap<string, unknown>, params: ReadonlyMap<string, unknown>, me: string | undefined): Promise<void> {
+    for (const f of files ?? []) {
+      const value = bodyValues.get(f.key);
+      if (typeof value !== "string") continue;
+      if (me !== undefined && (await db.query(FILE_SQL.owned, [value, f.field, me])).rows.length > 0) continue;
+      if (f.current !== undefined) {
+        const [id] = values([f.current.id], params, new Map(), me, null);
+        if (id !== undefined && id !== null && (await db.query(f.current.sql, [id, value])).rows.length > 0) continue;
+      }
+      throw new HttpError(400, "validation_failed", `${f.key} must be a file you uploaded for it. Upload the file first, then send the url it returns.`, f.key);
+    }
+  }
+
+  /** The logged-in user for an upload: the session, or an API token allowed an endpoint that takes the field. */
+  async function uploader(req: IncomingMessage, spec: UploadSpec): Promise<string | undefined> {
+    const bearer = readBearer(req.headers.authorization);
+    if (bearer === undefined) return currentUser(req);
+    const invalid = new HttpError(401, "invalid_token", "This API token is not valid or has expired. Create a new one on your account page.");
+    if (bearer === null) throw invalid;
+    const row = (await db.query(TOKEN_SQL.lookup, [agentTokenHash(bearer)])).rows[0];
+    if (row === undefined) throw invalid;
+    const allowed = parseEndpoints(row["endpoints"]);
+    if (!spec.endpoints.some((e) => allowed.includes(e))) {
+      throw new HttpError(403, "token_not_allowed", `This API token can't upload files for ${spec.field}. Create a token that includes an endpoint that takes it: ${spec.endpoints.join(", ") || "none"}.`);
+    }
+    if (row["stale"] === true) await db.query(TOKEN_SQL.touch, [row["id"]]);
+    const userId = String(row["user_id"]);
+    await audit.record({ action: "token_used", userId, ip: clientIp(req), detail: `POST /_rizo/uploads/${spec.path}` });
+    return userId;
+  }
+
+  /** POST /_rizo/uploads/<model>/<field>: the raw file as the body. */
+  async function upload(req: IncomingMessage, res: ServerResponse, spec: UploadSpec): Promise<number> {
+    checkOrigin(req, "POST");
+    const store = options.fileStore;
+    if (store === undefined) throw new HttpError(503, "storage_unavailable", "File storage is not configured on this server.", undefined, { "Retry-After": "60" });
+    const ipGate = await limited(() => limits.consume(limitKey(`POST /_rizo/uploads/${spec.path}`, clientIp(req)), DEFAULT_RATE, 60));
+    if (!ipGate.allowed) throw tooMany(ipGate.retryAfter, `Too many requests. Try again in ${ipGate.retryAfter} seconds.`);
+    const me = await uploader(req, spec);
+    if (me === undefined) throw new HttpError(401, "login_required", "You need to log in.");
+    if (spec.roles.length > 0) {
+      const role = await roleOf(me);
+      if (role === null || !spec.roles.includes(role)) throw new HttpError(403, "forbidden", "You do not have permission to do this.");
+    }
+    const gate = await limited(() => limits.consume(limitKey("upload", me), UPLOADS_PER_HOUR, 3600));
+    if (!gate.allowed) throw tooMany(gate.retryAfter, `You can upload ${UPLOADS_PER_HOUR} files an hour. Try again later.`);
+    // Uploads are held in memory while they are checked, so only a few run at once.
+    if (uploadsInFlight >= MAX_UPLOADS_IN_FLIGHT) throw new HttpError(503, "busy", "The server is busy. Try again in a moment.", undefined, { "Retry-After": "2" });
+    uploadsInFlight++;
+    try {
+      return await receiveUpload(req, res, spec, store, me);
+    } finally {
+      uploadsInFlight--;
+    }
+  }
+
+  async function receiveUpload(req: IncomingMessage, res: ServerResponse, spec: UploadSpec, store: FileStore, me: string): Promise<number> {
+    const tooBig = new HttpError(413, "file_too_large", `The file is too large. The limit is ${formatBytes(spec.max)}.`);
+    if (Number(req.headers["content-length"] ?? "0") > spec.max) throw tooBig;
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req) {
+      const buf = chunk as Buffer;
+      size += buf.length;
+      if (size > spec.max) throw tooBig;
+      chunks.push(buf);
+    }
+    const data = Buffer.concat(chunks);
+    const kind = detectFile(data);
+    if (kind === undefined || !spec.accept.includes(kind.ext)) {
+      throw new HttpError(415, "unsupported_file", `This file type is not allowed here. Allowed: ${spec.accept.join(", ")}. The type is read from the file's content, not its name.`);
+    }
+    const stored = removeLocation(data, kind.ext);
+    const name = `${randomBytes(16).toString("hex")}.${kind.ext}`;
+    try {
+      await store.put(name, stored, kind.type);
+    } catch (e) {
+      log(`error file storage (${store.kind}): ${e instanceof StorageError ? e.message : describeError(e)}`);
+      throw new HttpError(503, "storage_unavailable", "The file couldn't be stored. Please try again.", undefined, { "Retry-After": "5" });
+    }
+    const url = `/_rizo/files/${name}`;
+    try {
+      await db.query(FILE_SQL.insert, [url, me, spec.field, kind.type, stored.length]);
+    } catch (e) {
+      // Without its row, nothing would ever delete the stored file.
+      await store.remove(name).catch(() => undefined);
+      throw e;
+    }
+    return send(res, 201, { url, type: kind.type, size: stored.length });
+  }
+
+  /** GET /_rizo/files/<name>: anyone with the address may read the file, and the address only appears where the field is returned. */
+  async function serveFile(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<number> {
+    const name = pathname.slice("/_rizo/files/".length);
+    const notFound = new HttpError(404, "not_found", "No file matches this address.");
+    if (!FILE_NAME.test(name) || options.fileStore === undefined) throw notFound;
+    const gate = await limited(() => limits.consume(limitKey("GET /_rizo/files", clientIp(req)), FILE_READS_PER_MINUTE, 60));
+    if (!gate.allowed) throw tooMany(gate.retryAfter, `Too many requests. Try again in ${gate.retryAfter} seconds.`);
+    const row = (await db.query(FILE_SQL.find, [pathname])).rows[0];
+    if (row === undefined) throw notFound;
+    // Files are streamed, so a slow reader holds little memory; still, only so many are sent at once.
+    if (downloadsInFlight >= MAX_DOWNLOADS_IN_FLIGHT) throw new HttpError(503, "busy", "The server is busy. Try again in a moment.", undefined, { "Retry-After": "2" });
+    let file: { readonly stream: Readable; readonly size: number } | undefined;
+    try {
+      file = await options.fileStore.open(name);
+    } catch (e) {
+      log(`error file storage (${options.fileStore.kind}): ${e instanceof StorageError ? e.message : describeError(e)}`);
+      throw new HttpError(503, "storage_unavailable", "The file can't be read right now. Please try again.", undefined, { "Retry-After": "5" });
+    }
+    if (file === undefined) throw notFound;
+    const { stream, size } = file;
+    downloadsInFlight++;
+    const type = String(row["type"]);
+    res.writeHead(200, {
+      "Content-Type": type,
+      ...(size >= 0 ? { "Content-Length": String(size) } : {}),
+      // Files can never run as a page: no scripts, a sandbox, and PDFs are downloaded rather than opened here.
+      "Content-Security-Policy": "default-src 'none'; sandbox; frame-ancestors 'none'",
+      "Content-Disposition": type === "application/pdf" ? `attachment; filename="${name}"` : "inline",
+      "X-Content-Type-Options": "nosniff",
+      "Cross-Origin-Resource-Policy": "same-origin",
+      "Referrer-Policy": "no-referrer",
+      "Cache-Control": "private, max-age=3600",
+    });
+    // A reader that stops reading is dropped after a minute.
+    res.setTimeout(60_000, () => res.destroy());
+    await new Promise<void>((done) => {
+      res.once("close", () => {
+        downloadsInFlight--;
+        stream.destroy();
+        done();
+      });
+      stream.once("error", (e) => {
+        log(`error file storage (${options.fileStore?.kind ?? "-"}): ${describeError(e)}`);
+        res.destroy();
+      });
+      stream.pipe(res);
+    });
+    return 200;
+  }
+
   /** The role of a user, or null. Read from the database on every request, so changes apply at once. */
   async function roleOf(userId: string): Promise<string | null> {
     const auth = app.auth;
@@ -673,6 +848,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
     } else {
       bodyValues = seal(await body(req, route.body), route.encrypted);
     }
+    await checkFiles(route.files, bodyValues, params, me);
     const r = await run(route.sql, values(route.values, params, bodyValues, me, role, page), route.model);
     switch (route.result) {
       case "list": {
@@ -1411,6 +1587,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
       const me = await requireUser(req);
       const profile = auth.account.profile;
       const bodyValues = seal(await body(req, profile.body), auth.encrypted);
+      await checkFiles(profile.files, bodyValues, new Map(), me);
       const r = await run(profile.sql, values(profile.values, new Map(), bodyValues, me, null), auth.model);
       const row = r.rows[0];
       if (row === undefined) throw new HttpError(401, "login_required", "You need to log in.");
@@ -1446,6 +1623,7 @@ export function createRequestHandler(app: App, options: ServerOptions): (req: In
         contact: options.privacyContact ?? "",
         auditRetentionDays: options.auditRetentionDays ?? DEFAULT_AUDIT_RETENTION_DAYS,
         emailService: options.mailer === undefined || options.emailService === "development" ? "development" : "Resend",
+        ...(options.fileStore !== undefined ? { fileStorage: options.fileStore.kind } : {}),
       }));
     }
 
@@ -1537,6 +1715,40 @@ function send(res: ServerResponse, status: number, payload: unknown, headers: Re
   res.writeHead(status, { ...SECURITY_HEADERS, ...headers });
   res.end(JSON.stringify(payload));
   return status;
+}
+
+/**
+ * Delete files that no record has used for a day: first their rows (a record
+ * can't link to a file whose row is gone), then the files in storage. Up to
+ * 1,000 per run. Returns how many were deleted.
+ */
+export async function sweepFiles(app: App, db: Db, store: FileStore, log: (line: string) => void): Promise<number> {
+  const sql = app.files?.sweepSql;
+  if (sql === undefined) return 0;
+  let total = 0;
+  for (let batch = 0; batch < 10; batch++) {
+    let rows: readonly Record<string, unknown>[];
+    try {
+      rows = (await db.query(sql, [])).rows;
+    } catch (e) {
+      // A file was used again at the same moment (foreign key): try again on the next run.
+      if ((e as { code?: string }).code === "23503") return total;
+      throw e;
+    }
+    for (const row of rows) {
+      const name = String(row["id"]).slice("/_rizo/files/".length);
+      try {
+        await store.remove(name);
+      } catch (e) {
+        log(`could not delete a file from ${store.kind}: ${e instanceof Error ? e.message : String(e)}`);
+        // Put back a row that nothing can use (it is for no field), so the next run tries again.
+        await db.query(FILE_SQL.retry, [row["id"], row["type"] ?? "application/octet-stream", ""]).catch(() => undefined);
+      }
+    }
+    total += rows.length;
+    if (rows.length < 100) break;
+  }
+  return total;
 }
 
 /**
@@ -1634,6 +1846,16 @@ export function startServer(app: App): void {
       process.exit(1);
     }
   }
+  let fileStore: FileStore | undefined;
+  if (app.files !== undefined) {
+    const found = fileStoreFromEnv(process.env);
+    if ("error" in found) {
+      process.stderr.write(`rizo: ${found.error}\n  fix: Set RIZO_S3_BUCKET, RIZO_S3_REGION, RIZO_S3_ACCESS_KEY_ID and RIZO_S3_SECRET_ACCESS_KEY (and RIZO_S3_ENDPOINT outside AWS), or unset RIZO_S3_BUCKET to keep files in RIZO_UPLOAD_DIR.\n`);
+      process.exit(1);
+    }
+    fileStore = found.store;
+    process.stdout.write(`rizo: files are stored in ${fileStore.kind === "local" ? `the folder ${process.env["RIZO_UPLOAD_DIR"]?.trim() || "./uploads"}` : "S3-compatible storage"}\n`);
+  }
   let openapi: string | undefined;
   try {
     openapi = readFileSync(new URL("../openapi.json", import.meta.url), "utf8");
@@ -1646,6 +1868,7 @@ export function startServer(app: App): void {
     shuttingDown: () => shuttingDown,
     ...(openapi === undefined ? {} : { openapi }),
     ...(encryptionKeys === undefined ? {} : { encryptionKeys }),
+    ...(fileStore === undefined ? {} : { fileStore }),
     ...(privacyContact === undefined ? {} : { privacyContact }),
     ...(email === undefined ? {} : { emailService: email.dev ? "development" as const : "Resend" as const }),
     auditRetentionDays: Number(process.env["RIZO_AUDIT_RETENTION_DAYS"] ?? String(DEFAULT_AUDIT_RETENTION_DAYS)),
@@ -1679,6 +1902,12 @@ export function startServer(app: App): void {
       (done) => Promise.all(done.map((d) => auditLog.record({ action: "records_expired", detail: `${d.model}: ${d.deleted}` }))),
       (e: unknown) => process.stderr.write(`rizo: could not delete expired records: ${describeError(e)}\n`),
     );
+    // Files no record uses any more (and uploads never used), after a day.
+    if (fileStore !== undefined) {
+      void sweepFiles(app, { query: (sql, vals) => pool.query(sql, vals) }, fileStore, (line) => process.stderr.write(`rizo: ${line}\n`)).catch(
+        (e: unknown) => process.stderr.write(`rizo: could not delete unused files: ${describeError(e)}\n`),
+      );
+    }
   };
   setInterval(sweep, 10 * 60_000).unref();
   server.requestTimeout = 30_000;

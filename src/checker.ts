@@ -2,7 +2,7 @@ import type { FieldDecl, ModelDecl, Modifier, Program } from "./ast.js";
 import { type ResolvedApi, type ResolvedAuth, checkApis, checkAuth } from "./check-api.js";
 import { type ResolvedPage, checkPages } from "./check-page.js";
 import { type Diagnostic, type Span, didYouMean, diagnostic } from "./diagnostics.js";
-import { FIELD_TYPES, FIELD_TYPE_NAMES, type FieldTypeName, TYPE_ALIASES, isFieldTypeName } from "./types.js";
+import { FILE_EXTENSIONS, FILE_MAX_BYTES, FIELD_TYPES, FIELD_TYPE_NAMES, type FieldTypeName, TYPE_ALIASES, isFieldTypeName } from "./types.js";
 
 /** A fully validated model, ready for the emitters. */
 export interface ResolvedModel {
@@ -54,8 +54,10 @@ export interface ResolvedField {
   readonly encrypted: boolean;
   /** Effective lower limit (length or value), after defaults. */
   readonly min: number | undefined;
-  /** Effective upper limit (length or value), after defaults. */
+  /** Effective upper limit (length, value or, for File, bytes), after defaults. */
   readonly max: number | undefined;
+  /** File fields: the file extensions allowed (from `image`, `pdf`, or both). */
+  readonly accept?: readonly string[];
 }
 
 export type CheckResult =
@@ -102,6 +104,12 @@ export function columnName(fieldName: string, type: FieldTypeName, isLink = fals
 }
 
 /** True for fields that must never appear in a public type or response. */
+/** The file extensions a File field accepts: `image`, `pdf`, or both when neither is written. */
+export function fileAccept(image: boolean, pdf: boolean): string[] {
+  const both = image === pdf;
+  return [...(image || both ? FILE_EXTENSIONS.image : []), ...(pdf || both ? FILE_EXTENSIONS.pdf : [])];
+}
+
 export function isHidden(f: ResolvedField): boolean {
   return FIELD_TYPES[f.type].secret || f.private;
 }
@@ -151,6 +159,14 @@ export function check(program: Program, file: string): CheckResult {
   // Endpoint checks need resolved models; skip them if any model is invalid,
   // since their errors would only repeat the model errors.
   if (errors.length > 0) return { ok: false, diagnostics: errors };
+  if (program.auths.length === 0) {
+    for (const m of program.models) {
+      for (const f of m.fields.filter((x) => x.typeName === "File")) {
+        err("RZ0346", f.typeSpan, `File field "${m.name}.${f.name}" needs an auth line: only logged-in users can upload files.`,
+          "Add `auth User by email` at the top level, with a User model.");
+      }
+    }
+  }
   const auth = checkAuth(program.auths, models, err);
   const apis = checkApis(program.apis, models, auth, program.auths.length > 0, err);
   const pages = checkPages(program.pages, auth, apis, program.auths.length > 0, program.privacy.length > 0, err);
@@ -347,6 +363,25 @@ export function check(program: Program, file: string): CheckResult {
           `${why}Remove "${m.kind}". ${isLink ? "Links" : type} allow: ${info.modifiers.join(", ")}.`);
         continue;
       }
+      if ((m.kind === "min" || m.kind === "max") && (m.size === true) !== (type === "File")) {
+        ok = false;
+        if (type === "File") {
+          err("RZ0345", m.valueSpan, `The size limit of File field "${where}" needs a unit.`, `Write it with kb or mb, for example \`max ${m.value}mb\`.`);
+        } else {
+          err("RZ0345", m.valueSpan, `Sizes with kb or mb are only for File fields, but "${where}" is ${isLink ? "a link" : type}.`,
+            `Write a plain number, for example \`${m.kind} 100\`.`);
+        }
+        continue;
+      }
+      if (m.kind === "max" && type === "File") {
+        if (m.value < 1024 || m.value > FILE_MAX_BYTES) {
+          ok = false;
+          err("RZ0345", m.valueSpan, `"max" on File field "${where}" must be from 1kb to 10mb.`, "Use a limit such as `max 2mb`. Larger files aren't supported yet.");
+          continue;
+        }
+        max = m.value;
+        continue;
+      }
       if (m.kind === "min" || m.kind === "max") {
         if (!checkLimit(type, where, m.kind, m.value, m.valueSpan)) {
           ok = false;
@@ -363,7 +398,7 @@ export function check(program: Program, file: string): CheckResult {
 
     const length = info.length;
     const effMin = min ?? (length !== undefined && length.defaultMin > 0 ? length.defaultMin : undefined);
-    const effMax = max ?? length?.defaultMax;
+    const effMax = max ?? length?.defaultMax ?? (type === "File" ? FILE_MAX_BYTES : undefined);
     if (effMin !== undefined && effMax !== undefined && effMin > effMax) {
       ok = false;
       const span = minMod !== undefined && minMod.kind === "min" ? minMod.valueSpan : field.typeSpan;
@@ -391,6 +426,7 @@ export function check(program: Program, file: string): CheckResult {
       encrypted: encrypted !== undefined,
       min: effMin,
       max: effMax,
+      ...(type === "File" ? { accept: fileAccept(seen.has("image"), seen.has("pdf")) } : {}),
     };
   }
 

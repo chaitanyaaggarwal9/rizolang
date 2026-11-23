@@ -8,6 +8,7 @@
  *   8. People can export their data, and deleting an account keeps no personal data (SPEC §7.15).
  *   7. Encrypted fields reach the database only as ciphertext bound to their column (SPEC §7.13).
  *   6. Signup never reveals which emails have accounts, and emailed links are one-time and hashed (SPEC §7.12).
+ *   9. Uploaded files are recognised by content, attached only by their uploader and kept only while used (SPEC §7.16).
  */
 import { createPublicKey, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -19,6 +20,7 @@ import { EncryptionError, decryptValue, encryptValue, parseKeys } from "../runti
 import { IDLE_SECONDS, MAX_SECONDS, SQL as SESSION_SQL } from "../runtime/session.ts";
 import { MAX_TOKEN_DAYS, TOKEN_SQL } from "../runtime/tokens.ts";
 import { ghostValue } from "../runtime/privacy.ts";
+import { FILE_SQL, detectFile, removeLocation } from "../runtime/files.ts";
 import { validateValue } from "../runtime/validate.ts";
 import { PasskeyError, verifyAssertion, verifyRegistration } from "../runtime/webauthn.ts";
 import { SoftAuthenticator } from "./authenticator.js";
@@ -51,7 +53,8 @@ function randomSchema(seed: number): { source: string; passwordFields: Map<strin
     for (let f = 0; f < fieldCount; f++) {
       const name = `${pick(words)}${f}`;
       // Bias toward Password so most models contain at least one.
-      const type = rand() < 0.35 ? "Password" : pick(FIELD_TYPE_NAMES);
+      // File fields need an auth line, which these random files don't have.
+      const type = rand() < 0.35 ? "Password" : pick(FIELD_TYPE_NAMES.filter((t) => t !== "File"));
       const optional = rand() < 0.3 ? " optional" : "";
       if (type === "Password") secrets.push(name);
       fields.push(`  ${name}: ${type}${optional}`);
@@ -163,7 +166,7 @@ describe("security: unknown field types are rejected", () => {
 
   it("lists the valid types when there is no close match", () => {
     const d = firstError("model User {\n  field: Banana\n}");
-    expect(d.fix).toBe("Use one of: Text, Number, Bool, Email, Password, Date, ID, or a model name (User).");
+    expect(d.fix).toBe("Use one of: Text, Number, Bool, Email, Password, Date, ID, File, or a model name (User).");
   });
 
   it("produces no output at all when any type is unknown", () => {
@@ -361,6 +364,65 @@ model Post {
     const pages = buildApp(withPages.apis, withPages.auth, withPages.pages, withPages.models).pages.filter((p) => p.pattern.startsWith("/admin"));
     expect(pages.length).toBe(3);
     for (const p of pages) expect(p).toMatchObject({ access: "login", roles: ["admin"] });
+  });
+});
+
+describe("security: uploaded files (SPEC §7.16)", () => {
+  const source = `auth User by email
+model User {
+  email: Email unique
+  password: Password
+}
+model Post {
+  author: User
+  photo: File image max 2mb
+  notes: File pdf optional private
+}
+api POST /api/posts -> Post.public {
+  requires login
+  return db.Post.create(body, author = me)
+}
+api GET /api/posts -> list Post.public {
+  public
+  return db.Post.list()
+}`;
+  const r = compileOk(source);
+  const app = buildApp(r.apis, r.auth, r.pages, r.models);
+
+  it("removes the location (GPS) from photos before they are stored", () => {
+    // A big-endian EXIF block with only a GPS directory holding a latitude of 1234/100.
+    const t = Buffer.alloc(80);
+    t.write("MM", 0, "latin1"); t.writeUInt16BE(42, 2); t.writeUInt32BE(8, 4);
+    t.writeUInt16BE(1, 8); t.writeUInt16BE(0x8825, 10); t.writeUInt16BE(4, 12); t.writeUInt32BE(1, 14); t.writeUInt32BE(26, 18);
+    t.writeUInt16BE(1, 26); t.writeUInt16BE(2, 28); t.writeUInt16BE(5, 30); t.writeUInt32BE(1, 32); t.writeUInt32BE(44, 36);
+    t.writeUInt32BE(1234, 44); t.writeUInt32BE(100, 48);
+    const exif = Buffer.concat([Buffer.from("Exif\0\0", "latin1"), t]);
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0, exif.length + 2]), exif, Buffer.from([0xff, 0xd9])]);
+    const lat = Buffer.from([0, 0, 0x04, 0xd2]);
+    expect(jpeg.includes(lat)).toBe(true);
+    expect(removeLocation(jpeg, "jpg").includes(lat)).toBe(false);
+  });
+
+  it("recognises files by content only, so scripts (SVG, HTML) can never be stored", () => {
+    for (const text of ["<svg onload=alert(1)>", "<!doctype html>", "<script>", "GIF8", "%PDF"]) expect(detectFile(Buffer.from(text, "latin1"))).toBeUndefined();
+  });
+
+  it("takes files only from logged-in users, never in a public endpoint's body", () => {
+    expect(firstError(source.replace("requires login\n  return db.Post.create(body, author = me)", "public\n  return db.Post.create(body)").replace("  author: User\n", "")).code).toBe("RZ0346");
+    expect(app.files?.uploads.map((u) => u.endpoints)).toEqual([["POST /api/posts"], ["POST /api/posts"]]);
+  });
+
+  it("never returns a private File field, and checks every attached file against its uploader", () => {
+    const list = app.routes.find((x) => x.method === "GET");
+    expect(list?.publicKeys).not.toContain("notes");
+    expect(list?.sql).not.toContain('"notes"');
+    expect(app.routes.find((x) => x.method === "POST")?.files?.map((f) => f.key)).toEqual(["photo", "notes"]);
+  });
+
+  it("keeps a file only while a record uses it, and builds every file query from parameters", () => {
+    expect(r.output.sql).toContain('REFERENCES "_rizo_files" ("id") ON DELETE RESTRICT');
+    expect(app.files?.sweepSql).toMatch(/^DELETE FROM "_rizo_files" WHERE "id" IN \(SELECT .* "f"."created_at" < now\(\) - interval '1 day'.* LIMIT 100\) RETURNING "id", "type"$/);
+    for (const sql of Object.values(FILE_SQL)) expect(sql).not.toMatch(/'[^']*'/);
   });
 });
 

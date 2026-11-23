@@ -220,6 +220,11 @@ export function checkAuth(auths: readonly AuthDecl[], models: readonly ResolvedM
       err("RZ0317", a.modelSpan, `There are ${roles.length} roles; at most ${MAX_ROLES} are allowed.`, "Use fewer roles.");
     }
   }
+  for (const f of model.fields.filter((x) => x.type === "File" && !x.optional)) {
+    ok = false;
+    err("RZ0346", a.modelSpan, `File field "${model.name}.${f.name}" must be optional: people sign up before they can upload a file.`,
+      `Write \`${f.name}: File${f.accept?.length === 4 ? " image" : f.accept?.length === 1 ? " pdf" : ""} optional\`. People add it later on their account page.`);
+  }
   if (!ok || loginField === undefined || passwordField === undefined) return undefined;
   return { model, loginField, passwordField, roles };
 }
@@ -603,6 +608,11 @@ export function checkApis(
             orderSeen = true;
             const f = field(a.field, a.fieldSpan);
             if (f === undefined) { good = false; continue; }
+            if (f.type === "File") {
+              good = false;
+              err("RZ0325", a.fieldSpan, `Cannot order by File field "${model.name}.${f.name}".`, "Order by a Text, Number, Bool, Date or ID field.");
+              continue;
+            }
             if (isHidden(f)) {
               good = false;
               err("RZ0325", a.fieldSpan, `Cannot order by hidden field "${model.name}.${f.name}".`,
@@ -625,6 +635,11 @@ export function checkApis(
           } else {
             const f = field(a.field, a.fieldSpan);
             if (f === undefined) { good = false; continue; }
+            if (f.type === "File") {
+              good = false;
+              err("RZ0325", a.fieldSpan, `Cannot filter by File field "${model.name}.${f.name}".`, "Filter by a Text, Email, Number, Bool, Date or ID field.");
+              continue;
+            }
             if (isHidden(f)) {
               good = false;
               err("RZ0325", a.fieldSpan, `Cannot filter by hidden field "${model.name}.${f.name}".`,
@@ -667,7 +682,7 @@ export function checkApis(
               continue;
             }
             if (v.kind === "query") {
-              const type: QueryParam["type"] = a.op === "contains" ? "Text" : f.type === "Password" ? "Text" : f.type;
+              const type: QueryParam["type"] = a.op === "contains" || f.type === "Password" ? "Text" : f.type;
               const prev = queryParams.find((x) => x.name === v.name);
               if (v.name === "limit" || v.name === "after") {
                 good = false;
@@ -786,6 +801,14 @@ export function checkApis(
         err("RZ0323", api.pathSpan, `Path parameter ":${p}" is never used in endpoint "${name}".`,
           `Use it in the query (for example \`db.${model.name}.find(${p})\`) or remove it from the path.`);
       }
+    }
+
+    // Uploading needs a login, so a public endpoint can't take files.
+    const files = query !== undefined && "bodyFields" in query ? query.bodyFields.filter((f) => f.type === "File") : [];
+    if (access === "public" && files.length > 0) {
+      ok = false;
+      err("RZ0346", api.pathSpan, `Endpoint "${name}" is public, but its body takes the File field "${model.name}.${files[0]?.name}". Only logged-in users can upload files.`,
+        "Replace `public` with `requires login`.");
     }
 
     if (!ok || query === undefined) return undefined;

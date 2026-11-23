@@ -5,7 +5,13 @@ import type { ModifierKind } from "./ast.js";
  * field type compiles to and which modifiers it accepts.
  */
 
-export type FieldTypeName = "Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID";
+export type FieldTypeName = "Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID" | "File";
+
+/** File fields: the largest size allowed, and the default (10 MB). */
+export const FILE_MAX_BYTES = 10 * 1024 * 1024;
+
+/** What a File field may hold: `image` (PNG, JPEG, WebP, GIF), `pdf`, or both. */
+export const FILE_EXTENSIONS = { image: ["png", "jpg", "webp", "gif"], pdf: ["pdf"] } as const;
 
 export interface LengthRule {
   /** Applied when no `min` is written (0 = no lower limit). */
@@ -96,6 +102,17 @@ export const FIELD_TYPES: Readonly<Record<FieldTypeName, FieldTypeInfo>> = {
       min: "An ID is a fixed-size UUID and has no range.",
       max: "An ID is a fixed-size UUID and has no range.",
       encrypted: "IDs and links are used to find records, so they can't be encrypted.",
+    },
+  },
+  File: {
+    // The column holds the file's address, /_rizo/files/<random name>; the file itself is in storage.
+    sql: "TEXT", ts: "string", tsInput: "string",
+    modifiers: ["optional", "private", "image", "pdf", "max"],
+    secret: false,
+    disallowedReason: {
+      unique: "Every upload gets its own address, so unique would mean nothing.",
+      encrypted: "Files are kept in storage, not in the database, so they can't be encrypted this way.",
+      min: "A File has a size limit only: write `max 5mb`.",
     },
   },
 };

@@ -2,10 +2,10 @@ import type { FieldValue, ResolvedApi, ResolvedAuth, ResolvedValue } from "../ch
 import { type ResolvedField, type ResolvedModel, type ResolvedSite, isHidden } from "../checker.js";
 import { FIELD_TYPES, type FieldTypeName } from "../types.js";
 import { VERSION } from "../version.js";
-import type { AdminModel, App, AuthSpec, EncryptedColumn, EncryptedField, FieldSpec, FieldViewSpec, GhostSpec, GhostValue, PrivacySpec, RetentionSpec, FormFieldSpec, PageItemSpec, PageRoute, PathPart, Route, ValueSource } from "../../runtime/types.ts";
+import type { AdminModel, App, AuthSpec, EncryptedColumn, EncryptedField, FieldSpec, FieldViewSpec, FileField, UploadSpec, GhostSpec, GhostValue, PrivacySpec, RetentionSpec, FormFieldSpec, PageItemSpec, PageRoute, PathPart, Route, ValueSource } from "../../runtime/types.ts";
 import { type ResolvedPage, labelFor } from "../check-page.js";
 import { q, roleLiteral } from "./sql.js";
-import { CREATED_COLUMN, UNVERIFIED_TABLE } from "../schema.js";
+import { CREATED_COLUMN, FILES_TABLE, UNVERIFIED_TABLE } from "../schema.js";
 
 /**
  * Emits `routes.ts`: every endpoint as plain data, with its SQL fixed at
@@ -54,6 +54,9 @@ export function buildApp(
     routes: apis.map(route),
     pages: [...pages.map(pageRoute), ...builtIn, ...adminPageRoutes],
     ...(admin !== undefined ? { admin } : {}),
+    ...(auth !== undefined && known.some((m) => m.fields.some((f) => f.type === "File"))
+      ? { files: { uploads: uploads(known, apis, auth), sweepSql: fileSweepSql(known) } }
+      : {}),
     ...(encrypted.length > 0 ? { encrypted } : {}),
     ...(retention(known).length > 0 ? { retention: retention(known) } : {}),
     ...(privacy !== undefined ? { privacy: privacySpec(privacy, known, auth) } : {}),
@@ -403,6 +406,9 @@ export function emitDockerfile(sourceFile: string): string {
     "COPY package.json ./",
     "RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund",
     "COPY . .",
+    "# Uploaded files (File fields), unless RIZO_S3_BUCKET is set: mount a volume here so they outlive the container.",
+    "RUN mkdir -p /app/uploads && chown node:node /app/uploads",
+    "VOLUME /app/uploads",
     "# Listen on every interface inside the container. Behind a proxy, also set RIZO_TRUST_PROXY=1.",
     "ENV HOST=0.0.0.0 PORT=3000",
     "EXPOSE 3000",
@@ -415,9 +421,9 @@ export function emitDockerfile(sourceFile: string): string {
   ].join("\n");
 }
 
-/** Emits `.dockerignore`: keeps installed packages and local secrets out of the image. */
+/** Emits `.dockerignore`: keeps installed packages, uploaded files and local secrets out of the image. */
 export function emitDockerignore(): string {
-  return ["node_modules", ".dev-encryption-key", ".env", ".env.*", "*.log", ""].join("\n");
+  return ["node_modules", "uploads", ".dev-encryption-key", ".env", ".env.*", "*.log", ""].join("\n");
 }
 
 /** Emits `tsconfig.json` so the generated app can be type-checked. */
@@ -490,7 +496,7 @@ function publicSelect(model: ResolvedModel): { sql: string; keys: string[] } {
   return { sql: cols.join(", "), keys: ["id", ...fields.map((f) => f.name)] };
 }
 
-function fieldSpec(f: ResolvedField, required: boolean): FieldSpec {
+function fieldSpec(f: ResolvedField, required: boolean, model?: ResolvedModel): FieldSpec {
   const info = FIELD_TYPES[f.type];
   const spec: { -readonly [K in keyof FieldSpec]: FieldSpec[K] } = {
     key: f.name,
@@ -498,7 +504,11 @@ function fieldSpec(f: ResolvedField, required: boolean): FieldSpec {
     required,
     nullable: f.optional,
   };
-  if (info.length !== undefined) {
+  if (f.type === "File") {
+    if (f.max !== undefined) spec.max = f.max;
+    spec.accept = [...(f.accept ?? [])];
+    if (model !== undefined) spec.upload = `/_rizo/uploads/${uploadPath(model, f)}`;
+  } else if (info.length !== undefined) {
     if (f.min !== undefined && f.min > 0) spec.min = f.min;
     if (f.max !== undefined) spec.max = f.max;
   } else if (info.valueRange !== undefined) {
@@ -510,7 +520,7 @@ function fieldSpec(f: ResolvedField, required: boolean): FieldSpec {
 
 /** PostgreSQL type used to read a cursor's sort value back from text. */
 const CURSOR_CAST: Readonly<Record<FieldTypeName, string>> = {
-  Text: "text", Email: "text", Number: "integer", Bool: "boolean", Date: "timestamptz", ID: "uuid", Password: "text",
+  Text: "text", Email: "text", Number: "integer", Bool: "boolean", Date: "timestamptz", ID: "uuid", Password: "text", File: "text",
 };
 
 /**
@@ -545,6 +555,52 @@ class Params {
   }
 }
 
+/** The address under /_rizo/uploads/ where files for a File field are uploaded. */
+export function uploadPath(model: ResolvedModel, f: ResolvedField): string {
+  return `${adminSlug(model)}/${f.name}`;
+}
+
+/** "<table>.<column>": the field an upload is made for. */
+const fileTarget = (model: ResolvedModel, f: ResolvedField): string => `${model.table}.${f.column}`;
+
+/** The File fields of a body, with SQL to check (on update) whether a value is the record's current file. */
+function fileFields(model: ResolvedModel, body: readonly ResolvedField[], id: ValueSource | undefined): FileField[] {
+  return body.filter((f) => f.type === "File").map((f) => ({
+    key: f.name,
+    field: fileTarget(model, f),
+    ...(id !== undefined ? { current: { sql: `SELECT 1 FROM ${q(model.table)} WHERE ${q("id")} = $1 AND ${q(f.column)} = $2`, id } } : {}),
+  }));
+}
+
+/**
+ * Upload addresses for every File field that some endpoint (or the profile)
+ * accepts, with who may upload: the union of what those endpoints allow.
+ */
+function uploads(models: readonly ResolvedModel[], apis: readonly ResolvedApi[], auth: ResolvedAuth): UploadSpec[] {
+  return models.flatMap((m) => m.fields.filter((f) => f.type === "File").flatMap((f) => {
+    const taking = apis.filter((a) => a.query.model === m && "bodyFields" in a.query && a.query.bodyFields.includes(f));
+    const profile = m === auth.model && f !== auth.loginField && f !== auth.passwordField;
+    if (taking.length === 0 && !profile) return [];
+    const open = profile || taking.some((a) => a.roles.length === 0);
+    return [{
+      path: uploadPath(m, f),
+      field: fileTarget(m, f),
+      accept: [...(f.accept ?? [])],
+      max: f.max ?? 0,
+      roles: open ? [] : [...new Set(taking.flatMap((a) => a.roles))],
+      endpoints: taking.map((a) => `${a.method} ${a.path}`),
+    }];
+  }));
+}
+
+/** Deletes up to 100 files that are at least a day old and that no record uses. */
+function fileSweepSql(models: readonly ResolvedModel[]): string {
+  const files = q(FILES_TABLE);
+  const unused = models.flatMap((m) => m.fields.filter((f) => f.type === "File").map((f) =>
+    ` AND NOT EXISTS (SELECT 1 FROM ${q(m.table)} WHERE ${q(m.table)}.${q(f.column)} = "f".${q("id")})`));
+  return `DELETE FROM ${files} WHERE ${q("id")} IN (SELECT "f".${q("id")} FROM ${files} AS "f" WHERE "f".${q("created_at")} < now() - interval '1 day'${unused.join("")} ORDER BY "f".${q("created_at")} LIMIT 100) RETURNING ${q("id")}, ${q("type")}`;
+}
+
 function route(api: ResolvedApi): Route {
   const { query } = api;
   const model = query.model;
@@ -573,6 +629,7 @@ function route(api: ResolvedApi): Route {
   let sql: string;
   let body: FieldSpec[] | null = null;
   let page: Route["page"] = null;
+  let files: FileField[] = [];
   let queryList: Route["query"] | undefined;
   let result: Route["result"];
   switch (query.action) {
@@ -612,7 +669,7 @@ function route(api: ResolvedApi): Route {
       break;
     }
     case "create": {
-      body = query.bodyFields.map((f) => fieldSpec(f, !f.optional));
+      body = query.bodyFields.map((f) => fieldSpec(f, !f.optional, model));
       const cols: string[] = [];
       const vals: string[] = [];
       for (const f of query.bodyFields) {
@@ -624,11 +681,12 @@ function route(api: ResolvedApi): Route {
         vals.push(p.value(a.value));
       }
       sql = `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${vals.join(", ")}) RETURNING ${select.sql}`;
+      files = fileFields(model, query.bodyFields, undefined);
       result = "created";
       break;
     }
     case "update": {
-      body = query.bodyFields.map((f) => fieldSpec(f, false));
+      body = query.bodyFields.map((f) => fieldSpec(f, false, model));
       const where = byId(query.idParam);
       const sets = query.bodyFields.map((f) => {
         const provided = p.add({ from: "provided", key: f.name });
@@ -636,6 +694,7 @@ function route(api: ResolvedApi): Route {
         return `${q(f.column)} = CASE WHEN ${provided} THEN ${value} ELSE ${q(f.column)} END`;
       });
       sql = `UPDATE ${table} SET ${sets.join(", ")} WHERE ${where} RETURNING ${select.sql}`;
+      files = fileFields(model, query.bodyFields, { from: "path", name: query.idParam });
       result = "one";
       break;
     }
@@ -655,6 +714,7 @@ function route(api: ResolvedApi): Route {
     publicKeys: select.keys,
     model: model.name,
     ...(queryList !== undefined ? { query: queryList } : {}),
+    ...(files.length > 0 ? { files } : {}),
     ...(api.expand.length > 0
       ? { expanded: api.expand.map((x) => ({ key: x.field.name, publicKeys: publicSelect(x.model).keys, ...encryptedOf(x.model) })) }
       : {}),
@@ -677,6 +737,7 @@ function ghostValue(f: ResolvedField): GhostValue | null | undefined {
   const info = FIELD_TYPES[f.type];
   switch (f.type) {
     case "Password": return { kind: "noPassword" };
+    case "File": return undefined; // a required file can't be made up (and File fields on accounts are always optional)
     case "Email": return { kind: "email", max: f.max ?? info.length?.defaultMax ?? 254 };
     case "Bool": return { kind: "fixed", value: false };
     case "ID": return { kind: "uuid" };
@@ -717,7 +778,8 @@ function authSpec(auth: ResolvedAuth, models: readonly ResolvedModel[]): AuthSpe
   const table = q(model.table);
   const select = publicSelect(model);
   // Links from the auth model to itself cannot be set at signup (there is no "me" yet).
-  const fields = model.fields.filter((f) => f.link !== model.name);
+  // Nor files: uploading needs a login, so they are added later on the account page.
+  const fields = model.fields.filter((f) => f.link !== model.name && f.type !== "File");
   const p = new Params();
   const cols = fields.map((f) => q(f.column));
   const vals = fields.map((f) => p.add({ from: "body", key: f.name }));
@@ -761,7 +823,8 @@ function authSpec(auth: ResolvedAuth, models: readonly ResolvedModel[]): AuthSpe
       profile: profileFields.length === 0
         ? null
         : {
-            body: profileFields.map((f) => fieldSpec(f, false)),
+            body: profileFields.map((f) => fieldSpec(f, false, model)),
+            ...(fileFields(model, profileFields, { from: "me" }).length > 0 ? { files: fileFields(model, profileFields, { from: "me" }) } : {}),
             sql: `UPDATE ${table} SET ${sets.join(", ")} WHERE ${q("id")} = ${id} RETURNING ${select.sql}`,
             values: pp.values,
           },

@@ -51,12 +51,13 @@ export interface FieldDecl {
 }
 
 export type Modifier =
-  | { readonly kind: "unique" | "optional" | "private" | "encrypted"; readonly span: Span }
-  | { readonly kind: "min" | "max"; readonly value: number; readonly span: Span; readonly valueSpan: Span };
+  | { readonly kind: "unique" | "optional" | "private" | "encrypted" | "image" | "pdf"; readonly span: Span }
+  /** `size` is true for a file size such as `5mb`; `value` is then in bytes. */
+  | { readonly kind: "min" | "max"; readonly value: number; readonly span: Span; readonly valueSpan: Span; readonly size?: boolean };
 
 export type ModifierKind = Modifier["kind"];
 
-export const MODIFIER_NAMES: readonly ModifierKind[] = ["unique", "optional", "private", "encrypted", "min", "max"];
+export const MODIFIER_NAMES: readonly ModifierKind[] = ["unique", "optional", "private", "encrypted", "min", "max", "image", "pdf"];
 
 /** A role name as written, e.g. `admin`. */
 export interface RoleRef {

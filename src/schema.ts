@@ -30,6 +30,8 @@ export interface Column {
   readonly comment: string | null;
   /** Holds AES-256-GCM ciphertext written by the runtime. Absent means false. */
   readonly encrypted?: true;
+  /** Holds the address of an uploaded file (a File field). Absent means false. */
+  readonly file?: true;
 }
 
 export interface ForeignKey {
@@ -111,6 +113,18 @@ export const GHOST_TABLE = "_rizo_deleted_user";
 /** API tokens for scripts and AI agents (apps with an auth line). */
 export const AGENT_TOKENS_TABLE = "_rizo_tokens";
 
+/**
+ * Uploaded files (apps with File fields): one row per upload, keyed by the
+ * file's address (/_rizo/files/<random>.<ext>), which File columns link to.
+ */
+export const FILES_TABLE = "_rizo_files";
+
+/** The address of an uploaded file: 128 random bits as hex, and the extension of its real type. */
+export function fileAddressPattern(accept: readonly string[]): string {
+  for (const ext of accept) if (!/^[a-z]+$/.test(ext)) throw new Error(`unsafe extension: ${ext}`);
+  return `^/_rizo/files/[0-9a-f]{32}[.](${accept.join("|")})$`;
+}
+
 /** Name of the security audit log table (apps with a server). */
 export const AUDIT_TABLE = "_rizo_audit";
 
@@ -135,6 +149,13 @@ export function buildSchema(
       });
     }
     const foreignKeys: ForeignKey[] = model.fields.flatMap((f) => {
+      if (f.type === "File") {
+        // The file stays while a record uses it; the sweep deletes it once none does.
+        return [{
+          name: constraintName(model.table, f.column, "fkey"), column: f.column, refTable: FILES_TABLE,
+          onDelete: "RESTRICT", index: constraintName(model.table, f.column, "idx"),
+        }];
+      }
       if (f.link === undefined) return [];
       const target = models.find((m) => m.name === f.link);
       if (target === undefined) throw new Error(`unresolved link ${model.name}.${f.name}`);
@@ -156,6 +177,30 @@ export function buildSchema(
     }
     return { name: model.table, columns, foreignKeys, indexes, comment: null };
   });
+
+  if (auth !== undefined && models.some((m) => m.fields.some((f) => f.type === "File"))) {
+    const col = (name: string, type: string, extra: Partial<Column> = {}): Column => ({
+      name, type, primaryKey: false, default: null, notNull: true, unique: null, check: null, values: null, comment: null, ...extra,
+    });
+    tables.push({
+      name: FILES_TABLE,
+      comment: "Uploaded files: where each is used and who uploaded it. The files themselves are in storage. Unused ones are deleted after a day.",
+      columns: [
+        col("id", "TEXT", { primaryKey: true, notNull: false, comment: "id: the file's address, /_rizo/files/<random name>" }),
+        // Kept when the account is deleted only while a record still uses the file.
+        col("user_id", "UUID", { notNull: false }),
+        col("field", "TEXT", { comment: "field: the table and column the file was uploaded for" }),
+        col("type", "TEXT", {}),
+        col("size", "INTEGER", {}),
+        col("created_at", "TIMESTAMPTZ", { default: "now()" }),
+      ],
+      foreignKeys: [{
+        name: constraintName(FILES_TABLE, "user_id", "fkey"), column: "user_id", refTable: auth.model.table,
+        onDelete: "SET NULL", index: constraintName(FILES_TABLE, "user_id", "idx"),
+      }],
+      indexes: [{ name: constraintName(FILES_TABLE, "created_at", "idx"), columns: ["created_at"] }],
+    });
+  }
 
   if (auth !== undefined) {
     const t = SESSIONS_TABLE;
@@ -370,6 +415,9 @@ function fieldColumn(table: string, f: ResolvedField): Column {
   } else if (info.valueRange !== undefined) {
     checks.push(...rangeChecks(col, f.min, f.max));
   }
+  if (f.type === "File") {
+    checks.push(`${col} ~ '${fileAddressPattern(f.accept ?? [])}'`);
+  }
   if (f.type === "Email") {
     checks.push(`${col} = lower(${col})`);
     checks.push(`${col} ~ '^[^@[:space:]]+@[^@[:space:]]+[.][^@[:space:]]+$'`);
@@ -383,7 +431,10 @@ function fieldColumn(table: string, f: ResolvedField): Column {
     unique: f.unique ? constraintName(table, f.column, "key") : null,
     check: checks.length > 0 ? { name: constraintName(table, f.column, "check"), expr: checks.join(" AND ") } : null,
     values: null,
-    comment: info.secret ? `${f.name}: stored only as a salted hash, never as plain text` : null,
+    ...(f.type === "File" ? { file: true as const } : {}),
+    comment: info.secret ? `${f.name}: stored only as a salted hash, never as plain text`
+      : f.type === "File" ? `${f.name}: the address of an uploaded file (${(f.accept ?? []).join(", ")}, at most ${f.max ?? 0} bytes); the file is in storage`
+        : null,
   };
 }
 

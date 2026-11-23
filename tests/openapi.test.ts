@@ -64,7 +64,7 @@ describe("openapi.json", () => {
 
   it("never describes Password or private fields in responses", () => {
     const user = doc.components.schemas["UserPublic"];
-    expect(Object.keys(user?.properties ?? {}).sort()).toEqual(["bio", "id", "name"]);
+    expect(Object.keys(user?.properties ?? {}).sort()).toEqual(["avatar", "bio", "id", "name"]);
     expect(user?.additionalProperties).toBe(false);
     const names = Object.values(doc.components.schemas).flatMap((schema) => Object.keys(schema.properties ?? {}));
     expect(names.filter((n) => /password|email/i.test(n))).toEqual([]);

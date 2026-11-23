@@ -70,6 +70,7 @@ model Post {
 | `Password` | Stored only as a salted hash.                 | `TEXT` (`<name>_hash`) | `PasswordHash` | optional, min, max          |
 | `Date`     | Date and time, in UTC.                        | `TIMESTAMPTZ` | `Date`         | unique, optional, private, encrypted |
 | `ID`       | A UUID.                                       | `UUID`        | `string`       | unique, optional, private            |
+| `File`     | An uploaded image or PDF (§3.4).              | `TEXT` + foreign key | `string` (its address) | optional, private, image, pdf, max |
 | *Model*    | A link to a record of that model.             | `UUID` (`<name>_id`) + foreign key | `string` | unique, optional, private |
 
 - `Number` is for whole numbers. Store money as cents.
@@ -95,7 +96,8 @@ Modifiers come after the type, on the same line, in any order, each at most once
 | `private`  | Stored and accepted as input, but **never returned** by any endpoint, and not allowed in filters or ordering. |
 | `encrypted` | Text, Email, Number, Date: stored encrypted (AES-256-GCM), so the database and its backups never see the value. See below. |
 | `min N`    | Text, Email, Password: minimum length in characters. Number: minimum value.                    |
-| `max N`    | Text, Email, Password: maximum length in characters. Number: maximum value.                    |
+| `max N`    | Text, Email, Password: maximum length in characters. Number: maximum value. File: the size, written with `kb` or `mb` (`max 5mb`), from 1kb to 10mb; 10mb by default. |
+| `image`, `pdf` | File only: what it may hold. `image` is PNG, JPEG, WebP or GIF; `pdf` is PDF. Neither means both. |
 
 | Type       | Default min | Default max | Allowed range for `min`/`max` |
 |------------|-------------|-------------|-------------------------------|
@@ -106,7 +108,7 @@ Modifiers come after the type, on the same line, in any order, each at most once
 
 - `min` must be ≤ `max` after defaults are applied.
 - `unique` is not allowed on `Bool` or `Password`.
-- `min` and `max` are not allowed on `Bool`, `Date`, `ID` or links.
+- `min` and `max` are not allowed on `Bool`, `Date`, `ID` or links, and `min`, `unique` and `encrypted` not on `File`. Sizes with `kb` or `mb` are only for `File` (RZ0345).
 - `private` is not allowed on `Password`, which is always hidden.
 
 **Encrypted fields.** `phone: Text optional encrypted` is encrypted by the server before it is written, and decrypted when it is read.
@@ -130,9 +132,50 @@ Modifiers come after the type, on the same line, in any order, each at most once
   - `+es` after `s`, `x`, `z`, `ch` or `sh`,
   - consonant + `y` becomes `ies`.
 - **Reserved names:**
-  - Model names: the seven type names, plus `PasswordHash`, `String`, `Boolean`, `Object`, `Array`, `Promise`, `Record`, `Error`, `Map`, `Set`, `Symbol`, `BigInt`, `Function`, `JSON`, `Math`, `Partial` and `Readonly`.
+  - Model names: the eight type names, plus `PasswordHash`, `String`, `Boolean`, `Object`, `Array`, `Promise`, `Record`, `Error`, `Map`, `Set`, `Symbol`, `BigInt`, `Function`, `JSON`, `Math`, `Partial` and `Readonly`.
   - Field name: `id`.
 - Two names must never produce the same table, column or TypeScript type. Table and column names must be at most 63 characters.
+
+
+### 3.4 Files: the `File` type
+
+```rizo
+auth User by email
+
+model User {
+  email: Email unique private
+  password: Password
+  avatar: File image max 2mb optional
+}
+
+model Post {
+  author: User
+  title: Text max 200
+  image: File image max 5mb optional
+}
+
+api POST /api/posts -> Post.public {
+  requires login
+  return db.Post.create(body, author = me)
+}
+```
+
+A `File` field holds an uploaded image or PDF. It takes two steps:
+
+1. **Upload:** `POST /_rizo/uploads/<model>/<field>` (here `/_rizo/uploads/posts/image`) with the file itself as the body, not a form. The answer is 201 `{ "url": "/_rizo/files/<random>.png", "type": "image/png", "size": 12345 }`. `<model>` is the table name with `-` for `_`, as on the admin pages.
+2. **Use it:** send that url as the field's value when creating or updating the record: `{ "title": "Hi", "image": "/_rizo/files/<random>.png" }`. Responses return the same url, and `GET` on it downloads the file.
+
+**Rules:**
+- **Type:** read from the file's content, never from its name or `Content-Type`. Anything that isn't one of the allowed types gets 415, so SVG, HTML and scripts can never be stored. A file over the field's `max` gets 413.
+- **Who may upload:** anyone allowed to call an endpoint whose body takes the field (login, plus that endpoint's roles; any logged-in user for a File field on the auth model, which is set on the account page). An API token may upload only for a field one of its endpoints takes. At most 60 uploads an hour per account.
+- **Attaching:** a body may only contain a file the caller uploaded for that same field, or the record's current file (400 otherwise). So nobody can take over someone else's file.
+- **Reading:** a file is served only at its address, which has 128 random bits, and the address only appears where the field is returned. So a file is exactly as public as the endpoints that return it, and a `private` File field is never returned (only in its owner's data export). Files are sent with `X-Content-Type-Options: nosniff` and a `sandbox` Content-Security-Policy, PDFs as downloads. Server logs never contain the address. At most 600 file requests a minute per address.
+- **Location data:** GPS data is removed from JPEG, PNG and WebP photos before they are stored: from EXIF (also in extra images a phone appends to a JPEG), and XMP is blanked. The rest of the image, including its orientation, is kept. GIF and PDF files are stored as uploaded.
+- **Cleanup:** uploads are tracked in the `_rizo_files` table, and a File column links to it. Every 10 minutes, files that no record uses (never attached, replaced, or whose record or account was deleted, or expired by `keep`) and that were uploaded more than a day ago are deleted, with their stored copy; if storage can't delete one, it is tried again on the next run. So a file is gone within a day of no longer being used. Removing every File field from the app drops `_rizo_files` (`--allow-data-loss`), but not the stored files: delete those yourself.
+- **Memory:** a server process checks at most 8 uploads at once (others get 503 with `Retry-After`), and streams files when serving them.
+- **Needs a login:** a file with File fields needs an `auth` line, a public endpoint's body can't take a File field, and a File field on the auth model must be `optional`: people add it after signing up (RZ0346). File fields can't be filtered or ordered (RZ0325).
+- **Storage:** files are kept in the folder `RIZO_UPLOAD_DIR` (default `./uploads`), or in S3-compatible storage (AWS S3, Cloudflare R2, Backblaze B2, MinIO) when `RIZO_S3_BUCKET` is set (§6). The bucket stays private: the app reads files and serves them itself.
+- **Pages:** forms show a file picker that uploads the chosen file when the form is sent. An edit form keeps the current file unless a new one is chosen. Pages show images, and a "Download PDF" link for PDFs.
 
 ---
 
@@ -291,6 +334,7 @@ model Message {
 **The privacy notice.** With a `privacy for` line, the app publishes what it does with people's data, written for them, with no text to write:
 - `GET /auth/privacy` (public JSON) and, in apps with pages, a built-in `/privacy` page linked from every page's menu.
 - **What we store:** every model and field, and whether each is shown publicly, private, encrypted or stored only as a hash, and how long records are kept (`keep`, or until deleted).
+- **Files** (with File fields): that uploads are kept only while used, that photo location data is removed, and where files are stored.
 - **Cookies:** the one login cookie, and why there is no cookie banner (no tracking).
 - **Who else handles the data:** Resend for account emails, and a statement that personal information isn't sold, shared or used for advertising.
 - **Security**, and how long security logs (with IP addresses) are kept (`RIZO_AUDIT_RETENTION_DAYS`).
@@ -363,7 +407,7 @@ There is no default, so an endpoint can never be left open by accident. `require
 
 ### Rate limits
 
-Every endpoint is rate-limited. The default is **120 requests per minute**, counted per account for logged-in callers and per IP address otherwise. Built-in `/auth` endpoints and pages also get 120 per minute per address. Only the page runtime's files (`/_rizo/…`) and the health check have no limit. You can set your own limit:
+Every endpoint is rate-limited. The default is **120 requests per minute**, counted per account for logged-in callers and per IP address otherwise. Built-in `/auth` endpoints and pages also get 120 per minute per address. Uploads (`/_rizo/uploads/…`) get 120 a minute per address and 60 an hour per account, and uploaded files (`/_rizo/files/…`) 600 a minute per address. Only the page runtime's own files and the health check have no limit. You can set your own limit:
 
 ```rizo
 api POST /api/drafts -> Post.public {
@@ -701,13 +745,16 @@ To start a brand-new database, `psql "$DATABASE_URL" -f schema.sql` works too. T
 | `RIZO_EMAIL_FROM`           | (required with `auth`) | Sender on a domain verified with Resend, e.g. `Blog <hello@blog.example>` |
 | `RIZO_PRIVACY_CONTACT`      | (required with `privacy for`) | The email address people write to about their data, shown on the privacy page |
 | `RIZO_ENCRYPTION_KEYS`      | (required with `encrypted` fields) | Comma-separated `id:key` pairs. The id is 1–16 lowercase letters or digits, the key 32 random bytes in base64 (`openssl rand -base64 32`). The first key encrypts; all of them decrypt |
+| `RIZO_UPLOAD_DIR`           | `./uploads` | With File fields: the folder for uploaded files, when `RIZO_S3_BUCKET` isn't set. In Docker, mount a volume at `/app/uploads` |
+| `RIZO_S3_BUCKET`            | none        | With File fields: keep files in this S3-compatible bucket instead. Then `RIZO_S3_REGION`, `RIZO_S3_ACCESS_KEY_ID` and `RIZO_S3_SECRET_ACCESS_KEY` are required too |
+| `RIZO_S3_ENDPOINT`          | `https://s3.<region>.amazonaws.com` | The storage service's address, e.g. `https://<account>.r2.cloudflarestorage.com`. https, or http only for localhost |
 | `RIZO_EMAIL_DEV`            | off         | `1` to print emails to the console instead of sending them (then the key and sender aren't needed). **Never in production** |
 
 An app with an `auth` line refuses to start when the email settings are missing or invalid, and says which one to fix.
 
 ### Deploying
 
-- **Docker:** `docker build -t my-app dist` builds an image from the generated `Dockerfile`: Node.js 24 on Alpine, only `pg` installed, running as the non-root `node` user, listening on `0.0.0.0:3000`. Apply migrations with `docker run --rm -e DATABASE_URL=... my-app node migrate.ts`, then run it with the settings above. `.dockerignore` keeps `node_modules` and local secrets out.
+- **Docker:** `docker build -t my-app dist` builds an image from the generated `Dockerfile`: Node.js 24 on Alpine, only `pg` installed, running as the non-root `node` user, listening on `0.0.0.0:3000`. Apply migrations with `docker run --rm -e DATABASE_URL=... my-app node migrate.ts`, then run it with the settings above. `.dockerignore` keeps `node_modules`, uploaded files and local secrets out. With File fields and no `RIZO_S3_BUCKET`, mount a volume at `/app/uploads` so files outlive the container.
 - **Health check:** `GET /_rizo/health` answers `{"status":"ok"}` when the database answers within 2 seconds, and 503 `{"status":"unavailable"}` otherwise or while shutting down. It says nothing else about the app. The Dockerfile's `HEALTHCHECK` uses it; point your platform's health check at it too.
 - **Graceful shutdown:** on SIGTERM or SIGINT (for example `docker stop`), the server stops taking connections, lets requests in progress finish for up to 10 seconds, closes the database pool and exits.
 - Behind a proxy or load balancer, set `RIZO_TRUST_PROXY=1` so rate limits and logs see the real client address.
@@ -748,6 +795,7 @@ These are enforced by the compiler and the runtime, and each is covered by `test
 13. Encrypted fields are stored only as AES-256-GCM ciphertext, tied to their column, and are decrypted only by the server. They can never be compared, sorted or made unique in the database.
 14. An API token works only on the endpoints chosen for it, never on account endpoints, and never after it expires (at most 90 days) or is revoked. Only its hash is stored.
 15. People can download everything stored about them, and deleting an account leaves no personal data behind: its records either go with it or are credited to a placeholder "Deleted user" account that can't be logged into.
+16. Uploaded files are recognised by their content (never SVG, HTML or scripts), stripped of location data, served only at unguessable addresses with headers that stop them from running, attached only by the person who uploaded them, and deleted within a day once no record uses them.
 
 ---
 
@@ -840,6 +888,8 @@ app.rz:3:9 error RZ0301: Unknown field type "String" on field "User.name".
 | RZ0342 | Invalid `keep` (unknown unit, out of range, repeated, on the auth model, or without a server) |
 | RZ0343 | Invalid `with` (not a public link field of the model, repeated, or on an endpoint that changes records) |
 | RZ0344 | Invalid `site` line (repeated, name length, unknown color, or a logo path that isn't a PNG, JPEG or WebP file in the project) |
+| RZ0345 | Invalid size: `kb`/`mb` on a field that isn't a File, a File `max` without a unit, or outside 1kb–10mb |
+| RZ0346 | A File field without a login: no `auth` line, in the body of a `public` endpoint, or required on the auth model |
 | RZ0901 | Cannot read the input file                                              |
 | RZ0902 | Input file does not end in `.rz`                                        |
 | RZ0903 | Wrong command-line usage                                                |
@@ -1020,8 +1070,9 @@ keep       = "keep" INT ( "day" | "days" | "month" | "months" | "year" | "years"
 privacy    = "privacy" "for" REGION { "," REGION } NEWLINE ;
 REGION     = "EU" | "UK" | "IN" | "US-CA" | "BR" ;
 field      = NAME ":" TYPE { modifier } NEWLINE ;
-modifier   = "unique" | "optional" | "private" | "encrypted" | "min" INT | "max" INT ;
-TYPE       = "Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID" | NAME ;
+modifier   = "unique" | "optional" | "private" | "encrypted" | "image" | "pdf" | "min" INT | "max" ( INT | SIZE ) ;
+SIZE       = DIGIT { DIGIT } ( "kb" | "mb" ) ;   (File fields only, e.g. 5mb)
+TYPE       = "Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID" | "File" | NAME ;
 auth       = "auth" NAME "by" NAME [ "roles" NAME { "," NAME } ] NEWLINE ;
 api        = "api" METHOD PATH [ "->" rettype ] "{" { statement NEWLINE } "}" ;
 METHOD     = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" ;

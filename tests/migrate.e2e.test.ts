@@ -116,6 +116,18 @@ describe.skipIf(DATABASE_URL === undefined)("migrations (PostgreSQL)", () => {
     expect(await describeDb(migrated)).toEqual(shape);
   });
 
+  it("adds File fields to an existing app, then removes them all again", async () => {
+    const withFiles = V3.replace("  age: Number min 0 optional\n", "  age: Number min 0 optional\n  avatar: File image optional\n")
+      .replace("  title: Text unique\n", "  title: Text unique\n  scan: File pdf\n");
+    const ms = history([V3, withFiles, V3]);
+    const c = await freshClient();
+    await migrate(c, ms);
+    expect(ms.at(-1)?.sql).toMatch(/DROP CONSTRAINT "posts_scan_fkey";[\s\S]*DROP TABLE "_rizo_files";/);
+    const fresh = await freshClient();
+    await fresh.query(emitSchemaSql(schemaOf(V3), "app.rz"));
+    expect(await describeDb(c)).toEqual(await describeDb(fresh));
+  });
+
   it("keeps existing rows when adding fields, models and links", async () => {
     const c = await freshClient();
     const ms = history([V1, V2]);

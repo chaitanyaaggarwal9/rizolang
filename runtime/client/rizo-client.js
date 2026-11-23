@@ -9,9 +9,9 @@
  *   site ("/..."), never to other sites or "javascript:".
  * - Data comes only from this site's endpoints (fetch with same-origin cookies).
  *
- * @typedef {"Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID"} FieldKind
+ * @typedef {"Text" | "Number" | "Bool" | "Email" | "Password" | "Date" | "ID" | "File"} FieldKind
  * @typedef {{ key: string, label: string, type: FieldKind, display?: string }} FieldView
- * @typedef {{ key: string, kind: FieldKind, label: string, required: boolean, nullable: boolean, min?: number, max?: number, multiline: boolean }} FormField
+ * @typedef {{ key: string, kind: FieldKind, label: string, required: boolean, nullable: boolean, min?: number, max?: number, multiline: boolean, accept?: string[], upload?: string }} FormField
  * @typedef {{ kind: "form", method: "POST" | "PUT" | "PATCH", endpoint: string, fields: FormField[], submit: string, prefill: string | null, then: string | null, done?: string, heading?: string, idPrefix?: string }} FormItem
  * @typedef {{ kind: "button", label: string, method: "DELETE", endpoint: string, then: string }} ButtonItem
  * @typedef {{ kind: "text", text: string }
@@ -36,8 +36,14 @@
 const ALLOWED_ATTRIBUTES = new Set([
   "class", "href", "type", "role", "aria-live", "aria-busy", "aria-invalid", "aria-describedby",
   "for", "id", "name", "required", "minlength", "maxlength", "min", "max", "step", "autocomplete", "rows",
-  "src", "alt",
+  "src", "alt", "accept",
 ]);
+
+/** Images this page may show: the site logo, and uploaded image files. */
+const IMAGE_SRC = /^\/_rizo\/(logo\.(png|jpg|webp)|files\/[0-9a-f]{32}\.(png|jpg|webp|gif))$/;
+
+/** The MIME types a file picker offers for each allowed extension. */
+const FILE_MIME = /** @type {Record<string, string>} */ ({ png: "image/png", jpg: "image/jpeg", webp: "image/webp", gif: "image/gif", pdf: "application/pdf" });
 
 /**
  * Create an element. Children that are strings become text nodes.
@@ -51,7 +57,7 @@ export function el(tag, attrs, ...children) {
   for (const [name, value] of Object.entries(attrs)) {
     if (!ALLOWED_ATTRIBUTES.has(name)) throw new Error(`attribute not allowed: ${name}`);
     if (name === "href" && !isInternalPath(value)) throw new Error("links must stay on this site");
-    if (name === "src" && (tag !== "img" || !/^\/_rizo\/logo\.(png|jpg|webp)$/.test(value))) throw new Error("src is only for the site logo image");
+    if (name === "src" && (tag !== "img" || !IMAGE_SRC.test(value))) throw new Error("src is only for the site logo and uploaded images");
     node.setAttribute(name, value);
   }
   for (const child of children) node.append(typeof child === "string" ? document.createTextNode(child) : child);
@@ -138,14 +144,28 @@ function errorBox(message) {
  * One record as a list of label/value pairs.
  * @param {Record<string, unknown>} record
  * @param {FieldView[]} fields
+ * @param {boolean} [inLink] true when the record is shown inside a link (no links inside it)
  */
-function recordView(record, fields) {
+function recordView(record, fields, inLink = false) {
   const list = el("dl", { class: "rizo-record" });
   for (const f of fields) {
     if (f.key === "id") continue;
-    list.append(el("dt", {}, f.label), el("dd", {}, fieldText(record, f)));
+    list.append(el("dt", {}, f.label), el("dd", {}, fileView(record[f.key], f.label, inLink) ?? fieldText(record, f)));
   }
   return list;
+}
+
+/**
+ * An uploaded file: images are shown, PDFs get a download link (plain text
+ * inside a card that is itself a link). Undefined for anything that isn't a file address.
+ * @param {unknown} value
+ * @param {string} label
+ * @param {boolean} inLink
+ */
+export function fileView(value, label, inLink) {
+  if (typeof value !== "string" || !/^\/_rizo\/files\/[0-9a-f]{32}\.(png|jpg|webp|gif|pdf)$/.test(value)) return undefined;
+  if (IMAGE_SRC.test(value)) return el("img", { src: value, alt: label, class: "rizo-image" });
+  return inLink ? el("span", {}, "PDF file") : el("a", { href: value }, "Download PDF");
 }
 
 /**
@@ -179,7 +199,7 @@ function showItem(item, params) {
         const { items, next } = /** @type {{ items: Record<string, unknown>[], next: string | null }} */ (page);
         if (items.length === 0 && after === null) box.replaceChildren(empty);
         for (const record of items) {
-          const view = recordView(record, item.fields);
+          const view = recordView(record, item.fields, item.detail !== null);
           const id = record["id"];
           if (item.detail !== null && typeof id === "string") {
             const href = fillPath(item.detail.path, { ...params, [item.detail.param]: id });
@@ -255,7 +275,7 @@ async function sendJson(method, url, body) {
 }
 
 const INPUT_TYPES = /** @type {Record<FieldKind, string>} */ ({
-  Text: "text", Email: "email", Password: "password", Number: "number", Bool: "checkbox", Date: "datetime-local", ID: "text",
+  Text: "text", Email: "email", Password: "password", Number: "number", Bool: "checkbox", Date: "datetime-local", ID: "text", File: "file",
 });
 
 /** @param {number} n */
@@ -278,6 +298,7 @@ export function toLocalInput(iso) {
  * @param {boolean} partial  true for edit forms without prefill: empty means "unchanged"
  */
 export function readField(field, input, partial) {
+  if (field.kind === "File") return undefined; // uploaded separately when the form is sent
   if (field.kind === "Bool") return /** @type {HTMLInputElement} */ (input).checked;
   const raw = input.value;
   if (raw === "") {
@@ -302,6 +323,10 @@ function formItem(item, params, extra = {}) {
   const isLogin = item.endpoint === "/auth/login";
   /** @type {Map<string, { field: FormField, input: HTMLInputElement | HTMLTextAreaElement, error: HTMLElement }>} */
   const inputs = new Map();
+  /** @type {Map<string, HTMLElement>} */
+  const fileHints = new Map();
+  /** Files already uploaded from this form, so sending it again doesn't upload them twice. */
+  const uploaded = new WeakMap();
 
   for (const field of item.fields) {
     const id = `${item.idPrefix ?? "rizo-field-"}${field.key}`;
@@ -320,12 +345,22 @@ function formItem(item, params, extra = {}) {
     const current = isLogin || field.key === "currentPassword" || (field.key === "password" && item.endpoint !== "/auth/signup");
     if (field.kind === "Password") attrs["autocomplete"] = current ? "current-password" : "new-password";
     if (field.kind === "Email") attrs["autocomplete"] = isLogin ? "username" : "email";
+    if (field.kind === "File") attrs["accept"] = (field.accept ?? []).map((ext) => FILE_MIME[ext] ?? "").filter((t) => t !== "").join(",");
     const input = field.multiline
       ? /** @type {HTMLTextAreaElement} */ (el("textarea", { ...attrs, rows: "6" }))
       : /** @type {HTMLInputElement} */ (el("input", { ...attrs, type: INPUT_TYPES[field.kind] }));
     const error = el("p", { class: "rizo-field-error", id: `${id}-error`, "aria-live": "polite" });
     const label = el("label", { for: id }, field.label, field.required || field.kind === "Bool" ? "" : " (optional)");
-    form.append(el("div", { class: field.kind === "Bool" ? "rizo-field rizo-check" : "rizo-field" }, label, input, error));
+    const wrap = el("div", { class: field.kind === "Bool" ? "rizo-field rizo-check" : "rizo-field" }, label, input);
+    if (field.kind === "File") {
+      // Shown once an edit form finds a saved file.
+      const hint = el("p", { class: "rizo-hint" }, "A file is saved. Choose another one to replace it.");
+      hint.hidden = true;
+      fileHints.set(field.key, hint);
+      wrap.append(hint);
+    }
+    wrap.append(error);
+    form.append(wrap);
     inputs.set(field.key, { field, input, error });
   }
 
@@ -344,7 +379,12 @@ function formItem(item, params, extra = {}) {
         const r = /** @type {Record<string, unknown>} */ (record);
         for (const { field, input } of inputs.values()) {
           const value = r[field.key];
-          if (value === undefined || value === null) continue;
+          // A file input can't be filled in: the current file stays unless a new one is chosen.
+          if (field.kind === "File" && typeof value === "string") {
+            const hint = fileHints.get(field.key);
+            if (hint !== undefined) hint.hidden = false;
+          }
+          if (value === undefined || value === null || field.kind === "File") continue;
           if (field.kind === "Bool") /** @type {HTMLInputElement} */ (input).checked = value === true;
           else input.value = field.kind === "Date" ? toLocalInput(String(value)) : String(value);
         }
@@ -373,13 +413,19 @@ function formItem(item, params, extra = {}) {
       if (value !== undefined && !unchanged) body[field.key] = value;
     }
     submit.disabled = true;
-    sendJson(item.method, fillPath(item.endpoint, params), body).then(
+    uploadFiles(inputs, body, uploaded).then(() => sendJson(item.method, fillPath(item.endpoint, params), body)).then(
       (result) => {
         if (item.done !== undefined && item.method === "PATCH") {
           // An edit form stays, so it can be used again; what was saved is the new starting point.
           submit.disabled = false;
           savedNote.textContent = item.done;
           savedNote.hidden = false;
+          for (const { field, input } of inputs.values()) {
+            if (field.kind !== "File" || body[field.key] === undefined) continue;
+            input.value = ""; // saved: the picker starts empty again
+            const hint = fileHints.get(field.key);
+            if (hint !== undefined) hint.hidden = false;
+          }
           for (const { field, input } of inputs.values()) initial.set(field.key, JSON.stringify(readField(field, input, false) ?? null));
           return;
         }
@@ -407,6 +453,40 @@ function formItem(item, params, extra = {}) {
     );
   };
   return form;
+}
+
+/**
+ * Upload each chosen file to its field's upload address, and put the address
+ * it returns into the body. A failed upload is reported on its field.
+ * @param {Map<string, { field: FormField, input: HTMLInputElement | HTMLTextAreaElement, error: HTMLElement }>} inputs
+ * @param {Record<string, unknown>} body
+ * @param {WeakMap<object, string>} uploaded  file → address, for files this form already uploaded
+ */
+async function uploadFiles(inputs, body, uploaded) {
+  for (const { field, input } of inputs.values()) {
+    const file = field.kind === "File" ? /** @type {HTMLInputElement} */ (input).files?.[0] : undefined;
+    if (file === undefined || field.upload === undefined) continue;
+    const done = uploaded.get(file);
+    if (done !== undefined) {
+      body[field.key] = done;
+      continue;
+    }
+    const res = await fetch(field.upload, { method: "POST", body: file, headers: { Accept: "application/json" }, credentials: "same-origin" });
+    /** @type {{ url?: unknown, error?: { message?: unknown } }} */
+    let parsed = {};
+    try {
+      parsed = await res.json();
+    } catch {
+      // no body
+    }
+    if (!res.ok || typeof parsed.url !== "string") {
+      const error = new Error(typeof parsed.error?.message === "string" ? parsed.error.message : "The file couldn't be uploaded. Please try again.");
+      /** @type {Error & { field?: string }} */ (error).field = field.key;
+      throw error;
+    }
+    uploaded.set(file, parsed.url);
+    body[field.key] = parsed.url;
+  }
 }
 
 /**
@@ -721,7 +801,7 @@ function privacyItem() {
   getJson("/auth/privacy").then((raw) => {
     const n = /** @type {{ regions: { code: string, region: string, law: string, complaint: string }[], contact: string,
       data: { name: string, account: boolean, fields: { label: string, kind: string, stored: "public" | "private" | "encrypted" | "hashed" }[], kept: string }[],
-      rights: string[], cookies: string, sharing: string[], security: string[], securityLog: string }} */ (raw);
+      rights: string[], cookies: string, sharing: string[], security: string[], securityLog: string, files?: string[] }} */ (raw);
     box.replaceChildren(
       el("h2", {}, "What we store"),
       ...n.data.map((m) => el("section", { class: "rizo-show" },
@@ -729,6 +809,7 @@ function privacyItem() {
         list(m.fields.map((f) => `${f.label}: ${STORED[f.stored]}`)),
         el("p", {}, `Kept: ${m.kept}`))),
       el("h2", {}, "Cookies"), el("p", {}, n.cookies),
+      ...(n.files !== undefined ? [el("h2", {}, "Files you upload"), list(n.files)] : []),
       el("h2", {}, "Who else handles your data"), list(n.sharing),
       el("h2", {}, "How we protect it"), list([...n.security, n.securityLog]),
       el("h2", {}, "Your rights"), list(n.rights),
